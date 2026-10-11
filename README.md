@@ -1,16 +1,18 @@
 # pydantic-agents
 
 Pydantic AI agents routed through a [LiteLLM](https://github.com/BerriAI/litellm) proxy,
-extracted from the `mediusfy/agents` orchestration monorepo
-(`src/orchestration/agents/` plus the dependency closure it needs to run standalone).
+extracted from the `mediusfy/agents` orchestration monorepo as a standalone, installable
+package (`pydantic_agents.core` + `pydantic_agents.agents`), with the same module identity
+(`registry`, `settings`, ...) usable by any consumer that installs it.
 
 ## Architecture
 
 Each agent is a [pydantic_ai](https://ai.pydantic.dev/) `Agent` with a typed `output_type`
-(a pydantic model in `orchestration/models/core.py`) and a model resolved through
-`orchestration/models/factory.py::create_model`.
+(a pydantic model in `pydantic_agents/core/models/core.py`) and a model resolved through
+`pydantic_agents/core/models/factory.py::create_model`.
 
-Model routing is provider-agnostic via `Settings.resolve_model()` in `orchestration/settings.py`:
+Model routing is provider-agnostic via `Settings.resolve_model()` in
+`pydantic_agents/core/settings.py`:
 
 - `MODEL_PROVIDER=litellm` (default) — every agent call goes through an OpenAI-compatible
   LiteLLM proxy (`LITELLM_BASE_URL`, auth via `LITELLM_VIRTUAL_KEY`/`LITELLM_MASTER_KEY`).
@@ -18,23 +20,35 @@ Model routing is provider-agnostic via `Settings.resolve_model()` in `orchestrat
 - Per-agent model fields (`backend_model`, `frontend_model`, ...) plus `_FAST_TIER` /
   `_REASONER_TIER` sets in `settings.py` assign cheap vs. reasoning models per agent role.
 
-Agents are registered into a shared `AgentRegistry` (`orchestration/registry.py`) via
-`orchestration/agents/registration.py`, which is how the parent project exposes them as
-MCP tools (`mcp__litellm__agents-run_<name>`).
+Agents are registered into a shared `AgentRegistry` (`pydantic_agents/core/registry.py`) via
+`pydantic_agents/agents/registration.py`. **Tools are attached lazily, not via `@agent.tool`
+decorators in the agent files**: `registry.get(name)` triggers `AgentRegistry._lazy_init`,
+which looks up `AGENT_TOOL_CATEGORIES[name]` in `tool_assignments.py` and calls
+`core/tools/registry.py::apply_tools`, which attaches every tool in `core/tools/*.py` whose
+category matches. E.g. `crypto_oracle` gets category `finance`/`news`, which is how it ends up
+with `search_news`/market-data tools even though `crypto_oracle.py` itself has no `@agent.tool`
+decorators. This is how the parent monorepo exposes agents as MCP tools
+(`mcp__litellm__agents-run_<name>`).
 
 ## Layout
 
 ```
-src/orchestration/
-  agents/            # 17 SDLC agents (cto, ba, backend, frontend, test_eng, security, ...)
-    non_technical/   # 9 utility agents (weather, accountant, crypto_oracle, ...)
-  models/
-    core.py          # typed output_type models (Artifact, AgentAdvice, ReviewResult, ...)
-    factory.py       # create_model(): routes model specs through LiteLLM/native providers
-  adapters/agents.py # PydanticAIAgentProvider used by the registry
-  registry.py        # AgentRegistry — agent registration/lookup
-  session_recorder.py, telemetry.py, exceptions.py, planning.py, pipeline/context.py
-  settings.py        # pydantic-settings config, model routing/tiering
+src/pydantic_agents/
+  core/
+    settings.py          # pydantic-settings config, model routing/tiering
+    registry.py           # AgentRegistry — agent registration/lookup, lazy tool attachment
+    tool_assignments.py    # AGENT_TOOL_CATEGORIES: agent name -> tool categories
+    tools/                 # ~15 tool modules (web, search, security, finance, memory, a2a, ...)
+    vector_db.py, utils.py, telemetry.py, exceptions.py, session_recorder.py, planning.py
+    pipeline/context.py
+    adapters/agents.py     # PydanticAIAgentProvider used by the registry
+    models/
+      core.py              # typed output_type models (Artifact, AgentAdvice, ReviewResult, ...)
+      factory.py           # create_model(): routes model specs through LiteLLM/native providers
+  agents/
+    registration.py
+    (17 SDLC agents: cto, ba, backend, frontend, test_eng, security, ...)
+    non_technical/         # 9 utility agents (weather, accountant, crypto_oracle, ...)
 ```
 
 ## Setup
@@ -46,9 +60,12 @@ cp .env.example .env   # fill in LITELLM_VIRTUAL_KEY or a direct provider key
 ```
 
 ```python
-from orchestration.agents.cto import cto_agent
+from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core.registry import registry
 
-result = await cto_agent.run("Review this proposed service architecture...")
+register_all_agents()
+agent = registry.get("cto")  # tools are attached here, lazily
+result = await agent.run("Review this proposed service architecture...")
 ```
 
 ## Known improvement areas (carried over from extraction review)
@@ -56,10 +73,13 @@ result = await cto_agent.run("Review this proposed service architecture...")
 This was extracted as-is; the following were identified during review and are **not**
 yet fixed here — tracked for follow-up:
 
-1. **Prompts promise tools that don't exist.** `crypto_oracle.py`, `database.py`,
-   `devops.py` system prompts mandate tool calls (`search_news`, `get_historical_prices`,
-   `update_documentation`, ...) that are never registered via `@agent.tool`. Either wire
-   real tools or strip those imperative steps from the prompts.
+1. ~~Prompts promise tools that don't exist~~ — **correction**: tools are attached lazily by
+   category via `registry.get()` → `_lazy_init` → `apply_tools` (see Architecture above), not
+   via `@agent.tool` decorators in the agent files. `crypto_oracle`/`database`/`devops` do get
+   real tools through `tool_assignments.py`. The actual gap here is invisibility, not absence:
+   nothing in `crypto_oracle.py` itself hints that its capabilities come from an external
+   category mapping, so a reader (or an agent-generated review) can't tell what tools an agent
+   has without also reading `tool_assignments.py` + `tools/registry.py::get_tools_for_agent`.
 2. **`factory.py` silently degrades on missing LiteLLM key** — falls back to returning
    the raw model spec string instead of raising, which can silently bypass the proxy
    (and its cost tracking/guardrails) using whatever ambient API key is present.
