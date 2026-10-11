@@ -86,6 +86,19 @@ def _get_background_loop() -> asyncio.AbstractEventLoop:
         return _bg_loop
 
 
+def _bridge(coro: Any) -> "asyncio.Future[Any]":
+    """Run a coroutine on the persistent background loop, awaitable from any loop.
+
+    The cached asyncpg pool lives on ``_bg_loop``, so every pool-touching call —
+    sync or async entrypoint — must execute there too. wrap_future() exposes the
+    threadsafe future as an awaitable on the caller's own loop instead of
+    blocking it, which run_coroutine_threadsafe(...).result() would do.
+    """
+    loop = _get_background_loop()
+    future = asyncio.run_coroutine_threadsafe(coro, loop)
+    return asyncio.wrap_future(future)
+
+
 # Test-mode override for _get_pool — set by _set_test_pool() during testing.
 # When set, _get_pool returns this pool instead of connecting to PostgreSQL.
 _test_pool_override: Any = None
@@ -228,7 +241,7 @@ class VectorDBManager:
         metadatas: list[dict],
         ids: list[str],
     ):
-        await self._add_documents(collection_name, documents, metadatas, ids)
+        await _bridge(self._add_documents(collection_name, documents, metadatas, ids))
 
     async def _search(
         self,
@@ -263,7 +276,7 @@ class VectorDBManager:
         return self._run_sync(self._search(collection_name, query, n_results))
 
     async def async_search(self, collection_name: str, query: str, n_results: int = 3) -> list[str]:
-        return await self._search(collection_name, query, n_results)
+        return await _bridge(self._search(collection_name, query, n_results))
 
     def ingest_url(self, collection_name: str, url: str) -> str:
         """Fetch a URL, split into chunks, and index into pgvector."""
@@ -331,7 +344,7 @@ class VectorDBManager:
             metas = [{"source": url} for _ in splits]
             ids = [f"url_{id(s)}" for s in splits]
 
-            await self._add_documents(collection_name, texts, metas, ids)
+            await _bridge(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from {url}"
 
     async def async_ingest_pdf(self, collection_name: str, file_path: str) -> str:
@@ -354,7 +367,7 @@ class VectorDBManager:
             metas = [{"source": file_path} for _ in splits]
             ids = [f"pdf_{id(s)}" for s in splits]
 
-            await self._add_documents(collection_name, texts, metas, ids)
+            await _bridge(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from PDF."
 
 
