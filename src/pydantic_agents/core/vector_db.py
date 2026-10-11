@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import threading
 from typing import Any
 
 from pydantic_agents.core.exceptions import OrgitrationDependencyError
@@ -62,6 +63,28 @@ def _get_embeddings():
 
 _connection_pools: dict[str, Any] = {}
 _initialized_tables: set[str] = set()
+
+# Persistent background loop that every sync call bridges onto. The asyncpg
+# pool cached in _get_pool() is bound to whichever loop created it; bridging
+# via a fresh asyncio.run() loop per call (the old behavior) left that pool
+# bound to a loop that was closed as soon as the call returned, so the next
+# call's queries died with "Event loop is closed". Routing every call
+# through the same never-closed loop keeps the pool valid across calls.
+_bg_loop: asyncio.AbstractEventLoop | None = None
+_bg_thread: threading.Thread | None = None
+_bg_lock = threading.Lock()
+
+
+def _get_background_loop() -> asyncio.AbstractEventLoop:
+    """Return the persistent background event loop, starting it on first use."""
+    global _bg_loop, _bg_thread
+    with _bg_lock:
+        if _bg_loop is None or not _bg_loop.is_running():
+            _bg_loop = asyncio.new_event_loop()
+            _bg_thread = threading.Thread(target=_bg_loop.run_forever, daemon=True)
+            _bg_thread.start()
+        return _bg_loop
+
 
 # Test-mode override for _get_pool — set by _set_test_pool() during testing.
 # When set, _get_pool returns this pool instead of connecting to PostgreSQL.
@@ -152,16 +175,9 @@ class VectorDBManager:
 
     @staticmethod
     def _run_sync(coro):
-        """Run a coroutine from synchronous code, avoiding event-loop deadlock."""
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro)
-        # Already in an event loop — use a fresh thread to bridge
-        import concurrent.futures
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            return pool.submit(asyncio.run, coro).result()
+        """Run a coroutine from synchronous code, bridging onto the persistent background loop."""
+        loop = _get_background_loop()
+        return asyncio.run_coroutine_threadsafe(coro, loop).result()
 
     async def _add_documents(
         self,
