@@ -37,32 +37,33 @@ class Settings(BaseSettings):
     redis_iris_token: str | None = None
 
     # Agent Model Overrides
-    # NOTE: When model_provider is set (e.g. "deepseek"), resolve_model() remaps ALL
-    # model names through the provider. So these defaults serve as capability tiers
-    # and are resolved at runtime — actual model used depends on model_provider and
-    # the resolve_model mapping below.
-    ba_model: str = "local-failover"
-    backend_model: str = "deepseek-reasoner"
-    frontend_model: str = "local-failover"
-    test_model: str = "deepseek-reasoner"
-    sre_model: str = "deepseek-reasoner"
-    review_model: str = "deepseek-reasoner"
-    database_model: str = "deepseek-reasoner"
-    devops_model: str = "deepseek-reasoner"
-    docs_model: str = "local-failover"
-    security_model: str = "deepseek-reasoner"
-    ux_model: str = "local-failover"
-    cto_model: str = "deepseek-reasoner"
+    # NOTE: All agents are pinned to the same model ("claude-sonnet-5", an
+    # alias the LiteLLM proxy resolves to Anthropic Claude Sonnet with its
+    # own fallback chain) rather than split across fast/reasoner tiers. See
+    # resolve_model() below for how this is turned into a pydantic_ai model
+    # spec depending on model_provider.
+    ba_model: str = "claude-sonnet-5"
+    backend_model: str = "claude-sonnet-5"
+    frontend_model: str = "claude-sonnet-5"
+    test_model: str = "claude-sonnet-5"
+    sre_model: str = "claude-sonnet-5"
+    review_model: str = "claude-sonnet-5"
+    database_model: str = "claude-sonnet-5"
+    devops_model: str = "claude-sonnet-5"
+    docs_model: str = "claude-sonnet-5"
+    security_model: str = "claude-sonnet-5"
+    ux_model: str = "claude-sonnet-5"
+    cto_model: str = "claude-sonnet-5"
 
-    holiday_planner_model: str = "local-failover"
-    region_analyzer_model: str = "local-failover"
-    asymmetric_reviewer_model: str = "deepseek-reasoner"
-    current_events_model: str = "local-failover"
-    weather_model: str = "local-failover"
-    accountant_model: str = "deepseek-reasoner"
-    price_analyst_model: str = "deepseek-reasoner"
-    market_shark_model: str = "deepseek-reasoner"
-    crypto_oracle_model: str = "deepseek-reasoner"
+    holiday_planner_model: str = "claude-sonnet-5"
+    region_analyzer_model: str = "claude-sonnet-5"
+    asymmetric_reviewer_model: str = "claude-sonnet-5"
+    current_events_model: str = "claude-sonnet-5"
+    weather_model: str = "claude-sonnet-5"
+    accountant_model: str = "claude-sonnet-5"
+    price_analyst_model: str = "claude-sonnet-5"
+    market_shark_model: str = "claude-sonnet-5"
+    crypto_oracle_model: str = "claude-sonnet-5"
 
     # Pipeline Configuration
     output_dir: Path = Path("./generated-app")
@@ -73,65 +74,36 @@ class Settings(BaseSettings):
 
     go_version: str = "1.26"
 
-    # ── Model Capability Tiers ──────────────────────────────────────────────
-    # These define which agents use fast/cheap models vs reasoning models.
-    # They are consulted by resolve_model() unless MODEL_PROVIDER_ENFORCE_ALL
-    # is set (which overrides all to the same provider for strict consistency).
-    _FAST_TIER: frozenset[str] = frozenset(
-        {
-            "frontend",
-            "docs",
-            "ux",
-            "ba",
-            "holiday_planner",
-            "region_analyzer",
-            "current_events",
-            "weather",
-        }
-    )
-    _REASONER_TIER: frozenset[str] = frozenset(
-        {
-            "backend",
-            "test",
-            "review",
-            "security",
-            "quality_gate",
-            "sre",
-            "database",
-            "devops",
-            "cto",
-            "asymmetric_reviewer",
-            "accountant",
-            "price_analyst",
-            "market_shark",
-            "crypto_oracle",
-        }
-    )
+    # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
+    # to live here were removed. They were never actually read by
+    # resolve_model() (or anything else in this module) — despite the old
+    # docstring's claim, resolve_model() only ever maps the per-agent model
+    # name through model_provider, it never special-cased agents by tier.
+    # Now that every *_model field is pinned to the same "claude-sonnet-5"
+    # value, keeping unused fast/reasoner groupings around would only
+    # mislead readers into thinking agents still get different models.
 
     def resolve_model(self, model_name: str) -> str:
         """Resolve an agent-level model name to a fully-qualified pydantic_ai model spec.
 
-        Capability-tier mapping ensures fast agents (frontend, docs, ux) use
-        cheaper/faster models, while reasoning agents (backend, review, security)
-        use DeepSeek-reasoner. This is the default behavior.
+        Every agent currently defaults to the same model_name
+        ("claude-sonnet-5"); this method is only responsible for turning that
+        name into a provider-qualified pydantic_ai model spec, based on
+        model_provider. It does not apply any per-agent tiering.
 
-        When MODEL_PROVIDER is set, each model name is prefixed with that
-        provider. The tiered defaults per agent are preserved.
+        When MODEL_PROVIDER is set, each model name is prefixed with (or
+        otherwise mapped through) that provider.
 
-        When MODEL_PROVIDER_ENFORCE_ALL is set to true, ALL agents use the
-        same model (provider's top model). This overrides tier decisions for
-        strict consistency (e.g. when MCP JSON handoff requires identical
-        output structure).
+        Examples with MODEL_PROVIDER=litellm (the default):
+        - backend_model="claude-sonnet-5"  → "openai:claude-sonnet-5"
+          (LiteLLM's OpenAI-compatible proxy resolves the "claude-sonnet-5"
+          alias to Anthropic Claude Sonnet, with its own fallback chain.)
 
-        Examples with MODEL_PROVIDER=deepseek:
+        With MODEL_PROVIDER=deepseek:
         - backend_model="deepseek-reasoner"  → "deepseek:deepseek-reasoner"
-        - frontend_model="deepseek-chat"     → "deepseek:deepseek-chat"
-        - ux_model="deepseek-chat"           → "deepseek:deepseek-chat"
-        - docs_model="deepseek-chat"         → "deepseek:deepseek-chat"
 
         With MODEL_PROVIDER=openai:
         - backend_model="deepseek-reasoner"  → "openai:gpt-4o"
-        - frontend_model="deepseek-chat"     → "openai:gpt-4o"
         """
         provider = self.model_provider
         if provider:

@@ -17,8 +17,11 @@ Model routing is provider-agnostic via `Settings.resolve_model()` in
 - `MODEL_PROVIDER=litellm` (default) — every agent call goes through an OpenAI-compatible
   LiteLLM proxy (`LITELLM_BASE_URL`, auth via `LITELLM_VIRTUAL_KEY`/`LITELLM_MASTER_KEY`).
 - `MODEL_PROVIDER=deepseek|openai|gemini|vertexai` — routes natively to that provider.
-- Per-agent model fields (`backend_model`, `frontend_model`, ...) plus `_FAST_TIER` /
-  `_REASONER_TIER` sets in `settings.py` assign cheap vs. reasoning models per agent role.
+- Per-agent model fields (`backend_model`, `frontend_model`, ...) in `settings.py` currently
+  all default to the same `"claude-sonnet-5"` alias (resolved by the LiteLLM proxy to
+  Anthropic Claude Sonnet, with its own fallback chain) rather than being split by
+  fast/reasoner tier. The `_FAST_TIER`/`_REASONER_TIER` frozensets that used to live here
+  were removed — they were never actually read by `resolve_model()`.
 
 Agents are registered into a shared `AgentRegistry` (`pydantic_agents/core/registry.py`) via
 `pydantic_agents/agents/registration.py`. **Tools are attached lazily, not via `@agent.tool`
@@ -98,9 +101,8 @@ yet fixed here — tracked for follow-up:
    constructors alongside the default singleton.
 8. **Inconsistent `deps_factory` usage in `registration.py`** — utility agents require a
    `deps_factory` lambda, SDLC agents never pass one even when they declare `deps_type`.
-9. **Three manual touch points to add one new agent**: a `settings.py` field, a tier-set
-   entry (`_FAST_TIER`/`_REASONER_TIER`), and a `registration.py` entry — no validation
-   keeps these in sync.
+9. **Two manual touch points to add one new agent**: a `settings.py` field and a
+   `registration.py` entry — no validation keeps these in sync.
 
 ## Relationship to pydantic_ai + LiteLLM
 
