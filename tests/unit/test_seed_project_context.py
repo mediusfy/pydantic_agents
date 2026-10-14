@@ -23,7 +23,7 @@ def test_seed_namespaces_ids_and_tags_project(tmp_path, project_arg, expected_pr
     assert "Indexed 1 files" in out
     _, docs, metas, ids = add.call_args.args
     assert docs == ["hello"]
-    assert ids == [f"{expected_project}:file:readme.md"]
+    assert ids == [f"{expected_project}:file:readme.md#0"]
     assert metas[0]["project"] == expected_project
 
 
@@ -38,4 +38,20 @@ def test_seed_skips_vendored_dirs(tmp_path):
         mcp_server.seed_project_context(str(root))
 
     ids = [c.args[3][0] for c in add.call_args_list]
-    assert ids == ["beta:file:docs::architecture.md"]
+    assert ids == ["beta:file:docs::architecture.md#0"]
+
+
+@pytest.mark.parametrize(
+    "text,max_chars,expected_chunks",
+    [
+        ("short", 900, 1),
+        ("a\n\n" * 3 + "b", 900, 1),
+        ("\n\n".join(["p" * 400] * 3), 900, 2),
+        ("word " * 500, 900, 3),
+        ("", 900, 0),
+    ],
+)
+def test_chunk_text_respects_limit(text, max_chars, expected_chunks):
+    chunks = mcp_server._chunk_text(text, max_chars)
+    assert len(chunks) == expected_chunks
+    assert all(len(c) <= max_chars for c in chunks)

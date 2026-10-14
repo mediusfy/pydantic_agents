@@ -476,6 +476,36 @@ async def wait_for_task(task_id: str, timeout_seconds: int = 300) -> str:
 # ── Vector DB Tools for Async Task Context ────────────────────────────────
 
 
+def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
+    """Split text into chunks of at most ``max_chars`` on paragraph boundaries.
+
+    The embedding model only sees roughly the first 256 word pieces (~1 KB), so
+    whole long files would be indexed by their opening section alone.
+    """
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        para = para.strip()
+        if not para:
+            continue
+        while len(para) > max_chars:  # oversized paragraph: hard-split on whitespace
+            cut = para.rfind(" ", 0, max_chars)
+            cut = cut if cut > 0 else max_chars
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(para[:cut].strip())
+            para = para[cut:].strip()
+        if current and len(current) + len(para) + 2 > max_chars:
+            chunks.append(current)
+            current = para
+        else:
+            current = f"{current}\n\n{para}" if current else para
+    if current:
+        chunks.append(current)
+    return chunks
+
+
 @mcp.tool()
 def seed_project_context(project_path: str, project: str = "") -> str:
     """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
@@ -550,12 +580,15 @@ def seed_project_context(project_path: str, project: str = "") -> str:
                     domain = "architecture"
 
                 sanitized = rel.replace("/", "::").replace(chr(92), "::")
-                doc_id = f"{project}:file:{sanitized}"
+                chunks = _chunk_text(content)
                 vector_db.add_documents(
                     domain,
-                    [content],
-                    [{"source": fp, "domain": domain, "file": rel, "project": project}],
-                    [doc_id],
+                    chunks,
+                    [
+                        {"source": fp, "domain": domain, "file": rel, "project": project, "chunk": i}
+                        for i in range(len(chunks))
+                    ],
+                    [f"{project}:file:{sanitized}#{i}" for i in range(len(chunks))],
                 )
                 files_indexed += 1
             except Exception as e:
