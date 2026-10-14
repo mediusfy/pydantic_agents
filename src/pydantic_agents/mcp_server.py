@@ -494,8 +494,18 @@ def seed_project_context(project_path: str, project: str = "") -> str:
 
     project = project or os.path.basename(os.path.normpath(project_path))
     skip_dirs = {
-        ".git", "node_modules", ".venv", "venv", "site-packages", "vendor", "dist", "build",
-        "__pycache__", ".tox", ".terraform", ".worktrees",
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "site-packages",
+        "vendor",
+        "dist",
+        "build",
+        "__pycache__",
+        ".tox",
+        ".terraform",
+        ".worktrees",
     }
 
     files_indexed = 0
