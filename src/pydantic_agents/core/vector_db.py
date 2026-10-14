@@ -248,6 +248,7 @@ class VectorDBManager:
         collection_name: str,
         query: str,
         n_results: int = 3,
+        project: str | None = None,
     ) -> list[str]:
         try:
             _require_vector_deps()
@@ -256,27 +257,46 @@ class VectorDBManager:
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
             pool = await _get_pool()
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
-                    f"""
-                    SELECT content
-                    FROM v_{collection_name}
-                    ORDER BY embedding <=> $1::vector
-                    LIMIT $2
-                    """,
-                    embedding_str,
-                    n_results,
-                )
+                if project:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT content
+                        FROM v_{collection_name}
+                        WHERE metadata->>'project' = $3
+                        ORDER BY embedding <=> $1::vector
+                        LIMIT $2
+                        """,
+                        embedding_str,
+                        n_results,
+                        project,
+                    )
+                else:
+                    rows = await conn.fetch(
+                        f"""
+                        SELECT content
+                        FROM v_{collection_name}
+                        ORDER BY embedding <=> $1::vector
+                        LIMIT $2
+                        """,
+                        embedding_str,
+                        n_results,
+                    )
                 return [row["content"] for row in rows]
         except OrgitrationDependencyError as exc:
             logger.warning("Vector DB search called but vector dependencies are not installed: %s", exc)
             return ["Vector DB not available — install heavy dependencies (sentence-transformers, asyncpg, pgvector)"]
 
-    def search(self, collection_name: str, query: str, n_results: int = 3) -> list[str]:
-        """Synchronous convenience wrapper (avoids event-loop deadlock)."""
-        return self._run_sync(self._search(collection_name, query, n_results))
+    def search(self, collection_name: str, query: str, n_results: int = 3, project: str | None = None) -> list[str]:
+        """Synchronous convenience wrapper (avoids event-loop deadlock).
 
-    async def async_search(self, collection_name: str, query: str, n_results: int = 3) -> list[str]:
-        return await _bridge(self._search(collection_name, query, n_results))
+        ``project`` restricts results to documents tagged with that project at seed time.
+        """
+        return self._run_sync(self._search(collection_name, query, n_results, project))
+
+    async def async_search(
+        self, collection_name: str, query: str, n_results: int = 3, project: str | None = None
+    ) -> list[str]:
+        return await _bridge(self._search(collection_name, query, n_results, project))
 
     def ingest_url(self, collection_name: str, url: str) -> str:
         """Fetch a URL, split into chunks, and index into pgvector."""
