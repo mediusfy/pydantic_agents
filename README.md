@@ -124,5 +124,5 @@ kubectl -n pgvector port-forward pod/pgvector-0 15432:5432 &
 DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:15432/agents python scripts/seed_projects.py --apply
 ```
 
-Each project's old chunks are deleted before re-seeding, so removed docs disappear. `chatbot` is excluded by
+Chunks are upserted, then only ones whose source docs no longer exist are deleted; any error aborts before deleting. `chatbot` is excluded by
 default (`--exclude`). Use `query_context(..., project="<repo>")` to scope a search to one repo.

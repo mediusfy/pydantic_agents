@@ -2,9 +2,9 @@
 """Refresh the agents' vector knowledge base from recently active GitHub repos.
 
 For each non-archived repo in ``--org`` pushed within ``--days`` (minus
-``--exclude``), shallow-clone or update it under ``--clones-dir``, delete that
-project's existing chunks, and re-seed it with ``seed_project_context`` so docs
-removed upstream disappear and nothing is duplicated.
+``--exclude``), shallow-clone or update it under ``--clones-dir``, refresh that
+project's chunks with ``seed_project_context`` (upsert), then delete only chunks whose
+ids no longer exist upstream. Any seeding error aborts before anything is deleted.
 
 Dry run by default (prints what would be indexed). Pass ``--apply`` to write; that
 needs DATABASE_URL pointing at the pgvector ``agents`` database, e.g. through
@@ -17,7 +17,6 @@ needs DATABASE_URL pointing at the pgvector ``agents`` database, e.g. through
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import subprocess
 import sys
@@ -53,18 +52,51 @@ def sync_clone(org: str, name: str, clones_dir: Path) -> Path:
     return dest
 
 
-async def delete_project_rows(project: str) -> int:
+async def project_ids(project: str) -> set[tuple[str, str]]:
     from pydantic_agents.core.vector_db import _get_pool
 
     pool = await _get_pool()
-    deleted = 0
+    found: set[tuple[str, str]] = set()
     async with pool.acquire() as conn:
         for c in COLLECTIONS:
-            exists = await conn.fetchval("SELECT to_regclass($1)", f"v_{c}")
-            if exists:
-                res = await conn.execute(f"DELETE FROM v_{c} WHERE metadata->>'project' = $1", project)
-                deleted += int(res.split()[-1])
-    return deleted
+            if await conn.fetchval("SELECT to_regclass($1)", f"v_{c}"):
+                rows = await conn.fetch(f"SELECT id FROM v_{c} WHERE metadata->>'project' = $1", project)
+                found.update((c, r["id"]) for r in rows)
+    return found
+
+
+async def delete_ids(stale: set[tuple[str, str]]) -> None:
+    from pydantic_agents.core.vector_db import _get_pool
+
+    pool = await _get_pool()
+    async with pool.acquire() as conn:
+        for collection, doc_id in stale:
+            await conn.execute(f"DELETE FROM v_{collection} WHERE id = $1", doc_id)
+
+
+def refresh_project(mcp_server, name: str, path: Path) -> str:
+    """Upsert the project's chunks, then delete only ids that no longer exist upstream.
+
+    All DB access goes through vector_db's persistent background loop (``_run_sync``);
+    using ``asyncio.run`` here would bind the shared asyncpg pool to a loop that then closes.
+    """
+    vdb = mcp_server.vector_db
+    before = vdb._run_sync(project_ids(name))
+    written: set[tuple[str, str]] = set()
+    real_add = vdb.add_documents
+
+    def recording_add(collection, docs, metas, ids):
+        written.update((collection, i) for i in ids)
+        return real_add(collection, docs, metas, ids)
+
+    with patch.object(vdb, "add_documents", side_effect=recording_add):
+        summary = mcp_server.seed_project_context(str(path), name)
+    if "Errors:" in summary:
+        raise RuntimeError(f"{name}: seeding failed, nothing deleted\n{summary}")
+    stale = before - written
+    if stale:
+        vdb._run_sync(delete_ids(stale))
+    return f"{summary.splitlines()[0]}; upserted {len(written)} chunks, removed {len(stale)} stale"
 
 
 def main() -> int:
@@ -87,9 +119,7 @@ def main() -> int:
     for name in repos:
         path = sync_clone(args.org, name, clones)
         if args.apply:
-            removed = asyncio.run(delete_project_rows(name))
-            summary = mcp_server.seed_project_context(str(path), name).splitlines()[0]
-            print(f"{name}: removed {removed} old chunks; {summary}")
+            print(f"{name}: {refresh_project(mcp_server, name, path)}")
         else:
             with patch.object(mcp_server.vector_db, "add_documents") as add:
                 mcp_server.seed_project_context(str(path), name)
