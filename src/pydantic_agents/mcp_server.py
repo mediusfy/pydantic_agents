@@ -477,7 +477,7 @@ async def wait_for_task(task_id: str, timeout_seconds: int = 300) -> str:
 
 
 @mcp.tool()
-def seed_project_context(project_path: str) -> str:
+def seed_project_context(project_path: str, project: str = "") -> str:
     """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
 
     Scans the given project path for relevant context files (.md, .adr, rules/) and
@@ -485,9 +485,28 @@ def seed_project_context(project_path: str) -> str:
 
     Args:
         project_path: Absolute path to the project root (e.g., /Users/jocham/programming/projects/mediusfy/platform)
+        project: Project name used to namespace document ids and tag metadata so several
+                 repos can share the store without overwriting each other's README.md etc.
+                 Defaults to the basename of project_path.
     """
     import glob
     import os
+
+    project = project or os.path.basename(os.path.normpath(project_path))
+    skip_dirs = {
+        ".git",
+        "node_modules",
+        ".venv",
+        "venv",
+        "site-packages",
+        "vendor",
+        "dist",
+        "build",
+        "__pycache__",
+        ".tox",
+        ".terraform",
+        ".worktrees",
+    }
 
     files_indexed = 0
     errors = []
@@ -511,6 +530,8 @@ def seed_project_context(project_path: str) -> str:
         for fp in matches:
             if not os.path.isfile(fp):
                 continue
+            if skip_dirs.intersection(os.path.relpath(fp, project_path).split(os.sep)):
+                continue
             try:
                 with open(fp, encoding="utf-8") as f:
                     content = f.read()
@@ -529,11 +550,11 @@ def seed_project_context(project_path: str) -> str:
                     domain = "architecture"
 
                 sanitized = rel.replace("/", "::").replace(chr(92), "::")
-                doc_id = f"file:{sanitized}"
+                doc_id = f"{project}:file:{sanitized}"
                 vector_db.add_documents(
                     domain,
                     [content],
-                    [{"source": fp, "domain": domain, "file": rel}],
+                    [{"source": fp, "domain": domain, "file": rel, "project": project}],
                     [doc_id],
                 )
                 files_indexed += 1
