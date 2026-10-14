@@ -62,6 +62,9 @@ uv pip install -e ".[dev]"
 cp .env.example .env   # fill in LITELLM_VIRTUAL_KEY or a direct provider key
 ```
 
+Common tasks are wrapped in the `Makefile`; run `make help` for the list (`make install`,
+`make test`, `make lint`, `make ci`, `make serve`, `make seed`).
+
 ```python
 from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core.registry import registry
@@ -70,6 +73,42 @@ register_all_agents()
 agent = registry.get("cto")  # tools are attached here, lazily
 result = await agent.run("Review this proposed service architecture...")
 ```
+
+## Where the agents run
+
+In production the agents, the orchestration pipeline and the MCP server run in-cluster
+as the `pydantic-agents` Helm release (namespace `pydantic-agents`), and are exposed as
+MCP tools through the LiteLLM MCP gateway as `pydantic_agents-run_<name>`
+(e.g. `mcp__litellm__pydantic_agents-run_review`).
+
+- **Entrypoint:** the image runs `uvicorn pydantic_agents.mcp_server:mcp.sse_app` on port 8080.
+- **Model calls:** routed through the in-cluster LiteLLM proxy, so no upstream provider key
+  reaches the agent pod.
+- **Context:** each call auto-prepends vector-indexed context (ADRs, architecture rules,
+  conventions) for that agent, read from the pgvector `agents` database. See
+  [Seeding the knowledge base](#seeding-the-knowledge-base) for how it is refreshed.
+
+### How it is deployed
+
+1. Merging to `main` triggers `.github/workflows/docker.yml`, which builds the `Dockerfile`
+   (`linux/arm64`, since the cluster node is ARM) and pushes
+   `us-east1-docker.pkg.dev/home-lab-ai-pipelines/mediusfy/pydantic-agents:<short-sha>`
+   (and `:latest`) to Artifact Registry.
+2. The Helm chart (`k8s/charts/agents`) and its values (`values-pydantic-agents.yaml`) live in
+   the `mediusfy/infrastructure` repo, not here. Roll out a new version by updating the image
+   tag there.
+3. CI for this repo (`.github/workflows/ci.yml`) runs lint, tests and an MCP smoke check; run
+   the same locally with `make ci`.
+
+### More information
+
+- Deployment config: `mediusfy/infrastructure` (`k8s/charts/agents`, `values-pydantic-agents.yaml`).
+- Health: `kubectl -n pydantic-agents get pods`; the image needs the `vector` extra
+  (`pip install pydantic-agents[vector]`) for context retrieval.
+- Invocation guidance (which agents to call and when): `rules/mediusfy-agents.md` in the
+  `agent-hub` tools repo.
+- Migrated from the retired `mediusfy/agents` repo (archived 2026-10-14); its `agents-run_<name>`
+  tools are replaced by `pydantic_agents-run_<name>`.
 
 ## Known improvement areas (carried over from extraction review)
 
