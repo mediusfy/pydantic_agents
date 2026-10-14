@@ -605,7 +605,7 @@ def seed_project_context(project_path: str, project: str = "") -> str:
 
 
 @mcp.tool()
-def query_context(query: str, domain: str = "", top_k: int = 5) -> str:
+def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "") -> str:
     """Query the vector DB directly for relevant context about any topic.
 
     Searches all knowledge domains (or a specific one) and returns
@@ -616,6 +616,8 @@ def query_context(query: str, domain: str = "", top_k: int = 5) -> str:
         domain: Optional domain filter (adrs, architecture, conventions, project).
                 Empty string searches all domains.
         top_k: Max results per domain (default 5)
+        project: Optional project filter (e.g. "openclaw", "modulex", "infrastructure"), matching the
+                 name the documents were seeded under. Empty string searches all projects.
     """
     domains = [domain] if domain else ["adrs", "architecture", "conventions", "project"]
     all_results = []
@@ -623,7 +625,7 @@ def query_context(query: str, domain: str = "", top_k: int = 5) -> str:
     for d in domains:
         with logfire.span("mcp.query_context", domain=d, query_length=len(query), _level="info"):
             try:
-                results = vector_db.search(d, query, n_results=top_k)
+                results = vector_db.search(d, query, n_results=top_k, project=project or None)
                 if results:
                     all_results.append(f"\n=== Domain: {d} ===")
                     for i, r in enumerate(results, 1):
