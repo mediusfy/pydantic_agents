@@ -112,3 +112,17 @@ while LiteLLM centralizes provider auth, routing, and cost/usage tracking behind
 OpenAI-compatible endpoint. The pattern already works end-to-end here; the improvements
 above are about hardening the provider-routing edge cases and reducing per-agent
 boilerplate, not about the overall approach.
+
+
+## Seeding the knowledge base
+
+The agents prepend vector-indexed context (ADRs, architecture, conventions, READMEs) to each call.
+`scripts/seed_projects.py` refreshes it from recently pushed GitHub repos (dry run by default):
+
+```
+kubectl -n pgvector port-forward pod/pgvector-0 15432:5432 &
+DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:15432/agents python scripts/seed_projects.py --apply
+```
+
+Each project's old chunks are deleted before re-seeding, so removed docs disappear. `chatbot` is excluded by
+default (`--exclude`). Use `query_context(..., project="<repo>")` to scope a search to one repo.
