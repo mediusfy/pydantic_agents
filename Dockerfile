@@ -15,7 +15,9 @@ COPY src ./src
 # vector extra: pgvector/sentence-transformers for ADR/architecture context retrieval.
 # turso extra: pyturso for the optional embedded checkpoint backend (STATE_BACKEND=turso).
 # Inert unless that setting is enabled; the default backend is still disk.
-RUN pip install --no-cache-dir ".[vector,turso]" uvicorn
+# --only-binary :all: refuses sdists, so no third-party setup.py/build scripts run during the image
+# build. All dependencies ship linux/arm64 wheels for Python 3.12 (verified with a wheel-only resolve).
+RUN pip install --no-cache-dir --only-binary :all: ".[vector,turso]" uvicorn
 
 EXPOSE 8080
 
