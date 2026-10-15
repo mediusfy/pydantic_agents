@@ -13,3 +13,6 @@ build/
 # runtime artifacts written by tests / local runs
 session_trace.jsonl
 telemetry.jsonl
+
+# promptfoo
+.promptfoo/
