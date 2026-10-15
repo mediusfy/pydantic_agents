@@ -17,7 +17,7 @@ COPY src ./src
 # Inert unless that setting is enabled; the default backend is still disk.
 # --only-binary :all: refuses sdists, so no third-party setup.py/build scripts run during the image
 # build. All dependencies ship linux/arm64 wheels for Python 3.12 (verified with a wheel-only resolve).
-RUN pip install --no-cache-dir --only-binary :all: ".[vector,turso]" uvicorn
+RUN pip install --no-cache-dir --only-binary :all: ".[turso,vector]" uvicorn
 
 EXPOSE 8080
 
