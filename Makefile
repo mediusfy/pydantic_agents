@@ -50,13 +50,15 @@ seed-apply: ## Apply the refresh (needs DATABASE_URL, e.g. via kubectl port-forw
 docker-build: ## Build the image locally ($(IMAGE))
 	docker build -t $(IMAGE) .
 
-LOCK_ARGS = pyproject.toml requirements-build.in --extra vector --extra turso --generate-hashes \
-	--python-platform aarch64-unknown-linux-gnu --python-version 3.12 --only-binary :all:
+LOCK_ARGS = pyproject.toml requirements-build.in requirements-cpu.in --extra vector --extra turso --generate-hashes \
+	--python-platform aarch64-unknown-linux-gnu --python-version 3.12 --only-binary :all: \
+	--extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --emit-index-url
 
 lock: ## Regenerate requirements.lock (hash-pinned, linux/arm64 py3.12) used by the Dockerfile
 	uv pip compile $(LOCK_ARGS) -o requirements.lock
 
-lock-check: ## Fail if requirements.lock is stale relative to pyproject.toml
+lock-check: ## Fail if requirements.lock no longer satisfies pyproject.toml (new upstream releases are not drift)
+	cp requirements.lock .requirements.lock.check
 	uv pip compile $(LOCK_ARGS) -o .requirements.lock.check -q
 	@grep -v '^#' requirements.lock > .requirements.lock.a; grep -v '^#' .requirements.lock.check > .requirements.lock.b; \
 		diff -q .requirements.lock.a .requirements.lock.b >/dev/null; rc=$$?; \
