@@ -3,7 +3,7 @@
 IMAGE ?= pydantic-agents:dev
 PORT  ?= 8080
 
-.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke serve seed seed-apply docker-build ci clean
+.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke serve seed seed-apply docker-build ci clean eval
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -55,3 +55,6 @@ ci: lint test smoke ## Everything CI runs
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage dist build
 	find . -name __pycache__ -type d -not -path './.venv/*' -prune -exec rm -rf {} +
+
+eval: ## Run promptfoo agent evals (needs LITELLM_BASE_URL / LITELLM_VIRTUAL_KEY)
+	promptfoo eval

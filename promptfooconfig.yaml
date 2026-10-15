@@ -1,0 +1,54 @@
+# yaml-language-server: $schema=https://promptfoo.dev/config-schema.json
+description: pydantic-agents evals (agents run in-process, model calls via the LiteLLM proxy)
+
+# Needs LITELLM_BASE_URL and LITELLM_VIRTUAL_KEY (see .env.example); promptfoo
+# loads .env from the working directory.
+prompts:
+  - "{{request}}"
+
+providers:
+  - id: file://evals/provider.py
+    label: review
+    config:
+      agent: review
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: security
+    config:
+      agent: security
+      pythonExecutable: .venv/bin/python
+
+defaultTest:
+  options:
+    # Grader for llm-rubric assertions, through the same gateway as the agents.
+    provider:
+      id: openai:chat:claude-sonnet-5
+      config:
+        apiBaseUrl: "{{ env.LITELLM_BASE_URL }}"
+        apiKeyEnvar: LITELLM_VIRTUAL_KEY
+
+tests:
+  - description: hardcoded secret is flagged
+    vars:
+      request: |
+        Review this Go snippet for production readiness:
+
+        const apiKey = "sk-live-4eC39HqLyjWDarjtT1zdp7dc"
+        func charge(amount int) error { return stripe.Charge(apiKey, amount) }
+    assert:
+      - type: is-json
+      - type: llm-rubric
+        value: Identifies the hardcoded API key as a security violation.
+
+  - description: clean snippet is not rejected for secrets
+    vars:
+      request: |
+        Review this Go snippet for production readiness:
+
+        func charge(ctx context.Context, amount int) error {
+            key := os.Getenv("STRIPE_API_KEY")
+            return stripe.Charge(ctx, key, amount)
+        }
+    assert:
+      - type: llm-rubric
+        value: Does not claim that a secret is hardcoded in the snippet.
