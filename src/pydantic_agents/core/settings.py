@@ -8,6 +8,7 @@ Usage:
 """
 
 from pathlib import Path
+from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -70,6 +71,8 @@ class Settings(BaseSettings):
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     max_concurrent_llm_calls: int = 5
     checkpoint_dir: Path = Path("./.claw-checkpoints")
+    # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
+    state_backend: Literal["disk", "turso"] = "disk"
     vector_db_dir: Path = Path("./.claw-vectordb")
 
     go_version: str = "1.26"

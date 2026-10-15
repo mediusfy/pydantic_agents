@@ -46,6 +46,7 @@ ingest = [
     "langchain-text-splitters>=0.3,<0.4",
     "pypdf>=4.0,<5.0",
 ]
+turso = ["pyturso>=0.8.3,<0.9"]  # embedded Turso checkpoint backend (state_backend="turso")
 agy = []  # reserved for future bridge-only deps
 crewai = ["crewai>=0.109.0"]
 autogen = ["pyautogen>=0.7.0,<0.8.0"]

@@ -113,3 +113,12 @@ class LocalDiskStateRepository(StateRepositoryPort):
         except Exception as e:
             logger.warning(f"Error finding latest run: {e}")
             return None
+
+
+def build_state_repository(project_name: str) -> StateRepositoryPort:
+    """Return the repository selected by ``settings.state_backend`` (default: disk)."""
+    if settings.state_backend == "turso":
+        from pydantic_agents.core.adapters.turso_state_repository import TursoStateRepository
+
+        return TursoStateRepository(project_name)
+    return LocalDiskStateRepository(project_name)
