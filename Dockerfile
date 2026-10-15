@@ -13,7 +13,9 @@ COPY pyproject.toml README* ./
 COPY src ./src
 
 # vector extra: pgvector/sentence-transformers for ADR/architecture context retrieval.
-RUN pip install --no-cache-dir ".[vector]" uvicorn
+# turso extra: pyturso for the optional embedded checkpoint backend (STATE_BACKEND=turso).
+# Inert unless that setting is enabled; the default backend is still disk.
+RUN pip install --no-cache-dir ".[vector,turso]" uvicorn
 
 EXPOSE 8080
 

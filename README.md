@@ -114,9 +114,9 @@ database instead (design and rationale: `docs/turso-agent-databases-plan.md`).
 Prerequisites and caveats for enabling it in the cluster:
 
 - **Install the extra.** `turso` needs the optional `pyturso` dependency
-  (`pip install "pydantic-agents[turso]"`). The `Dockerfile` currently installs only
-  `.[vector]`, so with `STATE_BACKEND=turso` the pipeline fails at startup with a
-  `RuntimeError` until the image installs `.[vector,turso]`.
+  (`pip install "pydantic-agents[turso]"`). The `Dockerfile` installs `.[vector,turso]`, so
+  the image is ready; a build without the extra fails at startup with a `RuntimeError` when
+  `STATE_BACKEND=turso`.
 - **Persistence.** `state.db` lives under `CHECKPOINT_DIR`. Unless that path is on a volume,
   it is lost on pod restart, exactly like the disk backend. Surviving restarts (a PVC or
   Turso Sync) is not set up yet and is tracked in AP-36.
