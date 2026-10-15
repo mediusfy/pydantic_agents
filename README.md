@@ -100,9 +100,38 @@ MCP tools through the LiteLLM MCP gateway as `pydantic_agents-run_<name>`
 3. CI for this repo (`.github/workflows/ci.yml`) runs lint, tests and an MCP smoke check; run
    the same locally with `make ci`.
 
+### Checkpoint state backend (`STATE_BACKEND`)
+
+Pipeline checkpoints and stage events are stored on local disk by default. Set
+`STATE_BACKEND=turso` to use an embedded [Turso](https://docs.turso.tech/guides/agent-databases)
+database instead (design and rationale: `docs/turso-agent-databases-plan.md`).
+
+| Setting | Values | Default | Effect |
+|---|---|---|---|
+| `STATE_BACKEND` | `disk`, `turso` | `disk` | `disk`: one JSON file per `{run_id}_{stage}` under `CHECKPOINT_DIR/<project>/`. `turso`: a single `CHECKPOINT_DIR/<project>/state.db` holding `pipeline_checkpoints` and `pipeline_stage_events`. |
+| `CHECKPOINT_DIR` | path | `./.claw-checkpoints` | Parent directory for either backend. |
+
+Prerequisites and caveats for enabling it in the cluster:
+
+- **Install the extra.** `turso` needs the optional `pyturso` dependency
+  (`pip install "pydantic-agents[turso]"`). The `Dockerfile` currently installs only
+  `.[vector]`, so with `STATE_BACKEND=turso` the pipeline fails at startup with a
+  `RuntimeError` until the image installs `.[vector,turso]`.
+- **Persistence.** `state.db` lives under `CHECKPOINT_DIR`. Unless that path is on a volume,
+  it is lost on pod restart, exactly like the disk backend. Surviving restarts (a PVC or
+  Turso Sync) is not set up yet and is tracked in AP-36.
+- **Single writer.** One process should own a project's `state.db`; do not run several
+  replicas against the same file.
+- **Stage events** (retries and quality-gate verdicts per run) are only recorded with the
+  `turso` backend. Query them with `TursoStageEventRecorder(project).list_events(run_id)`.
+- **Secrets.** Embedded mode needs none. If Turso Sync is added later, its URL/auth token must
+  come from a SOPS-managed secret in the Helm release, never plaintext in values or this repo.
+- **Rollback.** Unset `STATE_BACKEND` (or set `disk`); existing runs on the other backend are
+  not migrated.
+
 ### More information
 
-- Deployment config: `mediusfy/infrastructure` (`k8s/charts/agents`, `values-pydantic-agents.yaml`).
+- Deployment config: `mediusfy/infrastructure` (`k8s/charts/agents`, `values-pydantic-agents.yaml`); set `STATE_BACKEND` there as an env value (see above).
 - Health: `kubectl -n pydantic-agents get pods`; the image needs the `vector` extra
   (`pip install pydantic-agents[vector]`) for context retrieval.
 - Invocation guidance (which agents to call and when): `rules/mediusfy-agents.md` in the
