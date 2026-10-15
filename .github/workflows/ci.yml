@@ -36,10 +36,25 @@ jobs:
           python-version: "3.12"
       - run: pip install -e .
       - run: python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
-  image:
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install uv
+      - run: make lock-check
+
+  image-smoke:
     # Builds the real production image (linux/arm64, natively) without pushing, so a broken
     # Dockerfile/lockfile or a bloated dependency set fails the PR instead of the post-merge push.
     runs-on: ubuntu-24.04-arm
+    timeout-minutes: 45
+    env:
+      # Baseline ~3.6 GB (CPU-only torch + Go/Node); the CUDA torch wheel made it ~10.8 GB. Raise deliberately.
+      IMAGE_SIZE_LIMIT_GB: "4.5"
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
@@ -55,12 +70,12 @@ jobs:
         run: |
           size=$(docker image inspect pydantic-agents:ci --format '{{.Size}}')
           echo "image size: $((size / 1000000)) MB"
-          # ~3.6GB with CPU-only torch + Go/Node; the CUDA torch wheel made it ~10.8GB.
-          if [ "$size" -gt 4500000000 ]; then echo "::error::image exceeds 4.5GB (CUDA torch back in the lockfile?)"; exit 1; fi
+          limit=$(python3 -c "print(int(float('$IMAGE_SIZE_LIMIT_GB') * 1e9))")
+          if [ "$size" -gt "$limit" ]; then echo "::error::image exceeds ${IMAGE_SIZE_LIMIT_GB} GB (CUDA torch back in the lockfile?)"; exit 1; fi
       - name: Smoke test inside the image
         run: |
           docker run --rm --entrypoint python pydantic-agents:ci -c "
-          import asyncio, torch, turso
+          import asyncio, torch, turso, sentence_transformers
           from pydantic_agents.mcp_server import mcp
           assert '+cpu' in torch.__version__, torch.__version__
           n = len(asyncio.run(mcp.list_tools()))
