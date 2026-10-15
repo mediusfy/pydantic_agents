@@ -2,7 +2,7 @@ import logging
 import uuid
 
 from pydantic_agents.core.adapters.agents import PydanticAIAgentProvider
-from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+from pydantic_agents.core.adapters.state_repository import build_state_repository
 from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter, WorkspaceContext
 from pydantic_agents.core.checkpoint import CheckpointManager
 from pydantic_agents.core.models.core import PipelineState
@@ -36,7 +36,7 @@ class OrgitrationPipeline:
         self.config = config
 
         # Initialize state repository with project isolation
-        repository = LocalDiskStateRepository(config.project)
+        repository = build_state_repository(config.project)
         self.checkpoint_mgr = CheckpointManager(repository=repository)
 
         # Workspace context pointing at the target project for repo-awareness
