@@ -90,6 +90,12 @@ MCP tools through the LiteLLM MCP gateway as `pydantic_agents-run_<name>`
 
 ### How it is deployed
 
+> **Dependency lockfile.** The image installs from `requirements.lock`, a hash-pinned
+> (`--require-hashes`, wheels only) resolve for linux/arm64 + Python 3.12 including the `vector` and
+> `turso` extras. After changing dependencies or extras in `pyproject.toml`, run `make lock` and commit
+> the result; `make lock-check` fails if it is stale. `requirements-build.in` lists the build backend
+> (hatchling) so the project itself can be installed with `--no-build-isolation`.
+
 1. Merging to `main` triggers `.github/workflows/docker.yml`, which builds the `Dockerfile`
    (`linux/arm64`, since the cluster node is ARM) and pushes
    `us-east1-docker.pkg.dev/home-lab-ai-pipelines/mediusfy/pydantic-agents:<short-sha>`
@@ -114,7 +120,7 @@ database instead (design and rationale: `docs/turso-agent-databases-plan.md`).
 Prerequisites and caveats for enabling it in the cluster:
 
 - **Install the extra.** `turso` needs the optional `pyturso` dependency
-  (`pip install "pydantic-agents[turso]"`). The `Dockerfile` installs `.[turso,vector]`, so
+  (`pip install "pydantic-agents[turso]"`). The image is built from `requirements.lock`, which includes it, so
   the image is ready; a build without the extra fails at startup with a `RuntimeError` when
   `STATE_BACKEND=turso`.
 - **Persistence.** `state.db` lives under `CHECKPOINT_DIR`. Unless that path is on a volume,

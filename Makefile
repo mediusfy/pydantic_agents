@@ -3,7 +3,7 @@
 IMAGE ?= pydantic-agents:dev
 PORT  ?= 8080
 
-.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke serve seed seed-apply docker-build ci clean
+.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke serve seed seed-apply docker-build lock lock-check ci clean
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -49,6 +49,19 @@ seed-apply: ## Apply the refresh (needs DATABASE_URL, e.g. via kubectl port-forw
 
 docker-build: ## Build the image locally ($(IMAGE))
 	docker build -t $(IMAGE) .
+
+LOCK_ARGS = pyproject.toml requirements-build.in --extra vector --extra turso --generate-hashes \
+	--python-platform aarch64-unknown-linux-gnu --python-version 3.12 --only-binary :all:
+
+lock: ## Regenerate requirements.lock (hash-pinned, linux/arm64 py3.12) used by the Dockerfile
+	uv pip compile $(LOCK_ARGS) -o requirements.lock
+
+lock-check: ## Fail if requirements.lock is stale relative to pyproject.toml
+	uv pip compile $(LOCK_ARGS) -o .requirements.lock.check -q
+	@grep -v '^#' requirements.lock > .requirements.lock.a; grep -v '^#' .requirements.lock.check > .requirements.lock.b; \
+		diff -q .requirements.lock.a .requirements.lock.b >/dev/null; rc=$$?; \
+		rm -f .requirements.lock.a .requirements.lock.b .requirements.lock.check; \
+		if [ $$rc -ne 0 ]; then echo "requirements.lock is stale; run 'make lock'"; exit 1; fi
 
 ci: lint test smoke ## Everything CI runs
 
