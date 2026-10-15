@@ -102,3 +102,12 @@ CREATE INDEX IF NOT EXISTS idx_checkpoints_updated ON pipeline_checkpoints(updat
 - Turso Sync from Python was **not** evaluated; that belongs to the deploy ticket (AP-36).
 - Shipped as the optional extra `pydantic-agents[turso]`; select with `STATE_BACKEND=turso`
   (default `disk`).
+
+## Stage events (AP-35)
+
+`pipeline_stage_events(id, run_id, stage, attempt, verdict, duration_ms, detail, created_at)` lives in the
+same per-project `state.db`. `run_existing_code_pipeline` records service_engineer, test_engineer,
+quality_gate, review and a final `pipeline` verdict per attempt via `StageEventRecorderPort`. The recorder is a
+no-op unless `STATE_BACKEND=turso`, and recording failures are swallowed so they cannot break a run.
+`ExistingCodeResult.run_id` identifies the run; query with `TursoStageEventRecorder(project).list_events(run_id)`.
+The project name is the basename of the codebase path.

@@ -19,12 +19,15 @@ import contextlib
 import logging
 import os
 import time
+import uuid
+from collections.abc import Awaitable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import logfire
 from pydantic_ai import UsageLimits
 
+from pydantic_agents.core.adapters.stage_events import StageEventRecorderPort, build_stage_event_recorder
 from pydantic_agents.core.models.core import Artifact
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.telemetry import telemetry
@@ -33,6 +36,8 @@ from pydantic_agents.core.utils import format_artifacts
 logger = logging.getLogger(__name__)
 
 MAX_RETRIES = 3
+
+_T = TypeVar("_T")
 
 
 @dataclass
@@ -49,6 +54,7 @@ class ExistingCodeResult:
     review_risk: str = ""
     errors: list[str] = field(default_factory=list)
     retries_used: int = 0
+    run_id: str = ""
 
 
 async def _run_stage(
@@ -85,6 +91,13 @@ async def _run_stage(
             await telemetry.log_call(agent_name, duration, success, metadata=span_attrs)
 
 
+async def _timed(coro: Awaitable[_T]) -> tuple[_T, int]:
+    """Await ``coro`` and return its value with the elapsed milliseconds."""
+    start = time.time()
+    value = await coro
+    return value, int((time.time() - start) * 1000)
+
+
 async def _run_quality_gate(artifacts: list[Artifact]) -> tuple[bool, int, list[str]]:
     """Run the quality gate (deterministic: lint, test, build)."""
     preview = format_artifacts(artifacts, max_chars=30_000, include_agent_header=False)
@@ -118,6 +131,18 @@ async def _run_code_review(artifacts: list[Artifact]) -> tuple[bool, str, list[s
     except Exception as e:
         logger.warning("Code Review failed: %s", e)
         return False, "unknown", [f"Code Review error: {e}"]
+
+
+def _record(
+    recorder: StageEventRecorderPort,
+    result: ExistingCodeResult,
+    stage: str,
+    attempt: int,
+    verdict: str,
+    started: float,
+    detail: str = "",
+) -> None:
+    recorder.record(result.run_id, stage, attempt, verdict, int((time.time() - started) * 1000), detail)
 
 
 def _build_remediation_prompt(
@@ -164,7 +189,9 @@ async def run_existing_code_pipeline(
     Returns:
         ExistingCodeResult with pass/fail, changed files, and check results.
     """
-    result = ExistingCodeResult()
+    result = ExistingCodeResult(run_id=str(uuid.uuid4()))
+    project = os.path.basename(os.path.realpath(codebase_path)) if codebase_path else ""
+    recorder = build_stage_event_recorder(project or "existing-code")
 
     logger.info("=== Existing Code Pipeline (Autonomous Remediation Loop) ===")
     logger.info("Change: %s", change_description)
@@ -188,6 +215,7 @@ async def run_existing_code_pipeline(
         else:
             eng_prompt = _build_remediation_prompt(change_description, codebase_path, result.errors, attempt)
 
+        eng_start = time.time()
         try:
             eng_result, _ = await _run_stage(
                 f"service_engineer.attempt_{attempt}",
@@ -199,6 +227,7 @@ async def run_existing_code_pipeline(
             msg = f"Service Engineer failed on attempt {attempt}: {e}"
             logger.error(msg)
             result.errors.append(msg)
+            _record(recorder, result, "service_engineer", attempt, "error", eng_start, str(e))
             continue  # Try again if retries remain
 
         eng_artifact = eng_result.output
@@ -206,15 +235,19 @@ async def run_existing_code_pipeline(
         result.changed_files = list(eng_artifact.files.keys())
         logger.info("Changed files: %s", result.changed_files)
 
+        _record(recorder, result, "service_engineer", attempt, "ok", eng_start, f"{len(result.changed_files)} files")
+
         if not result.changed_files:
             logger.warning("Service Engineer returned no changed files.")
             result.passed = True
+            _record(recorder, result, "pipeline", attempt, "passed", eng_start, "no changes")
             return result
 
         # ── Stage 2: Test Engineer (if enabled) ────────────────────────
         test_failures: list[str] = []
         if run_tests:
             logger.info("Attempt %d/%d — Test Engineer...", attempt + 1, MAX_RETRIES + 1)
+            test_start = time.time()
             try:
                 test_preview = format_artifacts(result.artifacts, max_chars=15_000, include_agent_header=False)
                 test_prompt = (
@@ -233,15 +266,18 @@ async def run_existing_code_pipeline(
                     result.artifacts.append(test_result.output)
                     result.test_files = list(test_result.output.files.keys())
                     logger.info("Test files: %s", result.test_files)
+                _record(recorder, result, "test_engineer", attempt, "ok", test_start)
             except Exception as e:
                 msg = f"Test Engineer failed on attempt {attempt}: {e}"
                 logger.warning(msg)
                 test_failures.append(msg)
                 result.errors.append(msg)
+                _record(recorder, result, "test_engineer", attempt, "error", test_start, str(e))
 
         # ── Stage 3: Parallel Verification Gates ───────────────────────
         if not run_quality_gate and not run_review:
             result.passed = True
+            _record(recorder, result, "pipeline", attempt, "passed", eng_start, "gates disabled")
             return result
 
         logger.info(
@@ -263,14 +299,14 @@ async def run_existing_code_pipeline(
         ):
             tasks: list[Any] = []
             if run_quality_gate:
-                tasks.append(_run_quality_gate(result.artifacts))
+                tasks.append(_timed(_run_quality_gate(result.artifacts)))
             else:
-                tasks.append(asyncio.sleep(0, result=(True, 0, [])))
+                tasks.append(_timed(asyncio.sleep(0, result=(True, 0, []))))
 
             if run_review:
-                tasks.append(_run_code_review(result.artifacts))
+                tasks.append(_timed(_run_code_review(result.artifacts)))
             else:
-                tasks.append(asyncio.sleep(0, result=(True, "low", [])))
+                tasks.append(_timed(asyncio.sleep(0, result=(True, "low", []))))
 
             gate_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -279,19 +315,32 @@ async def run_existing_code_pipeline(
             if isinstance(qr, BaseException):
                 qg_passed = False
                 qg_feedback = [f"Quality Gate exception: {qr}"]
+                recorder.record(result.run_id, "quality_gate", attempt, "error", 0, str(qr))
             else:
-                qg_passed, score, qg_feedback = qr
+                (qg_passed, score, qg_feedback), qg_ms = qr
                 result.quality_gate_score = score
                 result.quality_gate_feedback = qg_feedback
+                recorder.record(
+                    result.run_id,
+                    "quality_gate",
+                    attempt,
+                    "passed" if qg_passed else "failed",
+                    qg_ms,
+                    "; ".join(qg_feedback),
+                )
             gate_idx += 1
 
             rr = gate_results[gate_idx]
             if isinstance(rr, BaseException):
                 cv_passed = False
                 cv_feedback = [f"Code Review exception: {rr}"]
+                recorder.record(result.run_id, "review", attempt, "error", 0, str(rr))
             else:
-                cv_passed, risk, cv_feedback = rr
+                (cv_passed, risk, cv_feedback), cv_ms = rr
                 result.review_risk = risk
+                recorder.record(
+                    result.run_id, "review", attempt, "approved" if cv_passed else "rejected", cv_ms, f"risk={risk}"
+                )
                 # Collect code review feedback as errors too
                 result.errors.extend(cv_feedback)
             gate_idx += 1
@@ -309,6 +358,7 @@ async def run_existing_code_pipeline(
             result.passed = True
             result.retries_used = attempt
             logger.info("All gates passed on attempt %d.", attempt + 1)
+            _record(recorder, result, "pipeline", attempt, "passed", eng_start)
             _sync_memory_after_pipeline()
             return result
 
@@ -327,6 +377,7 @@ async def run_existing_code_pipeline(
     # All retries exhausted
     result.passed = False
     result.retries_used = MAX_RETRIES
+    recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
     logger.error(
         "Pipeline failed after %d retries. Errors: %s",
         MAX_RETRIES,
