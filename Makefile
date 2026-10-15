@@ -50,6 +50,8 @@ seed-apply: ## Apply the refresh (needs DATABASE_URL, e.g. via kubectl port-forw
 docker-build: ## Build the image locally ($(IMAGE))
 	docker build -t $(IMAGE) .
 
+# The lock targets the production image only: linux/arm64, CPython 3.12. Installing it on another platform
+# (e.g. x86 dev machines) fails with "no matching wheel"; use `pip install -e .[dev]` locally instead.
 LOCK_ARGS = pyproject.toml requirements-build.in requirements-cpu.in --extra vector --extra turso --generate-hashes \
 	--python-platform aarch64-unknown-linux-gnu --python-version 3.12 --only-binary :all: \
 	--extra-index-url https://download.pytorch.org/whl/cpu --index-strategy unsafe-best-match --emit-index-url
@@ -65,7 +67,7 @@ lock-check: ## Fail if requirements.lock no longer satisfies pyproject.toml (new
 		rm -f .requirements.lock.a .requirements.lock.b .requirements.lock.check; \
 		if [ $$rc -ne 0 ]; then echo "requirements.lock is stale; run 'make lock'"; exit 1; fi
 
-ci: lint test smoke ## Everything CI runs
+ci: lint test smoke lock-check ## Everything CI runs
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage dist build

@@ -34,6 +34,8 @@ WORKDIR /opt/pydantic-agents
 # Dependencies come from the hash-pinned lockfile (requirements.lock, linux/arm64, cp312), so the
 # build is reproducible and tamper-evident. --only-binary :all: refuses sdists, so no third-party
 # build scripts run. Regenerate with `make lock` after changing dependencies in pyproject.toml.
+# The lock is platform-specific: build this image for linux/arm64 only (an amd64 build fails on wheel
+# selection, by design).
 # Extras baked in: vector (ADR/architecture retrieval) and turso (STATE_BACKEND=turso, inert by default).
 COPY requirements.lock ./
 RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requirements.lock

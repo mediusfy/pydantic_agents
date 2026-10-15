@@ -36,3 +36,14 @@ jobs:
           python-version: "3.12"
       - run: pip install -e .
       - run: python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
+
+  lock:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install uv
+      - run: make lock-check
