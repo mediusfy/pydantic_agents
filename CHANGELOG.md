@@ -26,6 +26,9 @@ fresh **Unreleased** section above it.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
+### Fixed
+- Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+
 ## [0.2.0]
 
 ### Added
