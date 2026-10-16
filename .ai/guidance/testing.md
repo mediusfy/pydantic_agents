@@ -6,7 +6,7 @@
 - `tests/unit/` holds one file per module or feature (`test_<module>.py`, plus `agy_bridge/`). `tests/integration/` runs the pipeline end to end with mocked agent providers (`AsyncMock`), not a live model. `tests/evaluation/` holds shared fixtures and evaluators (`fixtures.py`, `decision_evaluator.py`, `hallucination_detector.py`) used by both.
 - `pytest` runs with `asyncio_mode = "auto"`, so async tests need no marker. Markers `unit` and `integration` exist; only a few tests use them.
 - `core/models/factory.py` returns a `"mock-key"` LiteLLM key when `pytest` is imported and no key is set. Tests must not rely on reaching a real proxy, provider, Postgres or the network; mock them.
-- `tests/unit/test_check_changelog.py` covers `scripts/check_changelog.py`.
+- `tests/unit/test_check_changelog.py` covers `scripts/check_changelog.py`, and `tests/unit/test_ai_context.py` covers `.github/scripts/ai_context.py` (loaded by path with `importlib`).
 
 ## Smoke
 
