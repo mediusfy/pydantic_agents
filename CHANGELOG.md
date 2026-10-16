@@ -14,6 +14,7 @@ fresh **Unreleased** section above it.
 ### Added
 - promptfoo agent evals: `promptfooconfig.yaml`, an in-process provider in
   `evals/provider.py`, and `make eval` (#18).
+- README section on running the evals, including the gateway key requirements.
 - CI image smoke test: builds the linux/arm64 image on pull requests, gates its
   size and checks torch/turso/Go/Node inside it (#19).
 - Changelog, `AGENTS.md`, a pull request template and a CI check that every
