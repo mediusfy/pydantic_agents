@@ -21,6 +21,8 @@ fresh **Unreleased** section above it.
   pull request updates this file.
 
 ### Changed
+- `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
+  `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
