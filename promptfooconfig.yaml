@@ -40,7 +40,7 @@ tests:
       - type: llm-rubric
         value: Identifies the hardcoded API key as a security violation.
 
-  - description: clean snippet is not rejected for secrets
+  - description: env-var key is not reported as a hardcoded secret
     vars:
       request: |
         Review this Go snippet for production readiness:
@@ -50,5 +50,14 @@ tests:
             return stripe.Charge(ctx, key, amount)
         }
     assert:
+      - type: is-json
+      # The review agent also rejects this snippet for unrelated rules (mTLS), so
+      # approval is not asserted; only that the secret finding is absent.
       - type: llm-rubric
-        value: Does not claim that a secret is hardcoded in the snippet.
+        value: >-
+          Fail if any item in the response reports a hardcoded, embedded or leaked
+          secret, token, API key or credential as a problem. Findings about other
+          topics (mTLS, error handling, context use) are irrelevant and must not
+          cause a failure. Noting that the key is read from the environment is fine.
+      - type: not-icontains
+        value: sk-live
