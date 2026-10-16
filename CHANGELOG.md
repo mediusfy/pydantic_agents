@@ -15,6 +15,9 @@ fresh **Unreleased** section above it.
 - promptfoo agent evals: `promptfooconfig.yaml`, an in-process provider in
   `evals/provider.py`, and `make eval` (#18).
 - README section on running the evals, including the gateway key requirements.
+- Eval: the clean-snippet case now fails if the agent reports any hardcoded secret, instead of a
+  loose rubric that a rejection for unrelated reasons could satisfy.
+- SonarCloud automatic analysis skips `promptfooconfig.yaml` (eval data, not code).
 - CI image smoke test: builds the linux/arm64 image on pull requests, gates its
   size and checks torch/turso/Go/Node inside it (#19).
 - Changelog, `AGENTS.md`, a pull request template and a CI check that every
