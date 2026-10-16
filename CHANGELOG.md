@@ -22,6 +22,9 @@ fresh **Unreleased** section above it.
   size and checks torch/turso/Go/Node inside it (#19).
 - Changelog, `AGENTS.md`, a pull request template and a CI check that every
   pull request updates this file.
+- Agent guidance in `.ai/` (coding standards, testing, architecture, security, a
+  full-repository review prompt), `CLAUDE.md`, and a workflow that copies each merged
+  PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
