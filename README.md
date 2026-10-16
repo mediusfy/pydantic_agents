@@ -74,6 +74,30 @@ agent = registry.get("cto")  # tools are attached here, lazily
 result = await agent.run("Review this proposed service architecture...")
 ```
 
+## Running evals
+
+`make eval` (or `promptfoo eval`) runs the promptfoo suite in `promptfooconfig.yaml`. The
+provider in `evals/provider.py` runs registered agents in-process, so only the LiteLLM
+gateway is needed (no Postgres), and the `llm-rubric` grader goes through the same gateway.
+The key must be allowed to call `claude-sonnet-5`, which the gateway aliases to
+`deepseek-v4-pro`:
+
+```bash
+export LITELLM_BASE_URL=https://litellm.jocham.io
+export LITELLM_VIRTUAL_KEY=sk-...   # e.g. LITELLM_JUDGE_KEY from ~/.openclaw/.env, quotes stripped
+promptfoo eval
+```
+
+Quick check that a key can call chat models (an empty `data` list means it cannot, and
+evals will fail with a 403):
+
+```bash
+curl -s "$LITELLM_BASE_URL/v1/models" -H "Authorization: Bearer $LITELLM_VIRTUAL_KEY"
+```
+
+Add a case by appending to `tests:` in `promptfooconfig.yaml`, or cover another agent with
+a new `providers:` entry whose `config.agent` is its registry name.
+
 ## Where the agents run
 
 In production the agents, the orchestration pipeline and the MCP server run in-cluster

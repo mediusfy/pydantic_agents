@@ -8,15 +8,19 @@ Structured outputs are returned as JSON so ``is-json`` / ``javascript``
 assertions can inspect fields.
 """
 
+import os
 from typing import Any
 
 from pydantic import BaseModel
+
+# Evals do not export traces; silence logfire's "not configured" warning on every tool call.
+os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core.registry import registry
 
 
-async def call_api(prompt: str, options: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+async def call_api(prompt: str, options: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001 - promptfoo signature
     agent_name = options.get("config", {}).get("agent")
     if not agent_name:
         return {"error": "provider config.agent is required"}
