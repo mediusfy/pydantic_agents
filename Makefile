@@ -59,7 +59,8 @@ LOCK_ARGS = pyproject.toml requirements-build.in requirements-cpu.in --extra vec
 lock: ## Regenerate requirements.lock (hash-pinned, linux/arm64 py3.12) used by the Dockerfile
 	uv pip compile $(LOCK_ARGS) -o requirements.lock
 
-lock-check: ## Fail if requirements.lock no longer satisfies pyproject.toml (new upstream releases are not drift)
+lock-check: ## Fail if requirements.lock or uv.lock no longer satisfies pyproject.toml (new upstream releases are not drift)
+	uv lock --check
 	cp requirements.lock .requirements.lock.check
 	uv pip compile $(LOCK_ARGS) -o .requirements.lock.check -q
 	@grep -v '^#' requirements.lock > .requirements.lock.a; grep -v '^#' .requirements.lock.check > .requirements.lock.b; \

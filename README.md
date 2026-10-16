@@ -117,7 +117,9 @@ MCP tools through the LiteLLM MCP gateway as `pydantic_agents-run_<name>`
 > **Dependency lockfile.** The image installs from `requirements.lock`, a hash-pinned
 > (`--require-hashes`, wheels only) resolve for linux/arm64 + Python 3.12 including the `vector` and
 > `turso` extras. After changing dependencies or extras in `pyproject.toml`, run `make lock` and commit
-> the result; `make lock-check` fails if it is stale. `requirements-build.in` lists the build backend
+> the result; `make lock-check` fails if it is stale. `uv.lock` (what `make install` / `uv sync` use for local
+> development) is tracked too: run `uv lock` after changing dependencies and commit it; `make lock-check` checks it as well.
+> `requirements-build.in` lists the build backend
 > (hatchling) so the project itself can be installed with `--no-build-isolation`.
 
 1. Merging to `main` triggers `.github/workflows/docker.yml`, which builds the `Dockerfile`
