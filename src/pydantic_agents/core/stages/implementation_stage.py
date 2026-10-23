@@ -7,6 +7,7 @@ from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineSt
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.session_recorder import recorder
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.stages.base import StageRunner
 
 logger = logging.getLogger(__name__)
@@ -186,7 +187,7 @@ class ImplementationStage(StageRunner):
                     f"2. Postgres database adapters (adapters/postgres_repo.go)\n"
                     f"3. Pub/Sub event handlers and definitions (ports/events.go)\n"
                     f"4. Core business logic service wiring (domain/service.go)\n"
-                    f"5. Entry point with HTTP/gRPC server (cmd/server/main.go)\n\n"
+                    f"5. Entry point with HTTP/gRPC server ({settings.go_entrypoint})\n\n"
                     f"All files must compile together. "
                     f"Run `run_go_build` to self-validate before returning.{backend_ctx_str}"
                 )

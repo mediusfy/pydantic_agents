@@ -82,5 +82,5 @@ register_tool(
     "validate_frontend_code",
     validate_frontend_code,
     "Validates a Vue/TSX component using the local compiler/linter. Must be used before returning final code.",
-    ["frontend", "validation"],
+    ["frontend_validation"],
 )

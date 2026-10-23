@@ -44,10 +44,29 @@ fresh **Unreleased** section above it.
   are missing optional packages and stubs; mypy is not run in CI).
 - Review agent no longer hardcodes the `payments`/`notifications`/`users` contexts, and its prompt asks for mTLS on
   service-to-service traffic rather than "everywhere".
+- Tool grants are explicit: an agent's own name no longer acts as a tool category, so a category named `docs` or
+  `devops` can't silently grant tools to the agent of the same name. New `go_build`, `test_run`,
+  `frontend_validation` and `config_validation` categories trim over-broad sets: backend loses
+  `validate_frontend_code`/`execute_test_suite`, SRE loses the Go build tools, test agents lose the frontend validator.
+- `register_tool` raises on a duplicate tool name (`search_files` was registered twice and the last import won).
+- `planner`, `quality_gate` and `service_engineer` have their own `*_model` settings instead of borrowing
+  `cto_model`, `review_model` and `backend_model`.
+- Generated CI, Makefile, Dockerfile and implementation prompt share one entry point (`GO_ENTRYPOINT`, default
+  `cmd/server/main.go`); the CI pins golangci-lint and govulncheck (`GOLANGCI_LINT_VERSION`,
+  `GOVULNCHECK_VERSION`); compose uses the current file format and `docker compose`.
+- `generate_test_suite`, `generate_go_table_driven_tests` and `create_component` make one structured call to a
+  private tool-less agent (they were two calls through registered agents that could delegate or write files) and
+  pass the parent's usage so its limits apply. The Go test generator now receives the source it is testing.
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
   `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
   the image shrank from 10.8 GB to 3.6 GB (#16).
+
+### Removed
+- Placeholder tools that returned empty or comment-only files: `scaffold_go_service`, `provision_k8s_cluster`, and
+  the BA agent's `define_user_stories`/`map_event_triggers` (nested LLM calls that duplicated the agent's own
+  structured output). `apply_helm_chart` is now `generate_helm_chart` and returns a real chart; `generate_dockerfile`
+  returns a real multi-stage, non-root Dockerfile.
 
 ### Fixed
 - Delegated agent calls run under their parent's concurrency permit instead of acquiring a second one, removing
@@ -56,6 +75,7 @@ fresh **Unreleased** section above it.
   agent's name so `log_activity` no longer logs `agent_name="system"`.
 - Prompts no longer claim "no local I/O" (frontend, sre, test_eng) or demand "100% test coverage" (test_eng), and
   the reviewer is asked to verify earlier feedback is resolved rather than to "address" it.
+- The generated database migration's trigger is idempotent (`DROP TRIGGER IF EXISTS` before `CREATE TRIGGER`).
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
 - Quality gate no longer crashes on a failed security audit (it read a nonexistent `vulnerabilities` field);
   the audit's `feedback` now goes to the retry loop.

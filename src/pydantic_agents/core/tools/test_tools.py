@@ -85,5 +85,5 @@ register_tool(
     "execute_test_suite",
     execute_test_suite,
     "Executes a test suite against target code files to verify correctness. Returns the trace.",
-    ["test", "testing", "validation"],
+    ["test_run"],
 )

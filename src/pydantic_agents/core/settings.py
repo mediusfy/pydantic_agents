@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     security_model: str = "claude-sonnet-5"
     ux_model: str = "claude-sonnet-5"
     cto_model: str = "claude-sonnet-5"
+    planner_model: str = "claude-sonnet-5"
+    quality_gate_model: str = "claude-sonnet-5"
+    service_engineer_model: str = "claude-sonnet-5"
 
     holiday_planner_model: str = "claude-sonnet-5"
     region_analyzer_model: str = "claude-sonnet-5"
@@ -84,6 +87,12 @@ class Settings(BaseSettings):
     vector_db_dir: Path = Path("./.claw-vectordb")
 
     go_version: str = "1.26"
+    # One convention for the Go service entry point, shared by the backend prompt, the implementation stage and
+    # the devops templates, so generated CI and Makefiles build the generated backend.
+    go_entrypoint: str = "cmd/server/main.go"
+    # Pinned tool versions for generated CI (the review agent rejects unpinned 'latest').
+    golangci_lint_version: str = "v1.64.8"
+    govulncheck_version: str = "v1.1.4"
 
     # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
     # to live here were removed. They were never actually read by

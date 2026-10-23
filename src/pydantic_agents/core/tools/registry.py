@@ -82,13 +82,22 @@ def _wrap_tool_with_tracing(fn: Callable, tool_name: str) -> Callable:
 
 def register_tool(name: str, fn: Callable, description: str, categories: list[str] | None = None):
     categories = categories or []
+    existing = tool_registry.get(name)
+    if existing is not None and existing.fn is not fn:
+        raise ValueError(f"Tool '{name}' is already registered by {existing.fn.__module__}.{existing.fn.__qualname__}")
     tool_registry[name] = ToolDef(name, fn, description, categories)
 
 
 def get_tools_for_agent(agent_name: str, categories: list[str]) -> list[tuple[str, Callable]]:
+    """Tools whose categories intersect the agent's assigned categories.
+
+    Grants are explicit: only the categories listed for the agent in ``tool_assignments`` count. The agent's own
+    name is deliberately not treated as a category, so a tool category that happens to share an agent's name
+    (``docs``, ``devops``) cannot silently grant that tool.
+    """
     tools = []
     for tool_def in tool_registry.values():
-        if any(cat in tool_def.categories for cat in categories) or agent_name in tool_def.categories:
+        if any(cat in tool_def.categories for cat in categories):
             tools.append((tool_def.name, tool_def.fn))
     return tools
 

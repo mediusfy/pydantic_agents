@@ -142,12 +142,12 @@ register_tool(
     "run_go_build",
     run_go_build,
     "Compile Go code to check for syntax and import errors. Pass a dict of filename -> content.",
-    ["backend", "validation"],
+    ["go_build"],
 )
 
 register_tool(
     "run_go_vet",
     run_go_vet,
     "Run go vet on Go code to check for suspicious constructs. Pass a dict of filename -> content.",
-    ["backend", "validation"],
+    ["go_build"],
 )

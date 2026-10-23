@@ -17,7 +17,7 @@ _resolve_sandboxed = resolve_sandboxed
 
 
 service_engineer_agent = Agent(
-    create_model(settings.resolve_model(settings.backend_model)),
+    create_model(settings.resolve_model(settings.service_engineer_model)),
     system_prompt="""You are a Go Backend Service Engineer specializing in modifying EXISTING codebases. You are NOT a scaffolder.
 
 Your goal is surgical, minimal changes to code that is already deployed and running.

@@ -48,7 +48,7 @@ Populate QualityGateResult exactly as specified. Provide specific file names and
 quality_gate_prompt = quality_gate_prompt.replace("__MAX_COMPLEXITY__", str(QUALITY_GATE_MAX_COMPLEXITY))
 
 quality_gate_agent = Agent(
-    create_model(settings.resolve_model(settings.review_model)),
+    create_model(settings.resolve_model(settings.quality_gate_model)),
     system_prompt=quality_gate_prompt,
     output_type=QualityGateResult,
     defer_model_check=True,

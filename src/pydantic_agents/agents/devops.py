@@ -66,7 +66,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v4
         with:
-          version: latest
+          version: {settings.golangci_lint_version}
           args: --timeout=5m
 
       - name: Run unit tests
@@ -74,20 +74,18 @@ jobs:
 
       - name: Run vulnerability scanner
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@{settings.govulncheck_version}
           govulncheck ./...
 
       - name: Build binary
-        run: go build -o bin/server ./cmd/{service_name}/main.go
+        run: go build -o bin/{service_name} ./{settings.go_entrypoint.rsplit("/", 1)[0]}
 """
 
 
 @devops_agent.tool
 def generate_docker_compose(ctx: RunContext[Any], service_name: str) -> str:
     """Returns a local Docker Compose setup including PostgreSQL and Redis dependencies."""
-    return f"""version: '3.8'
-
-services:
+    return f"""services:
   {service_name}:
     build:
       context: .
@@ -138,7 +136,7 @@ all: lint test build
 
 build:
 	@echo "Building..."
-	go build -o bin/server ./cmd/{service_name}/main.go
+	go build -o bin/{service_name} ./{settings.go_entrypoint.rsplit("/", 1)[0]}
 
 test:
 	@echo "Running tests..."
@@ -154,8 +152,8 @@ clean:
 	go clean -testcache
 
 docker-up:
-	docker-compose up -d --build
+	docker compose up -d --build
 
 docker-down:
-	docker-compose down
+	docker compose down
 """
