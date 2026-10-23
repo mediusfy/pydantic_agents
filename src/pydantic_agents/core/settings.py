@@ -7,7 +7,7 @@ Usage:
     settings.max_retries    # 2 by default
 """
 
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     security_model: str = "claude-sonnet-5"
     ux_model: str = "claude-sonnet-5"
     cto_model: str = "claude-sonnet-5"
+    planner_model: str = "claude-sonnet-5"
+    quality_gate_model: str = "claude-sonnet-5"
+    service_engineer_model: str = "claude-sonnet-5"
 
     holiday_planner_model: str = "claude-sonnet-5"
     region_analyzer_model: str = "claude-sonnet-5"
@@ -84,6 +87,13 @@ class Settings(BaseSettings):
     vector_db_dir: Path = Path("./.claw-vectordb")
 
     go_version: str = "1.26"
+    # One convention for the Go service entry point, shared by the backend prompt, the implementation stage and
+    # the devops templates, so generated CI and Makefiles build the generated backend.
+    go_entrypoint: str = "cmd/server/main.go"
+    # (directory of the entry point, derived so a bare "main.go" still yields a valid "./." build path)
+    # Pinned tool versions for generated CI (the review agent rejects unpinned 'latest').
+    golangci_lint_version: str = "v1.64.8"
+    govulncheck_version: str = "v1.1.4"
 
     # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
     # to live here were removed. They were never actually read by
@@ -93,6 +103,11 @@ class Settings(BaseSettings):
     # Now that every *_model field is pinned to the same "claude-sonnet-5"
     # value, keeping unused fast/reasoner groupings around would only
     # mislead readers into thinking agents still get different models.
+
+    @property
+    def go_entrypoint_dir(self) -> str:
+        """Directory that holds the Go entry point, e.g. "cmd/server" ("." for a bare "main.go")."""
+        return PurePosixPath(self.go_entrypoint).parent.as_posix()
 
     def resolve_model(self, model_name: str) -> str:
         """Resolve an agent-level model name to a fully-qualified pydantic_ai model spec.

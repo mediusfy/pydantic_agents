@@ -77,10 +77,8 @@ def validate_go_mod(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]
     return len(errors) == 0, errors
 
 
-register_tool(
-    "validate_protobuf", validate_protobuf, "Validate Protobuf syntax and structure", ["validation", "backend"]
-)
-register_tool("validate_yaml", validate_yaml, "Validate YAML syntax", ["validation", "sre", "devops"])
-register_tool("validate_json", validate_json, "Validate JSON syntax", ["validation", "test"])
-register_tool("parse_go_ast", parse_go_ast, "Parse Go source for structural correctness", ["validation", "backend"])
-register_tool("validate_go_mod", validate_go_mod, "Validate go.mod file structure", ["validation", "backend"])
+register_tool("validate_protobuf", validate_protobuf, "Validate Protobuf syntax and structure", ["validation"])
+register_tool("validate_yaml", validate_yaml, "Validate YAML syntax", ["validation", "config_validation"])
+register_tool("validate_json", validate_json, "Validate JSON syntax", ["validation"])
+register_tool("parse_go_ast", parse_go_ast, "Parse Go source for structural correctness", ["validation"])
+register_tool("validate_go_mod", validate_go_mod, "Validate go.mod file structure", ["validation"])

@@ -57,6 +57,7 @@ CREATE TABLE IF NOT EXISTS {table_name} (
     -- LLM: Insert specific domain columns here
 );
 
+DROP TRIGGER IF EXISTS update_{table_name}_modtime ON {table_name};
 CREATE TRIGGER update_{table_name}_modtime
     BEFORE UPDATE ON {table_name}
     FOR EACH ROW

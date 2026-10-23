@@ -68,9 +68,7 @@ async def check_package_version(ctx: RunContext[Any], package: str, language: st
     return "unknown"
 
 
-register_tool(
-    "check_go_package", check_go_package, "Check latest Go module version via proxy.golang.org", ["deps", "backend"]
-)
+register_tool("check_go_package", check_go_package, "Check latest Go module version via proxy.golang.org", ["deps"])
 register_tool("check_pypi_package", check_pypi_package, "Check PyPI package details", ["deps"])
 register_tool("check_npm_package", check_npm_package, "Check NPM package details", ["deps"])
 register_tool(

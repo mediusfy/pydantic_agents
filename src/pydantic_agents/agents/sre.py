@@ -26,28 +26,87 @@ sre_agent = Agent(
 
 
 @sre_agent.tool
-def provision_k8s_cluster(ctx: RunContext[Any], provider: str, region: str, cluster_name: str) -> dict[str, str]:
-    """Returns Terraform/OpenTofu HCL: VPC, EKS/GKE cluster, node groups, IAM roles, OIDC provider, IRSA."""
+def generate_helm_chart(ctx: RunContext[Any], service_name: str, image: str, port: int) -> dict[str, str]:
+    """Returns a Helm chart (Chart.yaml, values.yaml and Deployment, Service, HPA, PDB, NetworkPolicy templates)."""
+    base = f"helm/{service_name}"
     return {
-        "terraform/main.tf": f'# Terraform for {provider} in {region}\nresource "kubernetes_cluster" "main" {{}}',
-        "terraform/vpc.tf": "# VPC + subnets + NAT",
-        "terraform/iam.tf": "# IAM roles + OIDC + IRSA",
-        "terraform/outputs.tf": "# Cluster endpoint, kubeconfig",
-        "terraform/variables.tf": "# Region, cluster_name, instance types",
-    }
-
-
-@sre_agent.tool
-def apply_helm_chart(ctx: RunContext[Any], service_name: str, image: str, port: int) -> dict[str, str]:
-    """Returns Helm chart: Chart.yaml, values.yaml, templates/ with Deployment, Service, Ingress, NetworkPolicy, HPA, ServiceMonitor, PDB."""
-    return {
-        f"helm/{service_name}/Chart.yaml": f"name: {service_name}\nversion: 1.0.0",
-        f"helm/{service_name}/values.yaml": f"image: {image}\nport: {port}",
-        f"helm/{service_name}/templates/deployment.yaml": "# Deployment",
-        f"helm/{service_name}/templates/service.yaml": "# Service",
-        f"helm/{service_name}/templates/ingress.yaml": "# Ingress",
-        f"helm/{service_name}/templates/hpa.yaml": "# HPA",
-        f"helm/{service_name}/templates/servicemonitor.yaml": "# ServiceMonitor",
-        f"helm/{service_name}/templates/networkpolicy.yaml": "# NetworkPolicy",
-        f"helm/{service_name}/templates/pdb.yaml": "# PDB",
+        f"{base}/Chart.yaml": f'apiVersion: v2\nname: {service_name}\ndescription: {service_name} service\ntype: application\nversion: 0.1.0\nappVersion: "1.0.0"\n',
+        f"{base}/values.yaml": f"""image:
+  repository: {image}
+  tag: ""
+replicaCount: 2
+service:
+  port: {port}
+resources:
+  requests: {{cpu: 100m, memory: 128Mi}}
+  limits: {{cpu: 500m, memory: 256Mi}}
+autoscaling:
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+""",
+        f"{base}/templates/deployment.yaml": f"""apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{{{ .Release.Name }}}}
+spec:
+  replicas: {{{{ .Values.replicaCount }}}}
+  selector:
+    matchLabels: {{app: {{{{ .Release.Name }}}}}}
+  template:
+    metadata:
+      labels: {{app: {{{{ .Release.Name }}}}}}
+    spec:
+      securityContext: {{runAsNonRoot: true}}
+      containers:
+        - name: {service_name}
+          image: "{{{{ .Values.image.repository }}}}:{{{{ .Values.image.tag | default .Chart.AppVersion }}}}"
+          ports: [{{containerPort: {{{{ .Values.service.port }}}}}}]
+          resources: {{{{- toYaml .Values.resources | nindent 12 }}}}
+          livenessProbe: {{httpGet: {{path: /healthz, port: {{{{ .Values.service.port }}}}}}}}
+          readinessProbe: {{httpGet: {{path: /readyz, port: {{{{ .Values.service.port }}}}}}}}
+          securityContext: {{allowPrivilegeEscalation: false, readOnlyRootFilesystem: true}}
+""",
+        f"{base}/templates/service.yaml": """apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  selector: {app: {{ .Release.Name }}}
+  ports: [{port: {{ .Values.service.port }}, targetPort: {{ .Values.service.port }}}]
+""",
+        f"{base}/templates/hpa.yaml": """apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  scaleTargetRef: {apiVersion: apps/v1, kind: Deployment, name: {{ .Release.Name }}}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target: {type: Utilization, averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}}
+""",
+        f"{base}/templates/pdb.yaml": """apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels: {app: {{ .Release.Name }}}
+""",
+        f"{base}/templates/networkpolicy.yaml": """apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ .Release.Name }}
+spec:
+  podSelector:
+    matchLabels: {app: {{ .Release.Name }}}
+  policyTypes: [Ingress]
+  ingress:
+    - ports: [{port: {{ .Values.service.port }}}]
+""",
     }

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
-from typing import Any
+from pydantic_ai import Agent
 
-from pydantic_ai import Agent, RunContext, UsageLimits
-
-from pydantic_agents.core.models.core import EventTrigger, UserStory
+from pydantic_agents.core.models.core import UserStory
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -36,37 +34,3 @@ ba_agent = Agent(
     defer_model_check=True,
     retries=settings.agent_retries,
 )
-
-extractor = Agent(
-    create_model(settings.resolve_model(settings.ba_model)),
-    system_prompt=ba_prompt,
-    output_type=list[UserStory],
-    defer_model_check=True,
-    retries=settings.agent_retries,
-)
-event_mapper = Agent(
-    create_model(settings.resolve_model(settings.ba_model)),
-    system_prompt=ba_prompt,
-    output_type=list[EventTrigger],
-    defer_model_check=True,
-    retries=settings.agent_retries,
-)
-
-
-@ba_agent.tool
-async def define_user_stories(ctx: RunContext[Any], raw_requirements: str) -> list[UserStory]:
-    """Converts raw text requirements into structured UserStory models using an LLM."""
-    res = await extractor.run(
-        f"Extract user stories from: {raw_requirements}", usage_limits=UsageLimits(request_limit=500)
-    )
-    return res.output
-
-
-@ba_agent.tool
-async def map_event_triggers(ctx: RunContext[Any], story_id: str, gherkin: str) -> list[EventTrigger]:
-    """Identifies specific events necessary for the Go backend and QA automation pipelines."""
-    res = await event_mapper.run(
-        f"Identify event triggers for story {story_id} with gherkin: {gherkin}",
-        usage_limits=UsageLimits(request_limit=500),
-    )
-    return res.output
