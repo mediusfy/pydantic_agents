@@ -24,6 +24,24 @@ fresh **Unreleased** section above it.
   pull request updates this file.
 
 ### Changed
+- **Behaviour change:** with `MODEL_PROVIDER=litellm` (the default) a missing `LITELLM_VIRTUAL_KEY` /
+  `LITELLM_MASTER_KEY` now raises `ConfigurationError` when the model is first used, instead of silently
+  sending the request to api.openai.com. Prefixed models are built lazily on first use, so environment changes
+  after import are honoured; the `"pytest" in sys.modules` check is gone (tests set a mock key in `conftest.py`).
+- `MODEL_PROVIDER=openai|gemini|vertexai` keep a per-agent model name that belongs to the provider (e.g.
+  `BACKEND_MODEL=gpt-4.1`) instead of always using `gpt-4o` / `gemini-2.0-flash`; other names still fall back to
+  that default.
+- Agent results returned through `registry.query`, the MCP server and the bridge agent are JSON for models, lists
+  and dicts (they were Python reprs such as `agent_name='x' files={...}`). The legacy `result.data` branch is gone.
+- `query_history` returns only the calling agent's entries for the current run (optionally one `pass_num`, or all
+  agents' entries with `all_agents=true`); it used to search every agent's logs and ignored `pass_num`.
+  `log_activity` now tags entries with agent, run and pass. Entries logged before this change carry no tags and
+  are not returned by `query_history`.
+- Non-technical agents (accountant, weather, region analyzer, holiday planner, current events, price analyst,
+  asymmetric reviewer, market shark, crypto oracle): prompts now require `get_current_datetime`, sourced numbers
+  and clarifying questions; the weather agent is told about `get_weather_forecast`; the investment agents give
+  scenarios with probabilities and a not-financial-advice line instead of "definitive" advice and price targets;
+  the asymmetric reviewer is framed around consumer rights rather than "exploiting loopholes".
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
   `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;

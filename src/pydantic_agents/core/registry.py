@@ -15,6 +15,7 @@ from pydantic_agents.core.exceptions import (
 )
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.telemetry import telemetry
+from pydantic_agents.core.utils import serialize_output
 
 logger = logging.getLogger(__name__)
 
@@ -172,9 +173,7 @@ class AgentRegistry:
                 deps=resolved_deps,
                 timeout=timeout or 3600.0,
             )
-            if hasattr(result, "data"):
-                return str(result.data)
-            return str(result.output) if hasattr(result, "output") else str(result)
+            return serialize_output(result)
         except TimeoutError as e:
             raise AgentExecutionError(
                 f"Agent '{agent_name}' timed out for capability '{capability}'", is_retryable=True

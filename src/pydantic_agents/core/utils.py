@@ -1,6 +1,8 @@
 from pathlib import Path
 from typing import Any
 
+from pydantic_core import to_json
+
 from pydantic_agents.core.exceptions import PathTraversalError
 
 
@@ -21,6 +23,17 @@ def safe_write(base: str | Path, relative_path: str, content: str) -> Path:
     full_path.parent.mkdir(parents=True, exist_ok=True)
     full_path.write_text(content)
     return full_path
+
+
+def serialize_output(result: Any) -> str:
+    """Render an agent run result as text: strings as-is, models/lists/dicts as JSON.
+
+    Delegating agents and MCP clients parse this, so a BaseModel must not be returned as its Python repr.
+    """
+    output = getattr(result, "output", result)
+    if isinstance(output, str):
+        return output
+    return to_json(output, fallback=str).decode()
 
 
 def format_artifacts(artifacts: list[Any], max_chars: int = 80_000, include_agent_header: bool = True) -> str:

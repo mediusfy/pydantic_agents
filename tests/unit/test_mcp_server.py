@@ -16,7 +16,7 @@ async def test_run_agent_by_name_local(mock_registry):
     # Setup mock agent
     mock_agent = AsyncMock()
     mock_result = MagicMock()
-    mock_result.data = "local_result_data"
+    mock_result.output = "local_result_data"
     mock_agent.run.return_value = mock_result
 
     mock_registry.get.return_value = mock_agent

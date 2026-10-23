@@ -32,9 +32,9 @@ class TestCapabilityIndex:
     async def test_index_provides_o1_lookup(self):
         registry = AgentRegistry()
         a1 = MagicMock()
-        a1.run = AsyncMock(return_value=MagicMock(data="from a1"))
+        a1.run = AsyncMock(return_value=MagicMock(output="from a1"))
         a2 = MagicMock()
-        a2.run = AsyncMock(return_value=MagicMock(data="from a2"))
+        a2.run = AsyncMock(return_value=MagicMock(output="from a2"))
 
         registry.register("agent-two", a2, ["search"])
         registry.register("agent-one", a1, ["other-cap"])
@@ -47,9 +47,9 @@ class TestCapabilityIndex:
     async def test_index_returns_correct_agent(self):
         registry = AgentRegistry()
         a1 = MagicMock()
-        a1.run = AsyncMock(return_value=MagicMock(data="from a1"))
+        a1.run = AsyncMock(return_value=MagicMock(output="from a1"))
         a2 = MagicMock()
-        a2.run = AsyncMock(return_value=MagicMock(data="from a2"))
+        a2.run = AsyncMock(return_value=MagicMock(output="from a2"))
 
         registry.register("agent-one", a1, ["search"])
         registry.register("agent-two", a2, ["audit"])

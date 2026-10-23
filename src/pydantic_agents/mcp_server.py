@@ -22,6 +22,7 @@ from pydantic_agents.core.memory_bridge import get_bridge_status, sync_claude_to
 from pydantic_agents.core.observability import configure_observability
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.telemetry import telemetry
+from pydantic_agents.core.utils import serialize_output
 from pydantic_agents.core.vector_db import vector_db
 
 logger = logging.getLogger(__name__)
@@ -85,9 +86,7 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
             resolved_deps = deps_factory() if callable(deps_factory) else {}
             result = await agent.run(enriched_request, deps=resolved_deps, usage_limits=UsageLimits(request_limit=500))
             success = True
-            if hasattr(result, "data"):
-                return str(result.data)
-            return str(result.output) if hasattr(result, "output") else str(result)
+            return serialize_output(result)
     except Exception as e:
         logger.warning("Agent '%s' failed: %s", agent_name, e)
         raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e

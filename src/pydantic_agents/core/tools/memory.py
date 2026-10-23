@@ -6,15 +6,23 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from pydantic_agents.core.models.core import ActivityLog
+from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import safe_path_join
 from pydantic_agents.core.vector_db import vector_db
 
 
+def _scope(ctx: RunContext[Any]) -> tuple[str, str | None]:
+    """The (agent_name, run_id) that activity is attributed to."""
+    run_ctx = current_run_context.get() or {}
+    agent_name = getattr(ctx.deps, "agent_name", None) or run_ctx.get("agent_name") or "system"
+    return agent_name, run_ctx.get("run_id") or None
+
+
 async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact_ids: list[str] | None = None) -> str:
     """Logs a significant agent activity to the project memory for future spot-checking."""
     pass_num = getattr(ctx.deps, "pass_num", 0) if ctx.deps else 0
-    agent_name = getattr(ctx.deps, "agent_name", "system") if ctx.deps else "system"
+    agent_name, run_id = _scope(ctx)
 
     log_entry = ActivityLog(
         pass_num=pass_num,
@@ -27,16 +35,37 @@ async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact
 
     doc_id = f"log_{pass_num}_{agent_name}_{datetime.datetime.now().timestamp()}"
     narrative_doc = f"During pass {pass_num}, the {agent_name} agent performed an action: {action}. Summary: {summary}"
+    metadata = {
+        "json_data": log_entry.model_dump_json(),
+        "type": "activity",
+        "agent_name": agent_name,
+        "pass_num": str(pass_num),
+    }
+    if run_id:
+        metadata["run_id"] = run_id
 
-    await vector_db.async_add_documents(
-        "activity_logs", [narrative_doc], [{"json_data": log_entry.model_dump_json(), "type": "activity"}], [doc_id]
-    )
+    await vector_db.async_add_documents("activity_logs", [narrative_doc], [metadata], [doc_id])
     return f"Activity logged successfully: {action}"
 
 
-async def query_history(ctx: RunContext[Any], query: str, pass_num: int | None = None) -> str:
-    """Queries the project history to find past decisions or actions."""
-    results = await vector_db.async_search("activity_logs", query, n_results=5)
+async def query_history(ctx: RunContext[Any], query: str, pass_num: int | None = None, all_agents: bool = False) -> str:
+    """Queries this agent's history for the current run to find past decisions or actions.
+
+    Args:
+        query: What to look for.
+        pass_num: Only return entries logged in this pass.
+        all_agents: Also include entries logged by other agents in the same run.
+    """
+    agent_name, run_id = _scope(ctx)
+    filters: dict[str, str] = {}
+    if not all_agents:
+        filters["agent_name"] = agent_name
+    if run_id:
+        filters["run_id"] = run_id
+    if pass_num is not None:
+        filters["pass_num"] = str(pass_num)
+
+    results = await vector_db.async_search("activity_logs", query, n_results=5, filters=filters)
     if not results:
         return "No relevant history found."
 

@@ -12,6 +12,15 @@ from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# Model-name prefixes that identify a provider's own models, and the default used when an agent's configured name
+# (e.g. the shared "claude-sonnet-5" alias) is not one of them.
+_NATIVE_MODEL_PREFIXES = {
+    "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
+    "gemini": ("gemini-",),
+    "vertexai": ("gemini-",),
+}
+_PROVIDER_DEFAULT_MODELS = {"openai": "gpt-4o", "gemini": "gemini-2.0-flash", "vertexai": "gemini-2.0-flash"}
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -105,8 +114,9 @@ class Settings(BaseSettings):
         With MODEL_PROVIDER=deepseek:
         - backend_model="deepseek-reasoner"  → "deepseek:deepseek-reasoner"
 
-        With MODEL_PROVIDER=openai:
-        - backend_model="deepseek-reasoner"  → "openai:gpt-4o"
+        With MODEL_PROVIDER=openai (likewise gemini, vertexai):
+        - backend_model="claude-sonnet-5"  → "openai:gpt-4o" (not an OpenAI model name, so the default is used)
+        - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider
         if provider:
@@ -115,12 +125,14 @@ class Settings(BaseSettings):
                 return f"openai:{model_name}"
             if provider == "deepseek":
                 return f"deepseek:{model_name}" if ":" not in model_name else model_name
-            if provider == "gemini":
-                return "gemini:gemini-2.0-flash"
-            if provider == "vertexai":
-                return "vertexai:gemini-2.0-flash"
-            if provider == "openai":
-                return "openai:gpt-4o"
+            if provider in _NATIVE_MODEL_PREFIXES:
+                # Keep a per-agent name that belongs to this provider; the shared default alias
+                # ("claude-sonnet-5") does not, so it falls back to the provider's default model.
+                if ":" in model_name:
+                    return model_name
+                if model_name.startswith(_NATIVE_MODEL_PREFIXES[provider]):
+                    return f"{provider}:{model_name}"
+                return f"{provider}:{_PROVIDER_DEFAULT_MODELS[provider]}"
             if ":" in model_name:
                 return model_name
             return f"{provider}:{model_name}"

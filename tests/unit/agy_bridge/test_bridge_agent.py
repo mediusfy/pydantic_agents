@@ -38,7 +38,7 @@ def test_from_registry_not_found():
 @pytest.mark.asyncio
 async def test_run_agent(mock_registry):
     agent = BridgeAgent("test_agent")
-    agent._agent.run = AsyncMock(return_value=MagicMock(data="Test response"))
+    agent._agent.run = AsyncMock(return_value=MagicMock(output="Test response"))
 
     response = await agent.run("Test prompt")
 
@@ -49,7 +49,7 @@ async def test_run_agent(mock_registry):
 @pytest.mark.asyncio
 async def test_run_with_conversation(mock_registry):
     agent = BridgeAgent("test_agent")
-    agent._agent.run = AsyncMock(return_value=MagicMock(data="Test response"))
+    agent._agent.run = AsyncMock(return_value=MagicMock(output="Test response"))
 
     conversation = Conversation(conversation_id="123", agent_name="test_agent", model="test_model")
 

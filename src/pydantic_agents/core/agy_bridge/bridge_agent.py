@@ -27,6 +27,7 @@ from pydantic_ai import UsageLimits
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.settings import settings
+from pydantic_agents.core.utils import serialize_output
 
 logger = logging.getLogger(__name__)
 
@@ -273,12 +274,7 @@ class BridgeAgent:
             result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=UsageLimits(request_limit=500))
             success = True
 
-            if hasattr(result, "data"):
-                output = str(result.data)
-            elif hasattr(result, "output"):
-                output = str(result.output)
-            else:
-                output = str(result)
+            output = serialize_output(result)
 
             # ── Update conversation state
             if conversation:

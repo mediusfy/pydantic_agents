@@ -1,3 +1,8 @@
+import os
+
+# The LiteLLM model factory refuses to build a model without a key; tests never reach the network.
+os.environ.setdefault("LITELLM_VIRTUAL_KEY", "mock-key")
+
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -124,7 +129,7 @@ def mock_agent():
 def mock_agent_result(mock_agent, sample_artifact):
     """Configures mock_agent.run to return sample_artifact."""
     mock_result = MagicMock()
-    mock_result.data = sample_artifact
+    mock_result.output = sample_artifact
     mock_agent.run.return_value = mock_result
     return mock_agent
 
