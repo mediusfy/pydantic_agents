@@ -19,6 +19,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import threading
 from typing import Any
 
@@ -26,6 +27,9 @@ from pydantic_agents.core.exceptions import OrgitrationDependencyError
 from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
+
+# Metadata filter keys are interpolated into SQL, so they must be plain identifiers.
+_METADATA_KEY = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 
 # ── Embedding ──────────────────────────────────────────────────────
 
@@ -249,38 +253,43 @@ class VectorDBManager:
         query: str,
         n_results: int = 3,
         project: str | None = None,
+        filters: dict[str, str | None] | None = None,
     ) -> list[str]:
+        # `project` is the long-standing filter; `filters` adds any other metadata equality filters.
+        conditions: dict[str, str | None] = dict(filters or {})
+        if project:
+            conditions["project"] = project
+        for key in conditions:
+            if not _METADATA_KEY.fullmatch(key):
+                raise ValueError(f"Invalid metadata filter key: {key!r}")
         try:
             _require_vector_deps()
             await _ensure_table(collection_name)
             embedding = _to_embedding(query)
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
             pool = await _get_pool()
-            async with pool.acquire() as conn:
-                if project:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT content
-                        FROM v_{collection_name}
-                        WHERE metadata->>'project' = $3
-                        ORDER BY embedding <=> $1::vector
-                        LIMIT $2
-                        """,
-                        embedding_str,
-                        n_results,
-                        project,
-                    )
+            # A None value matches rows that lack the key (e.g. entries written before it was recorded).
+            clauses: list[str] = []
+            params: list[str] = []
+            for key, value in conditions.items():
+                if value is None:
+                    clauses.append(f"metadata->>'{key}' IS NULL")
                 else:
-                    rows = await conn.fetch(
-                        f"""
-                        SELECT content
-                        FROM v_{collection_name}
-                        ORDER BY embedding <=> $1::vector
-                        LIMIT $2
-                        """,
-                        embedding_str,
-                        n_results,
-                    )
+                    params.append(value)
+                    clauses.append(f"metadata->>'{key}' = ${len(params) + 2}")
+            where = f"WHERE {' AND '.join(clauses)}\n" if clauses else ""
+            async with pool.acquire() as conn:
+                rows = await conn.fetch(
+                    f"""
+                    SELECT content
+                    FROM v_{collection_name}
+                    {where}ORDER BY embedding <=> $1::vector
+                    LIMIT $2
+                    """,
+                    embedding_str,
+                    n_results,
+                    *params,
+                )
                 return [row["content"] for row in rows]
         except OrgitrationDependencyError as exc:
             logger.warning("Vector DB search called but vector dependencies are not installed: %s", exc)
@@ -294,9 +303,14 @@ class VectorDBManager:
         return self._run_sync(self._search(collection_name, query, n_results, project))
 
     async def async_search(
-        self, collection_name: str, query: str, n_results: int = 3, project: str | None = None
+        self,
+        collection_name: str,
+        query: str,
+        n_results: int = 3,
+        project: str | None = None,
+        filters: dict[str, str | None] | None = None,
     ) -> list[str]:
-        return await _bridge(self._search(collection_name, query, n_results, project))
+        return await _bridge(self._search(collection_name, query, n_results, project, filters))
 
     def ingest_url(self, collection_name: str, url: str) -> str:
         """Fetch a URL, split into chunks, and index into pgvector."""

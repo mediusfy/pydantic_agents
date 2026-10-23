@@ -124,7 +124,7 @@ def mock_agent():
 def mock_agent_result(mock_agent, sample_artifact):
     """Configures mock_agent.run to return sample_artifact."""
     mock_result = MagicMock()
-    mock_result.data = sample_artifact
+    mock_result.output = sample_artifact
     mock_agent.run.return_value = mock_result
     return mock_agent
 

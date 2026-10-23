@@ -7,10 +7,35 @@ Usage:
     settings.max_retries    # 2 by default
 """
 
+import logging
+from functools import cache
 from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Model-name prefixes that identify a provider's own models, and the default used when an agent's configured name
+# (e.g. the shared "claude-sonnet-5" alias) is not one of them.
+logger = logging.getLogger(__name__)
+
+_NATIVE_MODEL_PREFIXES = {
+    "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
+    "gemini": ("gemini-",),
+    "vertexai": ("gemini-",),
+}
+_PROVIDER_DEFAULT_MODELS = {"openai": "gpt-4o", "gemini": "gemini-2.0-flash", "vertexai": "gemini-2.0-flash"}
+
+
+@cache
+def _warn_model_fallback(provider: str, model_name: str, default: str) -> None:
+    """Warn once per (provider, name): a typo'd *_MODEL value must not silently become a valid-looking model."""
+    logger.warning(
+        "Model name %r is not a %s model; using %s. Set the agent's *_MODEL to a %s model name to choose another.",
+        model_name,
+        provider,
+        default,
+        provider,
+    )
 
 
 class Settings(BaseSettings):
@@ -128,32 +153,31 @@ class Settings(BaseSettings):
         With MODEL_PROVIDER=deepseek:
         - backend_model="deepseek-reasoner"  → "deepseek:deepseek-reasoner"
 
-        With MODEL_PROVIDER=openai:
-        - backend_model="deepseek-reasoner"  → "openai:gpt-4o"
+        With MODEL_PROVIDER=openai (likewise gemini, vertexai):
+        - backend_model="claude-sonnet-5"  → "openai:gpt-4o" (not an OpenAI model name, so the default is used)
+        - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider
-        if provider:
-            if provider == "litellm":
-                # Route everything through LiteLLM's OpenAI-compatible proxy interface
-                return f"openai:{model_name}"
-            if provider == "deepseek":
-                return f"deepseek:{model_name}" if ":" not in model_name else model_name
-            if provider == "gemini":
-                return "gemini:gemini-2.0-flash"
-            if provider == "vertexai":
-                return "vertexai:gemini-2.0-flash"
-            if provider == "openai":
-                return "openai:gpt-4o"
-            if ":" in model_name:
-                return model_name
-            return f"{provider}:{model_name}"
-
-        # No provider override — add prefix for non-native models
+        if provider == "litellm":
+            # Route everything through LiteLLM's OpenAI-compatible proxy interface
+            return f"openai:{model_name}"
         if ":" in model_name:
             return model_name
-        if model_name.startswith("deepseek-"):
-            return f"deepseek:{model_name}"
-        return model_name
+        if not provider:
+            # No provider override: only DeepSeek's native names need a prefix.
+            return f"deepseek:{model_name}" if model_name.startswith("deepseek-") else model_name
+        if provider in _NATIVE_MODEL_PREFIXES:
+            return self._resolve_native(provider, model_name)
+        return f"{provider}:{model_name}"
+
+    @staticmethod
+    def _resolve_native(provider: str, model_name: str) -> str:
+        """Keep a name that belongs to the provider; otherwise fall back to its default, and say so."""
+        if model_name.startswith(_NATIVE_MODEL_PREFIXES[provider]):
+            return f"{provider}:{model_name}"
+        default = _PROVIDER_DEFAULT_MODELS[provider]
+        _warn_model_fallback(provider, model_name, default)
+        return f"{provider}:{default}"
 
 
 settings = Settings()

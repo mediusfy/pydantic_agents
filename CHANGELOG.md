@@ -31,6 +31,25 @@ fresh **Unreleased** section above it.
   PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
+- **Behaviour change:** with `MODEL_PROVIDER=litellm` (the default) a missing `LITELLM_VIRTUAL_KEY` /
+  `LITELLM_MASTER_KEY` now raises `ConfigurationError` when the model is first used, instead of silently
+  sending the request to api.openai.com. Prefixed models are built lazily on first use, so environment changes
+  after import are honoured; the `"pytest" in sys.modules` check is gone (no test key is needed now that models are lazy).
+- `MODEL_PROVIDER=openai|gemini|vertexai` keep a per-agent model name that belongs to the provider (e.g.
+  `BACKEND_MODEL=gpt-4.1`) instead of always using `gpt-4o` / `gemini-2.0-flash`; other names still fall back to
+  that default; the fallback is logged once per name so a typo'd `*_MODEL` is visible.
+- Agent results returned through `registry.query`, the MCP server (whose `run_<agent>` tool descriptions now say so)
+  and the bridge agent are JSON for models, lists
+  and dicts (they were Python reprs such as `agent_name='x' files={...}`). The legacy `result.data` branch is gone.
+- `query_history` returns only the calling agent's entries for the current run (optionally one `pass_num`, or all
+  agents' entries with `all_agents=true`); it used to search every agent's logs and ignored `pass_num`.
+  `log_activity` now tags entries with agent, run and pass. Entries logged before this change carry no tags and
+  are not returned unless `include_legacy=true` is passed (they cannot be attributed, so they come from any agent).
+- Non-technical agents (accountant, weather, region analyzer, holiday planner, current events, price analyst,
+  asymmetric reviewer, market shark, crypto oracle): prompts now require `get_current_datetime`, sourced numbers
+  and clarifying questions; the weather agent is told about `get_weather_forecast`; the investment agents give
+  scenarios with probabilities and a not-financial-advice line instead of "definitive" advice and price targets;
+  the asymmetric reviewer is framed around consumer rights rather than "exploiting loopholes".
 - Run limits are tighter and configurable (`AGENT_RETRIES=2`, `AGENT_REQUEST_LIMIT=40`,
   `AGENT_TOTAL_TOKENS_LIMIT=2000000`, `AGENT_TIMEOUT_SECONDS=600`, `AGENT_TRANSPORT_ATTEMPTS=3`; was 5 retries, 500 requests, 3600 s). The
   backend, service_engineer and frontend agents get a request cap of 60.

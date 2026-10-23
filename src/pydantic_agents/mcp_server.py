@@ -22,6 +22,7 @@ from pydantic_agents.core.memory_bridge import get_bridge_status, sync_claude_to
 from pydantic_agents.core.observability import configure_observability
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.telemetry import telemetry
+from pydantic_agents.core.utils import serialize_output
 from pydantic_agents.core.vector_db import vector_db
 
 logger = logging.getLogger(__name__)
@@ -51,6 +52,9 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
     vector-indexed context store (ADRs, architecture rules, past decisions) and
     prepends them to the request. This ensures agents are fed exactly the relevant
     context without needing to manually hunt through the file system.
+
+    Returns the agent's answer: plain text for text agents, otherwise JSON
+    (``BaseModel.model_dump_json()`` for structured results, a JSON array for lists).
     """
     try:
         agent = registry.get(agent_name)
@@ -85,9 +89,7 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
             resolved_deps = deps_factory() if callable(deps_factory) else {}
             result = await agent.run(enriched_request, deps=resolved_deps, usage_limits=usage_limits(agent_name))
             success = True
-            if hasattr(result, "data"):
-                return str(result.data)
-            return str(result.output) if hasattr(result, "output") else str(result)
+            return serialize_output(result)
     except Exception as e:
         logger.warning("Agent '%s' failed: %s", agent_name, e)
         raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
@@ -127,6 +129,13 @@ AGENT_DOCSTRINGS = {
 }
 
 
+# Appended to every run_<agent> tool description so MCP clients know how to parse the result.
+RESULT_FORMAT_NOTE = (
+    "\n\nReturns: plain text for agents that answer in text; otherwise JSON (a structured result such as an "
+    "Artifact is a JSON object, a list of results is a JSON array)."
+)
+
+
 def _register_agent_mcp_tools():
     def make_runner(agent_name: str):
         async def agent_runner(request: str) -> str:
@@ -138,7 +147,7 @@ def _register_agent_mcp_tools():
         tool_name = f"run_{name}"
         runner = make_runner(name)
         docstring = AGENT_DOCSTRINGS.get(name, f"Invokes the {name} agent to perform its designated task.")
-        runner.__doc__ = docstring
+        runner.__doc__ = docstring + RESULT_FORMAT_NOTE
         runner.__name__ = tool_name
         mcp.tool(name=tool_name)(runner)
 

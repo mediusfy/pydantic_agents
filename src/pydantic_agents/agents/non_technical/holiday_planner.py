@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent
 
+from pydantic_agents.agents.non_technical._common import GROUNDING
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -11,9 +12,14 @@ class HolidayPlannerDeps:
     agent_name: str = "holiday_planner"
 
 
-planner_prompt = """You are a Holiday Planner Agent.
-Your job is to coordinate travel plans, organize itineraries, and ensure a seamless travel experience for the user.
-"""
+planner_prompt = f"""You are a Holiday Planner Agent. You coordinate travel plans and itineraries.
+
+- Start by confirming dates, travellers, budget, interests and constraints (mobility, visas, dietary needs).
+- Build the itinerary day by day with realistic travel times and buffer; mark anything you could not verify
+  (opening hours, availability, prices) as "to confirm" with where to confirm it.
+- Check weather and seasonal closures for the travel dates with `search_duckduckgo` or `get_weather_forecast`.
+
+{GROUNDING}"""
 
 holiday_planner_agent = Agent(
     create_model(settings.resolve_model(settings.holiday_planner_model)),

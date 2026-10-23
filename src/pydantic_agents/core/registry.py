@@ -16,6 +16,7 @@ from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
+from pydantic_agents.core.utils import serialize_output
 
 logger = logging.getLogger(__name__)
 
@@ -176,9 +177,7 @@ class AgentRegistry:
                 )
             finally:
                 current_run_context.reset(token)
-            if hasattr(result, "data"):
-                return str(result.data)
-            return str(result.output) if hasattr(result, "output") else str(result)
+            return serialize_output(result)
         except TimeoutError as e:
             raise AgentExecutionError(
                 f"Agent '{agent_name}' timed out for capability '{capability}'", is_retryable=True
