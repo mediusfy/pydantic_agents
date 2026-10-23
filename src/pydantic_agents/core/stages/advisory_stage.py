@@ -93,6 +93,9 @@ class AdvisoryStage(StageRunner):
             if bottlenecks:
                 state.advisory_results["cto_blockers"] = "\n".join(bottlenecks)
             state.cto_approved = cto_data.approved_to_proceed
+            if "approved_to_proceed" not in cto_data.model_fields_set:
+                # Distinguish "the CTO said no" from "the CTO never answered": the default blocks the pipeline.
+                logger.warning("CTO output omitted approved_to_proceed; treating as not approved.")
             logger.info(f"CTO recs={len(recs)}, approved={state.cto_approved}")
         else:
             # Fail closed: without the CTO's verdict the pipeline must not proceed as if approved.
