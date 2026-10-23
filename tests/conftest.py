@@ -1,8 +1,3 @@
-import os
-
-# The LiteLLM model factory refuses to build a model without a key; tests never reach the network.
-os.environ.setdefault("LITELLM_VIRTUAL_KEY", "mock-key")
-
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 

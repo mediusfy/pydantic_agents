@@ -5,7 +5,9 @@ import contextlib
 import os
 import tempfile
 
+from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
+from pydantic_agents.core.utils import safe_write
 
 FRONTEND_VALIDATE_TIMEOUT = 60.0
 
@@ -23,10 +25,10 @@ async def validate_frontend_code(file_name: str, source_code: str) -> str:
         'SUCCESS' if validation passes, otherwise returns the compiler/linter error string.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        filepath = os.path.join(temp_dir, file_name)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w") as f:
-            f.write(source_code)
+        try:
+            filepath = str(safe_write(temp_dir, file_name, source_code))
+        except PathTraversalError as e:
+            return f"VALIDATION FAILED: {e}"
 
         # Determine command based on extension. Default to vue-tsc or eslint.
         # Running against the filepath but keeping CWD as the project root so it
@@ -80,5 +82,5 @@ register_tool(
     "validate_frontend_code",
     validate_frontend_code,
     "Validates a Vue/TSX component using the local compiler/linter. Must be used before returning final code.",
-    ["frontend", "validation"],
+    ["frontend_validation"],
 )

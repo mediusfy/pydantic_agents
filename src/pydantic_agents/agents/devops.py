@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -28,12 +29,12 @@ CRITICAL WORKFLOW:
 """,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
 @devops_agent.tool
-def generate_github_action(ctx: RunContext[str], service_name: str) -> str:
+def generate_github_action(ctx: RunContext[Any], service_name: str) -> str:
     """Returns an enterprise-grade GitHub Actions pipeline for a Go service using centralized settings."""
     return f"""name: {service_name} CI
 
@@ -65,7 +66,7 @@ jobs:
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v4
         with:
-          version: latest
+          version: {settings.golangci_lint_version}
           args: --timeout=5m
 
       - name: Run unit tests
@@ -73,20 +74,18 @@ jobs:
 
       - name: Run vulnerability scanner
         run: |
-          go install golang.org/x/vuln/cmd/govulncheck@latest
+          go install golang.org/x/vuln/cmd/govulncheck@{settings.govulncheck_version}
           govulncheck ./...
 
       - name: Build binary
-        run: go build -o bin/server ./cmd/{service_name}/main.go
+        run: go build -o bin/{service_name} ./{settings.go_entrypoint_dir}
 """
 
 
 @devops_agent.tool
-def generate_docker_compose(ctx: RunContext[str], service_name: str) -> str:
+def generate_docker_compose(ctx: RunContext[Any], service_name: str) -> str:
     """Returns a local Docker Compose setup including PostgreSQL and Redis dependencies."""
-    return f"""version: '3.8'
-
-services:
+    return f"""services:
   {service_name}:
     build:
       context: .
@@ -127,7 +126,7 @@ services:
 
 
 @devops_agent.tool
-def generate_makefile(ctx: RunContext[str], service_name: str) -> str:
+def generate_makefile(ctx: RunContext[Any], service_name: str) -> str:
     """Returns a standardized Makefile for local development and build automation."""
     return f"""# Makefile for {service_name}
 
@@ -137,7 +136,7 @@ all: lint test build
 
 build:
 	@echo "Building..."
-	go build -o bin/server ./cmd/{service_name}/main.go
+	go build -o bin/{service_name} ./{settings.go_entrypoint_dir}
 
 test:
 	@echo "Running tests..."
@@ -153,8 +152,8 @@ clean:
 	go clean -testcache
 
 docker-up:
-	docker-compose up -d --build
+	docker compose up -d --build
 
 docker-down:
-	docker-compose down
+	docker compose down
 """

@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -33,7 +34,7 @@ Before writing any code, reference these standards:
 ## Standard Service Layout
 
 ```
-cmd/<service>/main.go            # Entry point, signal handling, errgroup orchestration
+{settings.go_entrypoint:<32} # Entry point, signal handling, errgroup orchestration
 pkg/app.go                       # Composition root / DI assembly
 internal/domain/                 # Entities + domain events, no I/O
 internal/application/            # Use cases, orchestrates ports
@@ -111,30 +112,41 @@ backend_agent = Agent(
     create_model(settings.resolve_model(settings.backend_model)),
     system_prompt=backend_prompt,
     output_type=Artifact,
+    deps_type=ProjectState,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
-@backend_agent.tool
-def scaffold_go_service(ctx: RunContext[str], service_name: str, bounded_context: str) -> dict[str, str]:
-    """Returns a complete Go project skeleton. The LLM fills in domain-specific logic in its main response."""
-    return {
-        "cmd/server/main.go": f"// Scaffolding for {service_name}\npackage main\n\nfunc main() {{}}",
-        f"internal/domain/{service_name}.go": "package domain\n",
-        "internal/domain/events.go": "package domain\n",
-        "internal/ports/repository.go": "package ports\n",
-        "internal/ports/events.go": "package ports\n",
-        "internal/adapters/repository/postgres.go": "package repository\n",
-        "internal/adapters/eventbus/nats.go": "package eventbus\n",
-        "internal/adapters/handlers/grpc.go": "package handlers\n",
-        f"api/protobuf/{service_name}.proto": 'syntax="proto3";\n',
-        "go.mod": f"module {service_name}\n\ngo {settings.go_version}",
-        "Makefile": "build:\n\tgo build -o bin/server cmd/server/main.go",
-    }
+@backend_agent.instructions
+def _project_state(ctx: RunContext[ProjectState | None]) -> str:
+    """Render the project the service is being built for. Empty when the caller supplied none."""
+    state = ctx.deps
+    if not isinstance(state, ProjectState):
+        return ""
+    return (
+        "## Project\n"
+        f"- Base path: {state.base_path}\n"
+        f"- Environment: {state.environment}\n"
+        f"- Owning team: {state.team_owner}"
+    )
 
 
 @backend_agent.tool
-def generate_dockerfile(ctx: RunContext[str], service_name: str, port: int) -> str:
-    """Returns multi-stage Dockerfile using centralized Go version from settings."""
-    return f"FROM golang:{settings.go_version}-alpine AS builder\n# Build steps...\nEXPOSE {port}\n"
+def generate_dockerfile(ctx: RunContext[Any], service_name: str, port: int) -> str:
+    """Returns a multi-stage, non-root Dockerfile with a HEALTHCHECK against /healthz for the Go service."""
+    return f"""FROM golang:{settings.go_version}-alpine AS builder
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/{service_name} ./{settings.go_entrypoint_dir}
+
+FROM alpine:3.20
+RUN adduser -D -u 10001 app
+COPY --from=builder /out/{service_name} /usr/local/bin/{service_name}
+USER app
+EXPOSE {port}
+HEALTHCHECK --interval=30s --timeout=3s --retries=3 CMD wget -qO- http://127.0.0.1:{port}/healthz || exit 1
+ENTRYPOINT ["/usr/local/bin/{service_name}"]
+"""

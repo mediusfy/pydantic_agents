@@ -96,22 +96,25 @@ async def test_vector_search_builds_parameterised_filters():
 
     from pydantic_agents.core import vector_db as vdb
 
+    manager = VectorDBManager()
     with (
         patch.object(vdb, "_require_vector_deps"),
         patch.object(vdb, "_ensure_table", noop),
         patch.object(vdb, "_to_embedding", return_value=[0.1]),
         patch.object(vdb, "_get_pool", pool),
     ):
-        await VectorDBManager()._search("activity_logs", "q", 5, None, {"agent_name": "a", "run_id": "r"})
+        await manager._search("activity_logs", "q", 5, None, {"agent_name": "a", "run_id": "r"})
     sql, args = calls[0]
-    assert "metadata->>'agent_name' = $3" in sql and "metadata->>'run_id' = $4" in sql
+    assert "metadata->>'agent_name' = $3" in sql
+    assert "metadata->>'run_id' = $4" in sql
     assert args[2:] == ("a", "r")
 
 
 @pytest.mark.parametrize("key", ["a'; DROP TABLE x;--", "a b", "1abc", ""])
 async def test_vector_search_rejects_unsafe_filter_keys(key):
+    manager = VectorDBManager()
     with pytest.raises(ValueError):
-        await VectorDBManager()._search("activity_logs", "q", 5, None, {key: "v"})
+        await manager._search("activity_logs", "q", 5, None, {key: "v"})
 
 
 # ── non-technical prompts ──────────────────────────────────────────────────
@@ -139,13 +142,16 @@ def prompts():
 @pytest.mark.parametrize("name", NON_TECH)
 def test_prompts_require_dates_sources_and_clarification(prompts, name):
     text = prompts[name]
-    assert "get_current_datetime" in text and "tool result" in text and "clarifying question" in text
+    assert "get_current_datetime" in text
+    assert "tool result" in text
+    assert "clarifying question" in text
 
 
 @pytest.mark.parametrize("name", INVESTING)
 def test_investment_agents_state_uncertainty_and_disclaimer(prompts, name):
     text = prompts[name]
-    assert "not financial advice" in text and "never as certainties" in text
+    assert "not financial advice" in text
+    assert "never as certainties" in text
     assert "definitive" not in text.lower()
 
 
@@ -156,4 +162,89 @@ def test_weather_agent_is_told_about_its_forecast_tool(prompts):
 
 def test_reviewer_is_framed_around_consumer_rights(prompts):
     text = prompts["asymmetric_reviewer"].lower()
-    assert "loophole" not in text and "exploit" not in text and "consumer" in text
+    assert "loophole" not in text
+    assert "exploit" not in text
+    assert "consumer" in text
+
+
+async def test_query_history_can_opt_in_to_untagged_legacy_rows(run_ctx):
+    legacy_row = json.dumps({"pass_num": 1, "agent_name": "old", "action": "A", "summary": "before tagging"})
+    calls = []
+
+    async def async_search(collection, query, n_results=3, project=None, filters=None):  # noqa: ARG001
+        calls.append(filters)
+        return [] if "agent_name" in (filters or {}) and filters["agent_name"] else [legacy_row]
+
+    with patch.object(memory.vector_db, "async_search", async_search):
+        without = await memory.query_history(MagicMock(deps=None), "q")
+        with_legacy = await memory.query_history(MagicMock(deps=None), "q", include_legacy=True)
+
+    assert without == "No relevant history found."
+    assert "before tagging" in with_legacy
+    assert {"type": "activity", "agent_name": None} in calls
+
+
+async def test_vector_search_matches_untagged_rows_with_is_null():
+    captured = []
+
+    class Conn:
+        async def fetch(self, sql, *args):
+            captured.append((sql, args))
+            return []
+
+    class Ctx:
+        async def __aenter__(self):
+            return Conn()
+
+        async def __aexit__(self, *_):
+            return False
+
+    class Pool:
+        def acquire(self):
+            return Ctx()
+
+    async def noop(*_a, **_k):
+        return None
+
+    async def pool():
+        return Pool()
+
+    from pydantic_agents.core import vector_db as vdb
+
+    manager = VectorDBManager()
+    with (
+        patch.object(vdb, "_require_vector_deps"),
+        patch.object(vdb, "_ensure_table", noop),
+        patch.object(vdb, "_to_embedding", return_value=[0.1]),
+        patch.object(vdb, "_get_pool", pool),
+    ):
+        await manager._search("activity_logs", "q", 5, None, {"type": "activity", "agent_name": None})
+    sql, args = captured[0]
+    assert "metadata->>'type' = $3" in sql
+    assert "metadata->>'agent_name' IS NULL" in sql
+    assert args[2:] == ("activity",)
+
+
+async def test_mcp_run_agent_by_name_returns_parseable_json_for_structured_output():
+    from pydantic_agents.mcp_server import run_agent_by_name
+
+    artifact = Artifact(agent_name="backend", files={"main.go": "package main"})
+    agent = AsyncMock()
+    agent.run.return_value = MagicMock(output=artifact)
+    with (
+        patch("pydantic_agents.mcp_server.registry") as reg,
+        patch("pydantic_agents.mcp_server.retrieve_context", return_value=""),
+    ):
+        reg.get.return_value = agent
+        reg._agents = {"backend": (None, None, lambda: None, None)}
+        result = await run_agent_by_name("backend", "build it")
+
+    parsed = json.loads(result)
+    assert parsed["agent_name"] == "backend"
+    assert parsed["files"] == {"main.go": "package main"}
+
+
+def test_mcp_agent_tools_describe_the_result_format():
+    from pydantic_agents.mcp_server import RESULT_FORMAT_NOTE
+
+    assert "JSON" in RESULT_FORMAT_NOTE

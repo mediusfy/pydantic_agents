@@ -29,7 +29,7 @@ from pydantic_agents.core.settings import settings
 logger = logging.getLogger(__name__)
 
 # Metadata filter keys are interpolated into SQL, so they must be plain identifiers.
-_METADATA_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_METADATA_KEY = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 
 # ── Embedding ──────────────────────────────────────────────────────
 
@@ -253,10 +253,10 @@ class VectorDBManager:
         query: str,
         n_results: int = 3,
         project: str | None = None,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | None] | None = None,
     ) -> list[str]:
         # `project` is the long-standing filter; `filters` adds any other metadata equality filters.
-        conditions = dict(filters or {})
+        conditions: dict[str, str | None] = dict(filters or {})
         if project:
             conditions["project"] = project
         for key in conditions:
@@ -268,9 +268,16 @@ class VectorDBManager:
             embedding = _to_embedding(query)
             embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
             pool = await _get_pool()
-            where = "".join(
-                f"{'WHERE' if i == 0 else 'AND'} metadata->>'{key}' = ${i + 3}\n" for i, key in enumerate(conditions)
-            )
+            # A None value matches rows that lack the key (e.g. entries written before it was recorded).
+            clauses: list[str] = []
+            params: list[str] = []
+            for key, value in conditions.items():
+                if value is None:
+                    clauses.append(f"metadata->>'{key}' IS NULL")
+                else:
+                    params.append(value)
+                    clauses.append(f"metadata->>'{key}' = ${len(params) + 2}")
+            where = f"WHERE {' AND '.join(clauses)}\n" if clauses else ""
             async with pool.acquire() as conn:
                 rows = await conn.fetch(
                     f"""
@@ -281,7 +288,7 @@ class VectorDBManager:
                     """,
                     embedding_str,
                     n_results,
-                    *conditions.values(),
+                    *params,
                 )
                 return [row["content"] for row in rows]
         except OrgitrationDependencyError as exc:
@@ -301,7 +308,7 @@ class VectorDBManager:
         query: str,
         n_results: int = 3,
         project: str | None = None,
-        filters: dict[str, str] | None = None,
+        filters: dict[str, str | None] | None = None,
     ) -> list[str]:
         return await _bridge(self._search(collection_name, query, n_results, project, filters))
 

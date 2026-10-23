@@ -48,16 +48,24 @@ async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact
     return f"Activity logged successfully: {action}"
 
 
-async def query_history(ctx: RunContext[Any], query: str, pass_num: int | None = None, all_agents: bool = False) -> str:
+async def query_history(
+    ctx: RunContext[Any],
+    query: str,
+    pass_num: int | None = None,
+    all_agents: bool = False,
+    include_legacy: bool = False,
+) -> str:
     """Queries this agent's history for the current run to find past decisions or actions.
 
     Args:
         query: What to look for.
         pass_num: Only return entries logged in this pass.
         all_agents: Also include entries logged by other agents in the same run.
+        include_legacy: Also include older entries that were logged before entries were tagged with agent and
+            run. These cannot be attributed, so they come from any agent and any run.
     """
     agent_name, run_id = _scope(ctx)
-    filters: dict[str, str] = {}
+    filters: dict[str, str | None] = {}
     if not all_agents:
         filters["agent_name"] = agent_name
     if run_id:
@@ -66,6 +74,11 @@ async def query_history(ctx: RunContext[Any], query: str, pass_num: int | None =
         filters["pass_num"] = str(pass_num)
 
     results = await vector_db.async_search("activity_logs", query, n_results=5, filters=filters)
+    if include_legacy:
+        legacy = await vector_db.async_search(
+            "activity_logs", query, n_results=5, filters={"type": "activity", "agent_name": None}
+        )
+        results = results + [r for r in legacy if r not in results]
     if not results:
         return "No relevant history found."
 

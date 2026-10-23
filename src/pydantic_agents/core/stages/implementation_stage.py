@@ -2,6 +2,7 @@ import asyncio
 import logging
 import time
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
@@ -78,7 +79,7 @@ class ImplementationStage(StageRunner):
             state.stage = "implementation"
             return state
 
-        semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
+        semaphore = llm_semaphore()
         user_stories = state.user_stories or []
         cto_advice = state.advisory_results.get("cto", "")
         ux_advice = state.advisory_results.get("ux", "")
@@ -186,7 +187,7 @@ class ImplementationStage(StageRunner):
                     f"2. Postgres database adapters (adapters/postgres_repo.go)\n"
                     f"3. Pub/Sub event handlers and definitions (ports/events.go)\n"
                     f"4. Core business logic service wiring (domain/service.go)\n"
-                    f"5. Entry point with HTTP/gRPC server (cmd/server/main.go)\n\n"
+                    f"5. Entry point with HTTP/gRPC server ({settings.go_entrypoint})\n\n"
                     f"All files must compile together. "
                     f"Run `run_go_build` to self-validate before returning.{backend_ctx_str}"
                 )

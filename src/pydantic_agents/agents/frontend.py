@@ -1,4 +1,6 @@
-from pydantic_ai import Agent, RunContext, UsageLimits
+from typing import Any
+
+from pydantic_ai import Agent, RunContext
 
 from pydantic_agents.core.models.core import Artifact
 from pydantic_agents.core.models.factory import create_model
@@ -12,7 +14,7 @@ Technical Priorities:
 - Event Handling: Implement robust WebSocket or Server-Sent Events (SSE) logic, including automatic reconnection strategies and state reconciliation.
 
 ## Output Protocol
-Do NOT attempt to read or write files to disk. You do not have local I/O access. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
+Do NOT write files to disk. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
 
 ## Self-Validation
 You have access to the `validate_frontend_code` tool. You MUST pass your generated component through this tool. Do NOT return the final artifact to the orchestrator until the tool returns SUCCESS. If it returns an error, analyze the trace, correct your code, and run the tool again.
@@ -57,7 +59,7 @@ frontend_agent = Agent(
     system_prompt=frontend_prompt,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
@@ -66,17 +68,26 @@ component_gen = Agent(
     create_model(settings.resolve_model(settings.frontend_model)),
     system_prompt=frontend_prompt,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
+)
+
+
+# Private inner generator: tool-less (never registered), so it cannot delegate or write files.
+_component_writer = Agent(
+    create_model(settings.resolve_model(settings.frontend_model)),
+    system_prompt=frontend_prompt,
+    defer_model_check=True,
+    retries=settings.agent_retries,
 )
 
 
 @frontend_agent.tool
-async def create_component(ctx: RunContext[str], component_name: str, requirements: str, test_id: str) -> str:
+async def create_component(ctx: RunContext[Any], component_name: str, requirements: str, test_id: str) -> str:
     """Calls model to generate a production-ready Vue 3 SFC component with: WCAG 2.1 ARIA labels, data-testid attribute, TypeScript props interface, Tailwind/CSS module styling, proper event handler typing."""
     # reasoner generates code as free text
-    raw = await component_gen.run(
+    raw = await _component_writer.run(
         f"Generate Vue 3 SFC component {component_name} using Composition API with requirements: {requirements}. Use data-testid={test_id}.",
-        usage_limits=UsageLimits(request_limit=500),
+        usage=ctx.usage,
         model_settings={"max_tokens": 16384},
     )
     # extract text — no output_type means .output is a str

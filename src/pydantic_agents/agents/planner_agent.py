@@ -14,9 +14,9 @@ Dependencies define order: if step B depends on step A's output, list A's task I
 """
 
 planner_agent = Agent(
-    create_model(settings.resolve_model(settings.cto_model)),
+    create_model(settings.resolve_model(settings.planner_model)),
     system_prompt=system_prompt,
     output_type=Plan,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )

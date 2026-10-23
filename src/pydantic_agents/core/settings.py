@@ -7,19 +7,35 @@ Usage:
     settings.max_retries    # 2 by default
 """
 
-from pathlib import Path
+import logging
+from functools import cache
+from pathlib import Path, PurePosixPath
 from typing import Literal
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Model-name prefixes that identify a provider's own models, and the default used when an agent's configured name
 # (e.g. the shared "claude-sonnet-5" alias) is not one of them.
+logger = logging.getLogger(__name__)
+
 _NATIVE_MODEL_PREFIXES = {
     "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
     "gemini": ("gemini-",),
     "vertexai": ("gemini-",),
 }
 _PROVIDER_DEFAULT_MODELS = {"openai": "gpt-4o", "gemini": "gemini-2.0-flash", "vertexai": "gemini-2.0-flash"}
+
+
+@cache
+def _warn_model_fallback(provider: str, model_name: str, default: str) -> None:
+    """Warn once per (provider, name): a typo'd *_MODEL value must not silently become a valid-looking model."""
+    logger.warning(
+        "Model name %r is not a %s model; using %s. Set the agent's *_MODEL to a %s model name to choose another.",
+        model_name,
+        provider,
+        default,
+        provider,
+    )
 
 
 class Settings(BaseSettings):
@@ -64,6 +80,9 @@ class Settings(BaseSettings):
     security_model: str = "claude-sonnet-5"
     ux_model: str = "claude-sonnet-5"
     cto_model: str = "claude-sonnet-5"
+    planner_model: str = "claude-sonnet-5"
+    quality_gate_model: str = "claude-sonnet-5"
+    service_engineer_model: str = "claude-sonnet-5"
 
     holiday_planner_model: str = "claude-sonnet-5"
     region_analyzer_model: str = "claude-sonnet-5"
@@ -79,12 +98,27 @@ class Settings(BaseSettings):
     output_dir: Path = Path("./generated-app")
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     max_concurrent_llm_calls: int = 5
+    # Per-agent-run limits (see core/limits.py). Timeouts are not retried; 429/5xx/connection errors are.
+    agent_retries: int = 2  # pydantic_ai output/tool validation retries
+    agent_request_limit: int = 40
+    # Cumulative input+output tokens per run: every request resends its context, so this is much larger than any
+    # single response (the database agent caps one response at 8192 tokens).
+    agent_total_tokens_limit: int = 2_000_000
+    agent_transport_attempts: int = 3  # total tries for 429/5xx/connection errors (separate from agent_retries)
+    agent_timeout_seconds: float = 600.0
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
     state_backend: Literal["disk", "turso"] = "disk"
     vector_db_dir: Path = Path("./.claw-vectordb")
 
     go_version: str = "1.26"
+    # One convention for the Go service entry point, shared by the backend prompt, the implementation stage and
+    # the devops templates, so generated CI and Makefiles build the generated backend.
+    go_entrypoint: str = "cmd/server/main.go"
+    # (directory of the entry point, derived so a bare "main.go" still yields a valid "./." build path)
+    # Pinned tool versions for generated CI (the review agent rejects unpinned 'latest').
+    golangci_lint_version: str = "v1.64.8"
+    govulncheck_version: str = "v1.1.4"
 
     # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
     # to live here were removed. They were never actually read by
@@ -94,6 +128,11 @@ class Settings(BaseSettings):
     # Now that every *_model field is pinned to the same "claude-sonnet-5"
     # value, keeping unused fast/reasoner groupings around would only
     # mislead readers into thinking agents still get different models.
+
+    @property
+    def go_entrypoint_dir(self) -> str:
+        """Directory that holds the Go entry point, e.g. "cmd/server" ("." for a bare "main.go")."""
+        return PurePosixPath(self.go_entrypoint).parent.as_posix()
 
     def resolve_model(self, model_name: str) -> str:
         """Resolve an agent-level model name to a fully-qualified pydantic_ai model spec.
@@ -119,30 +158,26 @@ class Settings(BaseSettings):
         - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider
-        if provider:
-            if provider == "litellm":
-                # Route everything through LiteLLM's OpenAI-compatible proxy interface
-                return f"openai:{model_name}"
-            if provider == "deepseek":
-                return f"deepseek:{model_name}" if ":" not in model_name else model_name
-            if provider in _NATIVE_MODEL_PREFIXES:
-                # Keep a per-agent name that belongs to this provider; the shared default alias
-                # ("claude-sonnet-5") does not, so it falls back to the provider's default model.
-                if ":" in model_name:
-                    return model_name
-                if model_name.startswith(_NATIVE_MODEL_PREFIXES[provider]):
-                    return f"{provider}:{model_name}"
-                return f"{provider}:{_PROVIDER_DEFAULT_MODELS[provider]}"
-            if ":" in model_name:
-                return model_name
-            return f"{provider}:{model_name}"
-
-        # No provider override — add prefix for non-native models
+        if provider == "litellm":
+            # Route everything through LiteLLM's OpenAI-compatible proxy interface
+            return f"openai:{model_name}"
         if ":" in model_name:
             return model_name
-        if model_name.startswith("deepseek-"):
-            return f"deepseek:{model_name}"
-        return model_name
+        if not provider:
+            # No provider override: only DeepSeek's native names need a prefix.
+            return f"deepseek:{model_name}" if model_name.startswith("deepseek-") else model_name
+        if provider in _NATIVE_MODEL_PREFIXES:
+            return self._resolve_native(provider, model_name)
+        return f"{provider}:{model_name}"
+
+    @staticmethod
+    def _resolve_native(provider: str, model_name: str) -> str:
+        """Keep a name that belongs to the provider; otherwise fall back to its default, and say so."""
+        if model_name.startswith(_NATIVE_MODEL_PREFIXES[provider]):
+            return f"{provider}:{model_name}"
+        default = _PROVIDER_DEFAULT_MODELS[provider]
+        _warn_model_fallback(provider, model_name, default)
+        return f"{provider}:{default}"
 
 
 settings = Settings()

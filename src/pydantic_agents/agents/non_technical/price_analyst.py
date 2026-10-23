@@ -29,5 +29,5 @@ price_analyst_agent = Agent(
     system_prompt=analyst_prompt,
     output_type=str,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )

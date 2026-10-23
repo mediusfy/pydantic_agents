@@ -1,4 +1,5 @@
 import re
+from typing import Any
 
 from pydantic_ai import RunContext
 
@@ -47,7 +48,7 @@ PATTERNS = [
 ]
 
 
-async def scan_for_secrets(ctx: RunContext[str], content: str) -> list[dict]:
+def scan_for_secrets(ctx: RunContext[Any], content: str) -> list[dict]:
     findings = []
     for name, pattern, severity in PATTERNS:
         for i, line in enumerate(content.splitlines(), 1):
