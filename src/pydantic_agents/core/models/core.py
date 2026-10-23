@@ -52,7 +52,7 @@ QUALITY_GATE_MAX_COMPLEXITY = 60
 class QualityGateResult(BaseModel):
     passed: bool = Field(
         default=False,
-        description=f"Derived in code from complexity_score <= {QUALITY_GATE_MAX_COMPLEXITY}; supplied value is ignored",
+        description=f"Derived in code from complexity_score <= {QUALITY_GATE_MAX_COMPLEXITY}; supplied value ignored",
     )
     complexity_score: int = Field(ge=0, le=100, description="0 is simple, 100 is overly complex/over-engineered")
     feedback: list[str]
