@@ -48,7 +48,7 @@ PATTERNS = [
 ]
 
 
-async def scan_for_secrets(ctx: RunContext[Any], content: str) -> list[dict]:
+def scan_for_secrets(ctx: RunContext[Any], content: str) -> list[dict]:
     findings = []
     for name, pattern, severity in PATTERNS:
         for i, line in enumerate(content.splitlines(), 1):

@@ -2,10 +2,11 @@
 
 import asyncio
 import contextlib
-import os
 import tempfile
 
+from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
+from pydantic_agents.core.utils import safe_write
 
 GO_MOD_INIT_TIMEOUT = 10.0
 GO_MOD_TIDY_TIMEOUT = 30.0
@@ -30,12 +31,9 @@ async def _run_cmd(*args: str, cwd: str, timeout: float = 30.0) -> None:
 
 
 async def _write_files(temp_dir: str, files: dict[str, str]) -> None:
-    """Write a dict of file paths to content into temp_dir."""
+    """Write a dict of file paths to content into temp_dir; raises PathTraversalError if a name escapes it."""
     for filename, content in files.items():
-        filepath = os.path.join(temp_dir, filename)
-        os.makedirs(os.path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w") as f:
-            f.write(content)
+        safe_write(temp_dir, filename, content)
 
 
 async def _init_and_tidy(temp_dir: str) -> str | None:
@@ -109,7 +107,10 @@ async def run_go_build(files: dict[str, str]) -> str:
         files: A dictionary mapping file paths (e.g., 'main.go') to their string content.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        await _write_files(temp_dir, files)
+        try:
+            await _write_files(temp_dir, files)
+        except PathTraversalError as e:
+            return f"BUILD FAILED: {e}"
         err = await _init_and_tidy(temp_dir)
         if err:
             return f"BUILD FAILED: {err}"
@@ -127,7 +128,10 @@ async def run_go_vet(files: dict[str, str]) -> str:
         files: A dictionary mapping file paths (e.g., 'main.go') to their string content.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
-        await _write_files(temp_dir, files)
+        try:
+            await _write_files(temp_dir, files)
+        except PathTraversalError as e:
+            return f"VET FAILED: {e}"
         err = await _init_and_tidy(temp_dir)
         if err:
             return f"VET FAILED: {err}"

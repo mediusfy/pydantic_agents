@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from pydantic_agents.core.pipeline.context import ContextFrame
 
@@ -51,10 +51,22 @@ class ReviewResult(BaseModel):
     risk_level: RiskLevel
 
 
+QUALITY_GATE_MAX_COMPLEXITY = 60
+
+
 class QualityGateResult(BaseModel):
-    passed: bool
+    passed: bool = Field(
+        default=False,
+        description=f"Derived in code from complexity_score <= {QUALITY_GATE_MAX_COMPLEXITY}; supplied value ignored",
+    )
     complexity_score: int = Field(ge=0, le=100, description="0 is simple, 100 is overly complex/over-engineered")
     feedback: list[str]
+
+    @model_validator(mode="after")
+    def _derive_passed(self) -> "QualityGateResult":
+        # The verdict must not depend on the model keeping two fields consistent.
+        self.passed = self.complexity_score <= QUALITY_GATE_MAX_COMPLEXITY
+        return self
 
 
 class ArchitecturalConstraint(BaseModel):
@@ -70,7 +82,9 @@ class AgentAdvice(BaseModel):
     architectural_constraints: list[ArchitecturalConstraint] = Field(
         default_factory=list, description="Constraints that bind specific downstream agents"
     )
-    approved_to_proceed: bool = Field(default=True)
+    approved_to_proceed: bool = Field(
+        default=False, description="Must be set explicitly; an omitted value blocks the pipeline"
+    )
 
 
 class FailureReport(BaseModel):
@@ -91,7 +105,7 @@ class ActivityLog(BaseModel):
 
 class SecurityReport(BaseModel):
     passed: bool
-    score: int
+    score: int = Field(ge=0, le=100)
     feedback: list[str] = Field(default_factory=list)
 
 

@@ -1,6 +1,4 @@
-import os
 import subprocess
-from pathlib import Path
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
@@ -9,28 +7,13 @@ from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.models.core import Artifact
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
+from pydantic_agents.core.utils import resolve_sandboxed, sandbox_root
 
 _READ_FILE_MAX_BYTES = 256 * 1024
 
 
-def _sandbox_root() -> Path:
-    """Resolve the root that file-reading tools are allowed to touch.
-
-    Read from ORCHESTRATION_CODEBASE_ROOT (set by run_existing_code_pipeline), with
-    CWD as the safe local-dev default. Returning a Path lets the caller use
-    relative_to() to enforce containment.
-    """
-    return Path(os.environ.get("ORCHESTRATION_CODEBASE_ROOT", os.getcwd())).resolve()
-
-
-def _resolve_sandboxed(user_path: str) -> Path:
-    root = _sandbox_root()
-    candidate = (root / user_path).resolve() if not os.path.isabs(user_path) else Path(user_path).resolve()
-    try:
-        candidate.relative_to(root)
-    except ValueError as e:
-        raise PathTraversalError(f"Path '{user_path}' escapes sandbox root {root}") from e
-    return candidate
+_sandbox_root = sandbox_root
+_resolve_sandboxed = resolve_sandboxed
 
 
 service_engineer_agent = Agent(
@@ -108,7 +91,11 @@ def list_directory(ctx: RunContext[Any], dirpath: str) -> str:
 def run_gofmt_check(ctx: RunContext[Any], filepath: str) -> str:
     """Run gofmt on a file and return any formatting issues."""
     try:
-        result = subprocess.run(["gofmt", "-d", filepath], capture_output=True, text=True, timeout=30)
+        path = _resolve_sandboxed(filepath)
+    except PathTraversalError as e:
+        return f"ERROR: {e}"
+    try:
+        result = subprocess.run(["gofmt", "-d", "--", str(path)], capture_output=True, text=True, timeout=30)
         if result.returncode == 0 and not result.stdout:
             return "PASS: gofmt is clean"
         return result.stdout or result.stderr

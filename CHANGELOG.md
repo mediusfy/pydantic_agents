@@ -26,11 +26,15 @@ fresh **Unreleased** section above it.
   size and checks torch/turso/Go/Node inside it (#19).
 - Changelog, `AGENTS.md`, a pull request template and a CI check that every
   pull request updates this file.
+- Agent guidance in `.ai/` (coding standards, testing, architecture, security, a
+  full-repository review prompt), `CLAUDE.md`, and a workflow that copies each merged
+  PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
 - CTO and backend agents declare `deps_type` and render `OrgContext` / `ProjectState` into their instructions, so
   the CTO can actually verify against the tech stack, compliance tier and budget it is given.
-- Tool `RunContext` annotations are `RunContext[Any]` instead of `RunContext[str]` (mypy errors 33 -> 15).
+- Tool `RunContext` annotations are `RunContext[Any]` instead of `RunContext[str]`, which removes the tool-signature `arg-type` errors mypy reported (the remaining mypy errors
+  are missing optional packages and stubs; mypy is not run in CI).
 - Review agent no longer hardcodes the `payments`/`notifications`/`users` contexts, and its prompt asks for mTLS on
   service-to-service traffic rather than "everywhere".
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
@@ -44,6 +48,18 @@ fresh **Unreleased** section above it.
 - Prompts no longer claim "no local I/O" (frontend, sre, test_eng) or demand "100% test coverage" (test_eng), and
   the reviewer is asked to verify earlier feedback is resolved rather than to "address" it.
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+- Quality gate no longer crashes on a failed security audit (it read a nonexistent `vulnerabilities` field);
+  the audit's `feedback` now goes to the retry loop.
+- Gates fail closed: `AgentAdvice.approved_to_proceed` defaults to false, a CTO agent error blocks the
+  pipeline (an explicit human override still applies), `QualityGateResult.passed` is computed from
+  `complexity_score <= 60` instead of trusted from the model, and `SecurityReport.score` is bounded 0-100.
+- Sandboxing of model-chosen paths and arguments: `read_file`/`list_dir`/`write_file` are confined to
+  `ORCHESTRATION_CODEBASE_ROOT` (or CWD); `search_codebase` can no longer be made to run commands via
+  ripgrep flags such as `--pre`; `run_gofmt_check`, `run_go_build`, `run_go_vet` and
+  `validate_frontend_code` reject paths that escape their root or temp dir; and `safe_path_join` no longer
+  accepts sibling directories that share a prefix (e.g. `/repo-evil`).
+- `write_file` is no longer attached to 25 of 27 agents. It now sits in an `fs_write` category that no agent
+  is assigned; code-facing agents get `read_file`/`list_dir` through `fs_read`.
 
 ## [0.2.0]
 

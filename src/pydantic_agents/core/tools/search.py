@@ -2,11 +2,14 @@ import asyncio
 import glob as pyglob
 import os
 import re
+from pathlib import Path
 from typing import Any
 
 from pydantic_ai import RunContext
 
+from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
+from pydantic_agents.core.utils import resolve_sandboxed, sandbox_root
 
 
 async def search_codebase(ctx: RunContext[Any], pattern: str, path: str = ".", include: str = "*.go") -> list[str]:
@@ -16,20 +19,24 @@ async def search_codebase(ctx: RunContext[Any], pattern: str, path: str = ".", i
         pattern: The text pattern or regex to search for.
         path: The directory path to search in (defaults to current directory ".").
         include: Glob pattern for files to include (e.g. "*.go", "*.py"). Defaults to "*.go".
+
+    Returns absolute paths of the matching files (inside the workspace root).
     """
     try:
-        base_dir = os.path.realpath(".")
-        full_path = os.path.realpath(path)
-        if not full_path.startswith(base_dir):
+        try:
+            full_path = resolve_sandboxed(path)
+        except PathTraversalError:
             return ["Error: Path traversal detected. You can only search within the workspace."]
 
+        # -e and -- stop model-chosen text from being parsed as rg flags (e.g. --pre=<cmd>).
         proc = await asyncio.create_subprocess_exec(
             "rg",
             "-l",
-            "--glob",
-            include,
+            f"--glob={include}",
+            "-e",
             pattern,
-            full_path,
+            "--",
+            str(full_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -50,7 +57,7 @@ async def search_codebase(ctx: RunContext[Any], pattern: str, path: str = ".", i
         return [f"Search failed: {e}"]
 
 
-async def search_pattern_in_content(ctx: RunContext[Any], pattern: str, content: str) -> list[dict]:
+def search_pattern_in_content(ctx: RunContext[Any], pattern: str, content: str) -> list[dict]:
     """Search a string for a regex pattern, returning line matches.
 
     Args:
@@ -64,8 +71,13 @@ async def search_pattern_in_content(ctx: RunContext[Any], pattern: str, content:
     return results
 
 
-async def search_files(ctx: RunContext[Any], glob: str) -> list[str]:
-    return pyglob.glob(glob, recursive=True)
+def search_files(ctx: RunContext[Any], glob: str) -> list[str]:
+    """Search for files matching a glob pattern relative to the workspace (e.g. '**/*.go')."""
+    root = sandbox_root()
+    if os.path.isabs(glob) or ".." in Path(glob).parts:
+        return []
+    matches = pyglob.glob(glob, root_dir=root, recursive=True)
+    return [m for m in matches if (root / m).resolve().is_relative_to(root)]
 
 
 register_tool(

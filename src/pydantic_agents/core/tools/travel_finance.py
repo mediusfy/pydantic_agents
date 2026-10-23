@@ -8,7 +8,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic_agents.core.tools.registry import register_tool
 
 
-async def get_current_datetime(ctx: RunContext[Any]) -> str:
+def get_current_datetime(ctx: RunContext[Any]) -> str:
     """Get the current date and time in UTC. Crucial for understanding 'now' in pricing or travel."""
     now = datetime.now(UTC)
     return f"Current UTC Date and Time: {now.isoformat()}"
