@@ -24,7 +24,6 @@ from pydantic_agents.core.settings import settings
         (ModelAPIError("m", "connection reset"), True),
         (ConnectionError("boom"), True),
         (TimeoutError(), False),
-        (TimeoutError(), False),
         (ValueError("x"), False),
     ],
 )
@@ -102,8 +101,9 @@ async def test_provider_does_not_retry_permanent_errors(monkeypatch, error):
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=[error, "ok"])
 
+    provider, sem = PydanticAIAgentProvider(), asyncio.Semaphore(1)
     with pytest.raises(type(error)):
-        await PydanticAIAgentProvider().run_agent(asyncio.Semaphore(1), "ba", agent, "hi")
+        await provider.run_agent(sem, "ba", agent, "hi")
 
     assert agent.run.await_count == 1
 
@@ -113,8 +113,9 @@ async def test_provider_gives_up_after_the_configured_attempts(monkeypatch):
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=ModelHTTPError(429, "m"))
 
+    provider, sem = PydanticAIAgentProvider(), asyncio.Semaphore(1)
     with pytest.raises(ModelHTTPError):
-        await PydanticAIAgentProvider().run_agent(asyncio.Semaphore(1), "ba", agent, "hi")
+        await provider.run_agent(sem, "ba", agent, "hi")
 
     assert agent.run.await_count == settings.agent_transport_attempts
 
@@ -125,8 +126,9 @@ async def test_provider_does_not_retry_timeouts():
 
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=slow)
+    provider, sem = PydanticAIAgentProvider(), asyncio.Semaphore(1)
     with pytest.raises(TimeoutError):
-        await PydanticAIAgentProvider().run_agent(asyncio.Semaphore(1), "ba", agent, "hi", timeout_seconds=0.05)
+        await provider.run_agent(sem, "ba", agent, "hi", timeout_seconds=0.05)
     assert agent.run.await_count == 1
 
 
