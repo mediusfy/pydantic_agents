@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
+  `bounded_context`, and `AgentAdvice` carries `architectural_constraints`: the BA and CTO prompts already
+  asked for this data and it was being discarded. The advisory stage passes the constraints on to downstream agents.
+- `ReviewCriteria` deps for the review agent; the pipeline passes the bounded contexts found by the BA stage.
 - promptfoo agent evals: `promptfooconfig.yaml`, an in-process provider in
   `evals/provider.py`, and `make eval` (#18).
 - README section on running the evals, including the gateway key requirements.
@@ -22,15 +26,24 @@ fresh **Unreleased** section above it.
   size and checks torch/turso/Go/Node inside it (#19).
 - Changelog, `AGENTS.md`, a pull request template and a CI check that every
   pull request updates this file.
+- Agent guidance in `.ai/` (coding standards, testing, architecture, security, a
+  full-repository review prompt), `CLAUDE.md`, and a workflow that copies each merged
+  PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
 - Run limits are tighter and configurable (`AGENT_RETRIES=2`, `AGENT_REQUEST_LIMIT=40`,
-  `AGENT_TOTAL_TOKENS_LIMIT=1000000`, `AGENT_TIMEOUT_SECONDS=600`; was 5 retries, 500 requests, 3600 s). The
+  `AGENT_TOTAL_TOKENS_LIMIT=2000000`, `AGENT_TIMEOUT_SECONDS=600`, `AGENT_TRANSPORT_ATTEMPTS=3`; was 5 retries, 500 requests, 3600 s). The
   backend, service_engineer and frontend agents get a request cap of 60.
 - The provider retries only 429/5xx/connection errors (up to 3 attempts); timeouts are no longer retried, so a
   stuck run can no longer burn three full timeouts.
 - All stages, the registry and the LangGraph bridge share one LLM concurrency limiter sized by
   `MAX_CONCURRENT_LLM_CALLS` (the BA and advisory stages used private `Semaphore(10)`s).
+- CTO and backend agents declare `deps_type` and render `OrgContext` / `ProjectState` into their instructions, so
+  the CTO can actually verify against the tech stack, compliance tier and budget it is given.
+- Tool `RunContext` annotations are `RunContext[Any]` instead of `RunContext[str]`, which removes the tool-signature `arg-type` errors mypy reported (the remaining mypy errors
+  are missing optional packages and stubs; mypy is not run in CI).
+- Review agent no longer hardcodes the `payments`/`notifications`/`users` contexts, and its prompt asks for mTLS on
+  service-to-service traffic rather than "everywhere".
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
   `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
@@ -39,7 +52,23 @@ fresh **Unreleased** section above it.
 ### Fixed
 - Delegated agent calls run under their parent's concurrency permit instead of acquiring a second one, removing
   a possible deadlock when concurrent delegation chains exhaust the limiter.
+- `registry.query` passes no deps (instead of `{}`) when an agent has no deps factory, and records the running
+  agent's name so `log_activity` no longer logs `agent_name="system"`.
+- Prompts no longer claim "no local I/O" (frontend, sre, test_eng) or demand "100% test coverage" (test_eng), and
+  the reviewer is asked to verify earlier feedback is resolved rather than to "address" it.
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+- Quality gate no longer crashes on a failed security audit (it read a nonexistent `vulnerabilities` field);
+  the audit's `feedback` now goes to the retry loop.
+- Gates fail closed: `AgentAdvice.approved_to_proceed` defaults to false, a CTO agent error blocks the
+  pipeline (an explicit human override still applies), `QualityGateResult.passed` is computed from
+  `complexity_score <= 60` instead of trusted from the model, and `SecurityReport.score` is bounded 0-100.
+- Sandboxing of model-chosen paths and arguments: `read_file`/`list_dir`/`write_file` are confined to
+  `ORCHESTRATION_CODEBASE_ROOT` (or CWD); `search_codebase` can no longer be made to run commands via
+  ripgrep flags such as `--pre`; `run_gofmt_check`, `run_go_build`, `run_go_vet` and
+  `validate_frontend_code` reject paths that escape their root or temp dir; and `safe_path_join` no longer
+  accepts sibling directories that share a prefix (e.g. `/repo-evil`).
+- `write_file` is no longer attached to 25 of 27 agents. It now sits in an `fs_write` category that no agent
+  is assigned; code-facing agents get `read_file`/`list_dir` through `fs_read`.
 
 ## [0.2.0]
 

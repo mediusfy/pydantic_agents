@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from typing import Any
 
 import httpx
 from pydantic_ai import RunContext
@@ -7,14 +8,14 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from pydantic_agents.core.tools.registry import register_tool
 
 
-async def get_current_datetime(ctx: RunContext[str]) -> str:
+def get_current_datetime(ctx: RunContext[Any]) -> str:
     """Get the current date and time in UTC. Crucial for understanding 'now' in pricing or travel."""
     now = datetime.now(UTC)
     return f"Current UTC Date and Time: {now.isoformat()}"
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def search_duckduckgo(ctx: RunContext[str], query: str, max_results: int = 5) -> str:
+async def search_duckduckgo(ctx: RunContext[Any], query: str, max_results: int = 5) -> str:
     """Perform a DuckDuckGo web search to find current pricing, news, or travel info."""
     try:
         from duckduckgo_search import DDGS
@@ -37,7 +38,7 @@ async def search_duckduckgo(ctx: RunContext[str], query: str, max_results: int =
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def search_news(ctx: RunContext[str], query: str, max_results: int = 5) -> str:
+async def search_news(ctx: RunContext[Any], query: str, max_results: int = 5) -> str:
     """Perform a DuckDuckGo News search specifically for recent articles, press releases, or legislation."""
     try:
         from duckduckgo_search import DDGS
@@ -60,7 +61,7 @@ async def search_news(ctx: RunContext[str], query: str, max_results: int = 5) ->
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def get_weather_forecast(ctx: RunContext[str], lat: float, lon: float) -> str:
+async def get_weather_forecast(ctx: RunContext[Any], lat: float, lon: float) -> str:
     """Get the 7-day weather forecast for a location (latitude, longitude) using Open-Meteo."""
     url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weathercode&timezone=auto"
     try:

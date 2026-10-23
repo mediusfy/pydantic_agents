@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+from typing import Any
+
 from pydantic_ai import Agent, RunContext, UsageLimits
 
 from pydantic_agents.core.models.core import EventTrigger, UserStory
@@ -7,10 +9,11 @@ from pydantic_agents.core.settings import settings
 
 ba_prompt = """You are a Senior Business Analyst Agent focused on **Domain-Driven Design (DDD)**.
 
-Your job is to convert raw requirements into:
-1. **User Stories** in the standard "As a... I want... so that..." form, each with Gherkin acceptance criteria (Given/When/Then).
-2. **Bounded Contexts** — name them, define the ubiquitous language inside each, and identify the integration patterns between them (shared kernel, customer-supplier, anti-corruption layer, etc.).
-3. **Event Triggers** — the domain events that downstream backend services and QA automation will key off of. For each event give: name, payload schema sketch, the bounded context that owns it, and the consumers.
+Your job is to convert raw requirements into **User Stories**. For each story fill in:
+1. `statement` — the standard "As a... I want... so that..." form.
+2. `bounded_context` — the bounded context the story belongs to (use the ubiquitous language of that context).
+3. `gherkin` — acceptance criteria (Given/When/Then).
+4. `event_triggers` — the domain events that downstream backend services and QA automation will key off of. For each event fill in `name`, `description`, `payload_schema` (a field/type sketch), `owner` (the bounded context that emits it) and `consumers` (other contexts/services).
 
 ## Conventions
 
@@ -23,7 +26,7 @@ Your job is to convert raw requirements into:
 
 - Be ruthless about ambiguity — if requirements conflict or a story has no measurable acceptance criteria, flag it
 - Every user story must map to at least one event trigger
-- Events must have clear owners (bounded context) and consumers (other contexts/services)
+- Events must have a clear `owner` (bounded context) and `consumers` (other contexts/services)
 """
 
 ba_agent = Agent(
@@ -51,7 +54,7 @@ event_mapper = Agent(
 
 
 @ba_agent.tool
-async def define_user_stories(ctx: RunContext[str], raw_requirements: str) -> list[UserStory]:
+async def define_user_stories(ctx: RunContext[Any], raw_requirements: str) -> list[UserStory]:
     """Converts raw text requirements into structured UserStory models using an LLM."""
     res = await extractor.run(
         f"Extract user stories from: {raw_requirements}", usage_limits=UsageLimits(request_limit=500)
@@ -60,7 +63,7 @@ async def define_user_stories(ctx: RunContext[str], raw_requirements: str) -> li
 
 
 @ba_agent.tool
-async def map_event_triggers(ctx: RunContext[str], story_id: str, gherkin: str) -> list[EventTrigger]:
+async def map_event_triggers(ctx: RunContext[Any], story_id: str, gherkin: str) -> list[EventTrigger]:
     """Identifies specific events necessary for the Go backend and QA automation pipelines."""
     res = await event_mapper.run(
         f"Identify event triggers for story {story_id} with gherkin: {gherkin}",

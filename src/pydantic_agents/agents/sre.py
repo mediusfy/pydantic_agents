@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic_ai import Agent, RunContext
 
 from pydantic_agents.core.models.core import Artifact
@@ -15,7 +17,7 @@ sre_agent = Agent(
     - Resilience & Scaling: Configure proactive multi-region failover mechanisms and define Horizontal Pod Autoscaler (HPA) targets driven by custom service metrics.
 
     ## Output Protocol
-    Do NOT attempt to read or write files to disk. You do not have local I/O access. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
+    Do NOT write files to disk. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
     """,
     output_type=Artifact,
     defer_model_check=True,
@@ -24,7 +26,7 @@ sre_agent = Agent(
 
 
 @sre_agent.tool
-def provision_k8s_cluster(ctx: RunContext[str], provider: str, region: str, cluster_name: str) -> dict[str, str]:
+def provision_k8s_cluster(ctx: RunContext[Any], provider: str, region: str, cluster_name: str) -> dict[str, str]:
     """Returns Terraform/OpenTofu HCL: VPC, EKS/GKE cluster, node groups, IAM roles, OIDC provider, IRSA."""
     return {
         "terraform/main.tf": f'# Terraform for {provider} in {region}\nresource "kubernetes_cluster" "main" {{}}',
@@ -36,7 +38,7 @@ def provision_k8s_cluster(ctx: RunContext[str], provider: str, region: str, clus
 
 
 @sre_agent.tool
-def apply_helm_chart(ctx: RunContext[str], service_name: str, image: str, port: int) -> dict[str, str]:
+def apply_helm_chart(ctx: RunContext[Any], service_name: str, image: str, port: int) -> dict[str, str]:
     """Returns Helm chart: Chart.yaml, values.yaml, templates/ with Deployment, Service, Ingress, NetworkPolicy, HPA, ServiceMonitor, PDB."""
     return {
         f"helm/{service_name}/Chart.yaml": f"name: {service_name}\nversion: 1.0.0",

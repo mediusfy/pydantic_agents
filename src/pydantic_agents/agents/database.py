@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -34,7 +35,7 @@ CRITICAL WORKFLOW:
 
 
 @database_agent.tool
-def generate_migration_template(ctx: RunContext[str], table_name: str, schema_description: str) -> str:
+def generate_migration_template(ctx: RunContext[Any], table_name: str, schema_description: str) -> str:
     """Provides a bulletproof PostgreSQL migration template including auto-updating timestamps."""
     return f"""-- Migration for {table_name}
 -- Description: {schema_description}
@@ -70,7 +71,7 @@ DROP TABLE IF EXISTS {table_name};
 
 
 @database_agent.tool
-def generate_seed_script(ctx: RunContext[str], table_name: str) -> str:
+def generate_seed_script(ctx: RunContext[Any], table_name: str) -> str:
     """Returns a template for a PostgreSQL data seeding script."""
     return f"""-- Seed data for {table_name}
 INSERT INTO {table_name} (id, created_at, updated_at /* add columns */)
@@ -82,7 +83,7 @@ ON CONFLICT (id) DO NOTHING;
 
 
 @database_agent.tool
-def scaffold_redis_config(ctx: RunContext[str]) -> str:
+def scaffold_redis_config(ctx: RunContext[Any]) -> str:
     """Returns a baseline Redis configuration for caching."""
     return """# Redis baseline configuration
 maxmemory 256mb

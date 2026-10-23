@@ -1,4 +1,5 @@
 import asyncio
+from typing import Any
 
 import yfinance as yf
 from pydantic_ai import RunContext
@@ -8,7 +9,7 @@ from pydantic_agents.core.tools.registry import register_tool
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def get_stock_ticker_data(ctx: RunContext[str], ticker: str) -> str:
+async def get_stock_ticker_data(ctx: RunContext[Any], ticker: str) -> str:
     """Get core financial data, current price, and company info for a given stock or crypto ticker symbol (e.g., AAPL, BTC-USD)."""
     try:
 
@@ -48,7 +49,7 @@ async def get_stock_ticker_data(ctx: RunContext[str], ticker: str) -> str:
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-async def get_historical_prices(ctx: RunContext[str], ticker: str, period: str = "1mo") -> str:
+async def get_historical_prices(ctx: RunContext[Any], ticker: str, period: str = "1mo") -> str:
     """Get historical price data for a ticker to analyze charts and trends. Valid periods: 1d, 5d, 1mo, 3mo, 6mo, 1y, 2y, 5y, 10y, ytd, max"""
     try:
 

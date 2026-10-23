@@ -20,7 +20,7 @@ class AgentProviderPort(ABC):
         agent: Any,
         prompt: str,
         deps: Any = None,
-        timeout: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> Any:
         pass
 
@@ -35,24 +35,29 @@ class PydanticAIAgentProvider(AgentProviderPort):
         agent: Any,
         prompt: str,
         deps: Any = None,
-        timeout: float | None = None,
+        timeout_seconds: float | None = None,
     ) -> Any:
-        timeout = timeout or settings.agent_timeout_seconds
+        timeout_seconds = timeout_seconds or settings.agent_timeout_seconds
 
         @retry(
-            stop=stop_after_attempt(3),
+            stop=stop_after_attempt(settings.agent_transport_attempts),
             wait=wait_exponential(multiplier=1, min=2, max=30),
             retry=retry_if_exception(is_transient_error),
             reraise=True,
         )
         async def _run_with_retry():
-            kwargs = {"usage_limits": usage_limits(agent_name)}
-            if deps is not None:
-                kwargs["deps"] = deps
-            return await asyncio.wait_for(agent.run(prompt, **kwargs), timeout=timeout)
+            limits = usage_limits(agent_name)
+            run = (
+                agent.run(prompt, usage_limits=limits)
+                if deps is None
+                else agent.run(prompt, deps=deps, usage_limits=limits)
+            )
+            return await asyncio.wait_for(run, timeout=timeout_seconds)
 
         if permit_held.get():
-            # Delegated call: the parent's permit already covers it.
+            # Delegated call: the parent's permit already covers it. The flag is inherited by tasks created while
+            # the permit is held (contextvars are copied into new tasks), so a fire-and-forget task spawned from
+            # inside an agent run would bypass the limiter too: do not spawn unrelated background work from tools.
             return await telemetry.track(agent_name, _run_with_retry)
 
         async with semaphore:

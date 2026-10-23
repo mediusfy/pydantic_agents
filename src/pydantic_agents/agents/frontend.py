@@ -1,3 +1,5 @@
+from typing import Any
+
 from pydantic_ai import Agent, RunContext, UsageLimits
 
 from pydantic_agents.core.models.core import Artifact
@@ -12,7 +14,7 @@ Technical Priorities:
 - Event Handling: Implement robust WebSocket or Server-Sent Events (SSE) logic, including automatic reconnection strategies and state reconciliation.
 
 ## Output Protocol
-Do NOT attempt to read or write files to disk. You do not have local I/O access. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
+Do NOT write files to disk. Return all generated code as structured output through this response. Your response will be captured as an Artifact and written to the filesystem by the pipeline orchestrator.
 
 ## Self-Validation
 You have access to the `validate_frontend_code` tool. You MUST pass your generated component through this tool. Do NOT return the final artifact to the orchestrator until the tool returns SUCCESS. If it returns an error, analyze the trace, correct your code, and run the tool again.
@@ -71,7 +73,7 @@ component_gen = Agent(
 
 
 @frontend_agent.tool
-async def create_component(ctx: RunContext[str], component_name: str, requirements: str, test_id: str) -> str:
+async def create_component(ctx: RunContext[Any], component_name: str, requirements: str, test_id: str) -> str:
     """Calls model to generate a production-ready Vue 3 SFC component with: WCAG 2.1 ARIA labels, data-testid attribute, TypeScript props interface, Tailwind/CSS module styling, proper event handler typing."""
     # reasoner generates code as free text
     raw = await component_gen.run(

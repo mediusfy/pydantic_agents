@@ -25,9 +25,9 @@ from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 import logfire
-from pydantic_ai import UsageLimits
 
 from pydantic_agents.core.adapters.stage_events import StageEventRecorderPort, build_stage_event_recorder
+from pydantic_agents.core.limits import usage_limits
 from pydantic_agents.core.models.core import Artifact
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.telemetry import telemetry
@@ -80,7 +80,7 @@ async def _run_stage(
             **span_attrs,
             _level="info",
         ):
-            result = await agent.run(prompt, usage_limits=UsageLimits(request_limit=500))
+            result = await agent.run(prompt, usage_limits=usage_limits(agent_name))
             success = True
             return result, success
     except Exception:

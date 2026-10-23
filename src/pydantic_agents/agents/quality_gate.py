@@ -1,6 +1,6 @@
 from pydantic_ai import Agent
 
-from pydantic_agents.core.models.core import QualityGateResult
+from pydantic_agents.core.models.core import QUALITY_GATE_MAX_COMPLEXITY, QualityGateResult
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -34,7 +34,7 @@ Run these on every artifact:
 Evaluate the provided artifacts. Give:
 - `complexity_score`: 0 (simple, idiomatic) to 100 (gold-plated wreck)
 - `feedback`: specific, actionable suggestions for each issue found
-- `passed`: True if complexity_score <= 60, False otherwise
+- `passed`: True if complexity_score <= __MAX_COMPLEXITY__, False otherwise (it is recomputed from the score)
 
 ## Bias
 
@@ -44,6 +44,8 @@ Three similar lines beat a premature abstraction. If you can't name the second c
 
 Populate QualityGateResult exactly as specified. Provide specific file names and line numbers to make feedback actionable.
 """
+
+quality_gate_prompt = quality_gate_prompt.replace("__MAX_COMPLEXITY__", str(QUALITY_GATE_MAX_COMPLEXITY))
 
 quality_gate_agent = Agent(
     create_model(settings.resolve_model(settings.review_model)),
