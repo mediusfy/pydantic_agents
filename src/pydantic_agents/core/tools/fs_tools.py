@@ -4,7 +4,7 @@ from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import resolve_sandboxed, safe_write, sandbox_root
 
-_READ_FILE_MAX_BYTES = 256 * 1024
+_READ_FILE_MAX_CHARS = 256 * 1024
 
 
 def read_file(filepath: str) -> str:
@@ -17,8 +17,8 @@ def read_file(filepath: str) -> str:
         content = path.read_text(errors="replace")
     except Exception as e:
         return f"Error reading file: {e}"
-    if len(content) > _READ_FILE_MAX_BYTES:
-        return content[:_READ_FILE_MAX_BYTES] + f"\n... (truncated at {_READ_FILE_MAX_BYTES} bytes)"
+    if len(content) > _READ_FILE_MAX_CHARS:
+        return content[:_READ_FILE_MAX_CHARS] + f"\n... (truncated at {_READ_FILE_MAX_CHARS} characters)"
     return content
 
 

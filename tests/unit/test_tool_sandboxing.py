@@ -107,7 +107,8 @@ async def test_search_codebase_still_matches(root):
 
 async def test_gofmt_check_rejects_outside_root(root):
     out = run_gofmt_check(MagicMock(), "../repo-evil/loot.go")
-    assert out.startswith("ERROR") and "package loot" not in out
+    assert out.startswith("ERROR")
+    assert "package loot" not in out
 
 
 @pytest.mark.parametrize("name", ["../escape.go", "/tmp/agent-sandbox-escape.go"])
@@ -119,3 +120,18 @@ async def test_go_build_rejects_traversal(name):
 @pytest.mark.parametrize("name", ["../Evil.vue", "/tmp/agent-sandbox-escape.vue"])
 async def test_validate_frontend_rejects_traversal(name):
     assert (await frontend_tools.validate_frontend_code(name, "<template/>")).startswith("VALIDATION FAILED")
+
+
+def test_fs_tool_categories():
+    from pydantic_agents.core.tools.registry import tool_registry
+
+    assert tool_registry["read_file"].categories == ["fs_read"]
+    assert tool_registry["list_dir"].categories == ["fs_read"]
+    assert tool_registry["write_file"].categories == ["fs_write"]
+
+
+@pytest.mark.parametrize("agent", ["backend", "security", "cto"])
+def test_search_files_resolves_for_search_agents(agent):
+    names = {name for name, _ in get_tools_for_agent(agent, get_tool_categories(agent))}
+    assert "search_files" in names
+    assert "read_file" in names

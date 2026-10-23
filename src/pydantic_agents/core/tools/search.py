@@ -18,6 +18,8 @@ async def search_codebase(ctx: RunContext[str], pattern: str, path: str = ".", i
         pattern: The text pattern or regex to search for.
         path: The directory path to search in (defaults to current directory ".").
         include: Glob pattern for files to include (e.g. "*.go", "*.py"). Defaults to "*.go".
+
+    Returns absolute paths of the matching files (inside the workspace root).
     """
     try:
         try:
