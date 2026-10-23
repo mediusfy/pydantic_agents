@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import logging
 import time
@@ -13,7 +12,9 @@ from pydantic_agents.core.exceptions import (
     AgentNotFoundError,
     AmbiguousCapabilityError,
 )
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.session_recorder import current_run_context
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
@@ -29,10 +30,8 @@ class AgentRegistry:
         self._initialized: set[str] = set()
 
         from pydantic_agents.core.adapters.agents import PydanticAIAgentProvider
-        from pydantic_agents.core.settings import settings
 
         self._provider = PydanticAIAgentProvider()
-        self._semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
 
     def register(
         self,
@@ -165,12 +164,12 @@ class AgentRegistry:
                 resolved_deps = deps_factory() if callable(deps_factory) else {}
 
             result = await self._provider.run_agent(
-                semaphore=self._semaphore,
+                semaphore=llm_semaphore(),
                 agent_name=agent_name,
                 agent=agent,
                 prompt=prompt,
                 deps=resolved_deps,
-                timeout=timeout or 3600.0,
+                timeout=timeout or settings.agent_timeout_seconds,
             )
             if hasattr(result, "data"):
                 return str(result.data)

@@ -14,5 +14,5 @@ Highlight any UX bottlenecks or confusing flows in `bottlenecks_identified` and 
 """,
     output_type=AgentAdvice,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )

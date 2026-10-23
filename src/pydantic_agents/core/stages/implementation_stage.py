@@ -2,11 +2,11 @@ import asyncio
 import logging
 import time
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.session_recorder import recorder
-from pydantic_agents.core.settings import settings
 from pydantic_agents.core.stages.base import StageRunner
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class ImplementationStage(StageRunner):
             state.stage = "implementation"
             return state
 
-        semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
+        semaphore = llm_semaphore()
         user_stories = state.user_stories or []
         cto_advice = state.advisory_results.get("cto", "")
         ux_advice = state.advisory_results.get("ux", "")

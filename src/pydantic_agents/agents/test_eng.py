@@ -23,7 +23,7 @@ test_eng_agent = Agent(
     system_prompt=test_prompt,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
@@ -36,7 +36,7 @@ test_gen = Agent(
     create_model(settings.resolve_model(settings.test_model)),
     system_prompt=test_prompt,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 # Structured output agent: wraps raw Playwright code into TestOutput
@@ -45,7 +45,7 @@ _test_struct = Agent(
     system_prompt="You format generated test code into the requested structure. Return ONLY valid JSON.",
     output_type=TestOutput,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
@@ -110,7 +110,7 @@ go_test_gen = Agent(
     create_model(settings.resolve_model(settings.test_model)),
     system_prompt=go_test_prompt,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 # Structured output agent: wraps raw Go test code into GoTestOutput
@@ -119,7 +119,7 @@ _go_test_struct = Agent(
     system_prompt="You format generated Go test code into the requested structure. Return ONLY valid JSON.",
     output_type=GoTestOutput,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

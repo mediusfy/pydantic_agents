@@ -54,5 +54,5 @@ security_agent = Agent(
     system_prompt=security_prompt,
     output_type=SecurityReport,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )

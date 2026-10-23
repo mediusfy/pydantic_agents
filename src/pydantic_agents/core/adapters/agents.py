@@ -2,9 +2,10 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import Any
 
-from pydantic_ai import UsageLimits
-from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from pydantic_agents.core.limits import is_transient_error, permit_held, usage_limits
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 
 
@@ -19,7 +20,7 @@ class AgentProviderPort(ABC):
         agent: Any,
         prompt: str,
         deps: Any = None,
-        timeout: float = 3600.0,
+        timeout: float | None = None,
     ) -> Any:
         pass
 
@@ -34,22 +35,29 @@ class PydanticAIAgentProvider(AgentProviderPort):
         agent: Any,
         prompt: str,
         deps: Any = None,
-        timeout: float = 3600.0,
+        timeout: float | None = None,
     ) -> Any:
-        async with semaphore:
+        timeout = timeout or settings.agent_timeout_seconds
 
-            @retry(
-                stop=stop_after_attempt(3),
-                wait=wait_exponential(multiplier=1, min=2, max=30),
-                retry=retry_if_exception_type((TimeoutError, ConnectionError, OSError)),
-                reraise=True,
-            )
-            async def _run_with_retry():
-                coro = (
-                    agent.run(prompt, deps=deps, usage_limits=UsageLimits(request_limit=500))
-                    if deps is not None
-                    else agent.run(prompt, usage_limits=UsageLimits(request_limit=500))
-                )
-                return await asyncio.wait_for(coro, timeout=timeout)
+        @retry(
+            stop=stop_after_attempt(3),
+            wait=wait_exponential(multiplier=1, min=2, max=30),
+            retry=retry_if_exception(is_transient_error),
+            reraise=True,
+        )
+        async def _run_with_retry():
+            kwargs = {"usage_limits": usage_limits(agent_name)}
+            if deps is not None:
+                kwargs["deps"] = deps
+            return await asyncio.wait_for(agent.run(prompt, **kwargs), timeout=timeout)
 
+        if permit_held.get():
+            # Delegated call: the parent's permit already covers it.
             return await telemetry.track(agent_name, _run_with_retry)
+
+        async with semaphore:
+            token = permit_held.set(True)
+            try:
+                return await telemetry.track(agent_name, _run_with_retry)
+            finally:
+                permit_held.reset(token)

@@ -68,7 +68,7 @@ Return an Artifact with ONLY the files that changed. Include the full file conte
 """,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

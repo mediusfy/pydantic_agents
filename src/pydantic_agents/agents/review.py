@@ -42,6 +42,6 @@ review_agent = Agent(
     model=create_model(settings.resolve_model(settings.review_model)),
     system_prompt=_build_review_prompt(),
     output_type=ReviewResult,
-    retries=5,
+    retries=settings.agent_retries,
     defer_model_check=True,
 )

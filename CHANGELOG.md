@@ -24,12 +24,21 @@ fresh **Unreleased** section above it.
   pull request updates this file.
 
 ### Changed
+- Run limits are tighter and configurable (`AGENT_RETRIES=2`, `AGENT_REQUEST_LIMIT=40`,
+  `AGENT_TOTAL_TOKENS_LIMIT=1000000`, `AGENT_TIMEOUT_SECONDS=600`; was 5 retries, 500 requests, 3600 s). The
+  backend, service_engineer and frontend agents get a request cap of 60.
+- The provider retries only 429/5xx/connection errors (up to 3 attempts); timeouts are no longer retried, so a
+  stuck run can no longer burn three full timeouts.
+- All stages, the registry and the LangGraph bridge share one LLM concurrency limiter sized by
+  `MAX_CONCURRENT_LLM_CALLS` (the BA and advisory stages used private `Semaphore(10)`s).
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
   `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
 ### Fixed
+- Delegated agent calls run under their parent's concurrency permit instead of acquiring a second one, removing
+  a possible deadlock when concurrent delegation chains exhaust the limiter.
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
 
 ## [0.2.0]

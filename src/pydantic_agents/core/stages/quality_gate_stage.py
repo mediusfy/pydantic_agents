@@ -1,11 +1,10 @@
-import asyncio
 import logging
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.session_recorder import recorder
-from pydantic_agents.core.settings import settings
 from pydantic_agents.core.stages.base import StageRunner
 from pydantic_agents.core.utils import format_artifacts
 from pydantic_agents.core.validators import CodeValidator
@@ -23,7 +22,7 @@ class QualityGateStage(StageRunner):
             state.stage = "quality_gate"
             return state
 
-        semaphore = asyncio.Semaphore(settings.max_concurrent_llm_calls)
+        semaphore = llm_semaphore()
         artifacts = state.artifacts or []
 
         logger.info("Running SRE Agent...")

@@ -10,7 +10,7 @@ Each BridgeAgent instance maps to one registry entry. It handles:
 Usage:
     from pydantic_agents.core.agy_bridge.bridge_agent import BridgeAgent
     agent = BridgeAgent.from_registry("ux")
-    result = await agent.run("Evaluate this user flow", usage_limits=UsageLimits(request_limit=500))
+    result = await agent.run("Evaluate this user flow", usage_limits=usage_limits("ux"))
 """
 
 from __future__ import annotations
@@ -22,9 +22,8 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
-from pydantic_ai import UsageLimits
-
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError
+from pydantic_agents.core.limits import usage_limits
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.settings import settings
 
@@ -270,7 +269,7 @@ class BridgeAgent:
         try:
             resolved_deps: dict[str, Any] = self._deps_factory() if callable(self._deps_factory) else {}
             assert self._agent is not None, "Agent must be resolved before running"
-            result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=UsageLimits(request_limit=500))
+            result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=usage_limits(self._name))
             success = True
 
             if hasattr(result, "data"):

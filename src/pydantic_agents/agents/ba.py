@@ -31,7 +31,7 @@ ba_agent = Agent(
     system_prompt=ba_prompt,
     output_type=list[UserStory],
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 extractor = Agent(
@@ -39,14 +39,14 @@ extractor = Agent(
     system_prompt=ba_prompt,
     output_type=list[UserStory],
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 event_mapper = Agent(
     create_model(settings.resolve_model(settings.ba_model)),
     system_prompt=ba_prompt,
     output_type=list[EventTrigger],
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
