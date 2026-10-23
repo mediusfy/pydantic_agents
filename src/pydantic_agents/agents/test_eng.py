@@ -128,9 +128,12 @@ _go_test_writer = Agent(
 async def generate_go_table_driven_tests(ctx: RunContext[Any], source_file: str, function_name: str) -> str:
     """Generate table-driven Go tests for an existing function. Reads the source file, analyzes the function signature, and produces testify-based tests with mocks, t.Parallel(), and a discarding logger."""
     try:
-        source = resolve_sandboxed(source_file).read_text(errors="replace")[:_SOURCE_MAX_CHARS]
+        source = resolve_sandboxed(source_file).read_text(errors="replace")
     except (PathTraversalError, OSError) as e:
         return f"ERROR: cannot read {source_file}: {e}"
+    if len(source) > _SOURCE_MAX_CHARS:
+        # Testing a partial file would silently produce tests for code the model never saw.
+        return f"ERROR: {source_file} is {len(source)} characters, over the {_SOURCE_MAX_CHARS} limit; split it first."
     result = await _go_test_writer.run(
         f"Generate table-driven tests for the function '{function_name}' in {source_file}.\n\n"
         f"Source of {source_file}:\n```go\n{source}\n```",

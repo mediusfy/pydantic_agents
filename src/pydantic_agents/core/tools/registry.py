@@ -88,10 +88,10 @@ def register_tool(name: str, fn: Callable, description: str, categories: list[st
     tool_registry[name] = ToolDef(name, fn, description, categories)
 
 
-def get_tools_for_agent(agent_name: str, categories: list[str]) -> list[tuple[str, Callable]]:
+def get_tools_for_agent(categories: list[str]) -> list[tuple[str, Callable]]:
     """Tools whose categories intersect the agent's assigned categories.
 
-    Grants are explicit: only the categories listed for the agent in ``tool_assignments`` count. The agent's own
+    Grants are explicit: only the categories listed for the agent in ``tool_assignments`` count. An agent's own
     name is deliberately not treated as a category, so a tool category that happens to share an agent's name
     (``docs``, ``devops``) cannot silently grant that tool.
     """
@@ -121,7 +121,7 @@ def _tool_takes_context(fn: Callable) -> bool:
 
 
 def apply_tools(agent, agent_name: str, categories: list[str]):
-    tools = get_tools_for_agent(agent_name, categories)
+    tools = get_tools_for_agent(categories)
     for name, fn in tools:
         if not hasattr(agent, "_function_toolset") or name not in agent._function_toolset.tools:
             wrapped = _wrap_tool_with_tracing(fn, name)

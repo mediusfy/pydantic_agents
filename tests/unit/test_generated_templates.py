@@ -1,5 +1,6 @@
 """The generated Dockerfile, CI, Makefile, compose file and Helm chart agree with each other."""
 
+import re
 from unittest.mock import MagicMock
 
 import pytest
@@ -12,7 +13,7 @@ from pydantic_agents.agents.sre import generate_helm_chart
 from pydantic_agents.core.settings import settings
 
 CTX = MagicMock()
-PKG = settings.go_entrypoint.rsplit("/", 1)[0]
+PKG = settings.go_entrypoint_dir
 
 
 @pytest.mark.parametrize(
@@ -31,8 +32,10 @@ def test_build_templates_use_the_configured_entrypoint(render):
 
 def test_ci_pins_tool_versions():
     text = generate_github_action(CTX, "orders")
-    assert "@latest" not in text and "version: latest" not in text
-    assert settings.golangci_lint_version in text and settings.govulncheck_version in text
+    assert "@latest" not in text
+    assert "version: latest" not in text
+    assert settings.golangci_lint_version in text
+    assert settings.govulncheck_version in text
 
 
 def test_compose_uses_the_current_format():
@@ -44,7 +47,9 @@ def test_compose_uses_the_current_format():
 
 def test_dockerfile_is_a_real_multistage_build():
     text = generate_dockerfile(CTX, "orders", 8080)
-    assert text.count("FROM ") == 2 and "USER app" in text and "HEALTHCHECK" in text
+    assert text.count("FROM ") == 2
+    assert "USER app" in text
+    assert "HEALTHCHECK" in text
     assert "# Build steps" not in text
 
 
@@ -59,3 +64,27 @@ def test_helm_chart_has_real_content():
     assert all(len(body.strip().splitlines()) > 1 and not body.lstrip().startswith("#") for body in files.values())
     assert yaml.safe_load(files["helm/orders/Chart.yaml"])["name"] == "orders"
     assert yaml.safe_load(files["helm/orders/values.yaml"])["service"]["port"] == 8080
+
+
+@pytest.mark.parametrize(
+    "entrypoint, expected_dir",
+    [("cmd/server/main.go", "cmd/server"), ("main.go", "."), ("services/api/cmd/main.go", "services/api/cmd")],
+)
+def test_entrypoint_dir_handles_any_layout(monkeypatch, entrypoint, expected_dir):
+    monkeypatch.setattr(settings, "go_entrypoint", entrypoint)
+    assert settings.go_entrypoint_dir == expected_dir
+    assert f"./{expected_dir}" in generate_makefile(CTX, "orders")
+    assert f"./{expected_dir}" in generate_dockerfile(CTX, "orders", 8080)
+
+
+def _placeholder_go_templates(text):
+    """Replace Helm `{{ ... }}` actions with a scalar so the rendered chart's YAML structure can be parsed."""
+    return re.sub(r"\{\{-?.*?-?\}\}", "x", text)
+
+
+def test_every_helm_template_is_structurally_valid_yaml():
+    files = generate_helm_chart(CTX, "orders", "repo/orders", 8080)
+    for path, body in files.items():
+        parsed = yaml.safe_load(_placeholder_go_templates(body))
+        assert isinstance(parsed, dict), path
+        assert "kind" in parsed or path.endswith(("Chart.yaml", "values.yaml")), path

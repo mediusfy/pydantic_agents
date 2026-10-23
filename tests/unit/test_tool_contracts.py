@@ -73,7 +73,7 @@ def test_every_agent_has_its_own_model_setting():
 def test_agent_name_is_not_an_implicit_category():
     register_tool("probe_tool_xyz", lambda: None, "probe", ["devops"])
     try:
-        assert "probe_tool_xyz" not in {n for n, _ in get_tools_for_agent("devops", ["web"])}
+        assert "probe_tool_xyz" not in {n for n, _ in get_tools_for_agent(["web"])}
     finally:
         tool_registry.pop("probe_tool_xyz")
 
@@ -119,3 +119,82 @@ def test_inner_generators_are_private_and_tool_less(module, attr):
 
 def test_ba_has_no_nested_llm_tools():
     assert not _toolset("ba") & {"define_user_stories", "map_event_triggers"}
+
+
+# ── inner generators: runtime behaviour ────────────────────────────────────
+
+
+async def test_generate_test_suite_returns_the_generated_code():
+    from unittest.mock import MagicMock
+
+    from pydantic_ai.models.test import TestModel
+
+    from pydantic_agents.agents.test_eng import _test_writer, generate_test_suite
+
+    with _test_writer.override(model=TestModel(custom_output_args={"code": "test('x', async () => {})"})):
+        result = await generate_test_suite(MagicMock(usage=None), "Given a user When they log in Then they see home")
+    assert result == "test('x', async () => {})"
+
+
+async def test_generate_go_tests_formats_path_and_code(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from pydantic_ai.models.test import TestModel
+
+    from pydantic_agents.agents.test_eng import _go_test_writer, generate_go_table_driven_tests
+
+    monkeypatch.setenv("ORCHESTRATION_CODEBASE_ROOT", str(tmp_path))
+    (tmp_path / "svc.go").write_text("package svc\nfunc Add(a, b int) int { return a + b }\n")
+    args = {"filepath": "svc_test.go", "code": "package svc", "description": "d"}
+    with _go_test_writer.override(model=TestModel(custom_output_args=args)):
+        result = await generate_go_table_driven_tests(MagicMock(usage=None), "svc.go", "Add")
+    assert result == "svc_test.go\n```go\npackage svc\n```"
+
+
+@pytest.mark.parametrize(
+    "source_file, expected",
+    [("../outside.go", "cannot read"), ("missing.go", "cannot read")],
+)
+async def test_generate_go_tests_rejects_unreadable_sources(tmp_path, monkeypatch, source_file, expected):
+    from unittest.mock import MagicMock
+
+    from pydantic_agents.agents.test_eng import generate_go_table_driven_tests
+
+    monkeypatch.setenv("ORCHESTRATION_CODEBASE_ROOT", str(tmp_path))
+    result = await generate_go_table_driven_tests(MagicMock(usage=None), source_file, "F")
+    assert result.startswith("ERROR")
+    assert expected in result
+
+
+async def test_generate_go_tests_refuses_oversized_sources_instead_of_truncating(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    from pydantic_agents.agents import test_eng
+
+    monkeypatch.setenv("ORCHESTRATION_CODEBASE_ROOT", str(tmp_path))
+    (tmp_path / "big.go").write_text("x" * (test_eng._SOURCE_MAX_CHARS + 1))
+    result = await test_eng.generate_go_table_driven_tests(MagicMock(usage=None), "big.go", "F")
+    assert result.startswith("ERROR")
+    assert "over the" in result
+
+
+@pytest.mark.parametrize(
+    "model_text, expected",
+    [
+        (
+            'Here you go:\n```vue\n<template><b data-testid="t"/></template>\n```\nDone',
+            '<template><b data-testid="t"/></template>',
+        ),
+        ("  <template><i/></template>  ", "<template><i/></template>"),
+    ],
+)
+async def test_create_component_extracts_code_from_the_private_writer(model_text, expected):
+    from unittest.mock import MagicMock
+
+    from pydantic_ai.models.test import TestModel
+
+    from pydantic_agents.agents.frontend import _component_writer, create_component
+
+    with _component_writer.override(model=TestModel(custom_output_text=model_text)):
+        result = await create_component(MagicMock(usage=None), "Button", "a button", "t")
+    assert result == expected

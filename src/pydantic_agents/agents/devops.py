@@ -78,7 +78,7 @@ jobs:
           govulncheck ./...
 
       - name: Build binary
-        run: go build -o bin/{service_name} ./{settings.go_entrypoint.rsplit("/", 1)[0]}
+        run: go build -o bin/{service_name} ./{settings.go_entrypoint_dir}
 """
 
 
@@ -136,7 +136,7 @@ all: lint test build
 
 build:
 	@echo "Building..."
-	go build -o bin/{service_name} ./{settings.go_entrypoint.rsplit("/", 1)[0]}
+	go build -o bin/{service_name} ./{settings.go_entrypoint_dir}
 
 test:
 	@echo "Running tests..."

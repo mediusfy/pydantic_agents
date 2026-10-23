@@ -73,7 +73,7 @@ def test_write_file_is_not_granted_by_default():
     from pydantic_agents.core import tool_assignments
 
     for agent in tool_assignments.AGENT_TOOL_CATEGORIES:
-        granted = {name for name, _ in get_tools_for_agent(agent, get_tool_categories(agent))}
+        granted = {name for name, _ in get_tools_for_agent(get_tool_categories(agent))}
         assert "write_file" not in granted, agent
 
 
@@ -132,6 +132,6 @@ def test_fs_tool_categories():
 
 @pytest.mark.parametrize("agent", ["backend", "security", "cto"])
 def test_search_files_resolves_for_search_agents(agent):
-    names = {name for name, _ in get_tools_for_agent(agent, get_tool_categories(agent))}
+    names = {name for name, _ in get_tools_for_agent(get_tool_categories(agent))}
     assert "search_files" in names
     assert "read_file" in names

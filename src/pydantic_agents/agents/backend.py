@@ -140,7 +140,7 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/{service_name} ./{settings.go_entrypoint.rsplit("/", 1)[0]}
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/{service_name} ./{settings.go_entrypoint_dir}
 
 FROM alpine:3.20
 RUN adduser -D -u 10001 app
