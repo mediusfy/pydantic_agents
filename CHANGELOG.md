@@ -34,6 +34,11 @@ fresh **Unreleased** section above it.
 
 ### Fixed
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+- Quality gate no longer crashes on a failed security audit (it read a nonexistent `vulnerabilities` field);
+  the audit's `feedback` now goes to the retry loop.
+- Gates fail closed: `AgentAdvice.approved_to_proceed` defaults to false, a CTO agent error blocks the
+  pipeline (an explicit human override still applies), `QualityGateResult.passed` is computed from
+  `complexity_score <= 60` instead of trusted from the model, and `SecurityReport.score` is bounded 0-100.
 - Sandboxing of model-chosen paths and arguments: `read_file`/`list_dir`/`write_file` are confined to
   `ORCHESTRATION_CODEBASE_ROOT` (or CWD); `search_codebase` can no longer be made to run commands via
   ripgrep flags such as `--pre`; `run_gofmt_check`, `run_go_build`, `run_go_vet` and

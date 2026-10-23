@@ -83,7 +83,7 @@ class AdvisoryStage(StageRunner):
         advisory_results = await asyncio.gather(_run_cto(), _run_ux(), return_exceptions=True)
 
         state.advisory_results = {}
-        state.cto_approved = True
+        state.cto_approved = False
 
         if not isinstance(advisory_results[0], BaseException):
             cto_data = advisory_results[0].output
@@ -93,9 +93,14 @@ class AdvisoryStage(StageRunner):
             if bottlenecks:
                 state.advisory_results["cto_blockers"] = "\n".join(bottlenecks)
             state.cto_approved = cto_data.approved_to_proceed
+            if "approved_to_proceed" not in cto_data.model_fields_set:
+                # Distinguish "the CTO said no" from "the CTO never answered": the default blocks the pipeline.
+                logger.warning("CTO output omitted approved_to_proceed; treating as not approved.")
             logger.info(f"CTO recs={len(recs)}, approved={state.cto_approved}")
         else:
+            # Fail closed: without the CTO's verdict the pipeline must not proceed as if approved.
             logger.warning(f"CTO agent failed: {advisory_results[0]}")
+            state.cto_approved = False
 
         if not isinstance(advisory_results[1], BaseException):
             ux_data = advisory_results[1].output
@@ -108,8 +113,8 @@ class AdvisoryStage(StageRunner):
 
         from pydantic_agents.core.cto_gate import apply as cto_gate
 
-        if not await cto_gate(state, project=config.project):
-            state.cto_approved = False
+        # The gate returns True for an approved verdict or an explicit human override (env var / marker file).
+        state.cto_approved = await cto_gate(state, project=config.project)
 
         state.stage = "advisory"
         return state
