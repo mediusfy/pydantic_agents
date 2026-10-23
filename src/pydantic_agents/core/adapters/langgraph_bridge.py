@@ -1,9 +1,9 @@
 """Bridge: pydantic_ai Agents / StageRunners → LangGraph node functions."""
 
-import asyncio
 from typing import Any
 
 from pydantic_agents.core.adapters.agents import AgentProviderPort
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.registry import registry
 
@@ -22,7 +22,7 @@ async def as_langgraph_node(
     agent = registry.get(agent_name)
     resolved_prompt = prompt or _default_prompt(state, agent_name)
     try:
-        result = await provider.run_agent(asyncio.Semaphore(10), agent_name, agent, resolved_prompt)
+        result = await provider.run_agent(llm_semaphore(), agent_name, agent, resolved_prompt)
         return _state_delta(state, agent_name, result)
     except Exception as e:
         return _error_delta(state, agent_name, str(e))

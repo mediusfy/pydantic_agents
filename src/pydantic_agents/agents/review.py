@@ -42,7 +42,7 @@ review_agent = Agent(
     system_prompt=_build_review_prompt(),
     output_type=ReviewResult,
     deps_type=ReviewCriteria,
-    retries=5,
+    retries=settings.agent_retries,
     defer_model_check=True,
 )
 

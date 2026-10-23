@@ -114,7 +114,7 @@ backend_agent = Agent(
     output_type=Artifact,
     deps_type=ProjectState,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

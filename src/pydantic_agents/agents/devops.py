@@ -29,7 +29,7 @@ CRITICAL WORKFLOW:
 """,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

@@ -59,7 +59,7 @@ frontend_agent = Agent(
     system_prompt=frontend_prompt,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 
@@ -68,7 +68,7 @@ component_gen = Agent(
     create_model(settings.resolve_model(settings.frontend_model)),
     system_prompt=frontend_prompt,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

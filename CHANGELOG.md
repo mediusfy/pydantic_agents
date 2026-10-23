@@ -31,6 +31,13 @@ fresh **Unreleased** section above it.
   PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
+- Run limits are tighter and configurable (`AGENT_RETRIES=2`, `AGENT_REQUEST_LIMIT=40`,
+  `AGENT_TOTAL_TOKENS_LIMIT=2000000`, `AGENT_TIMEOUT_SECONDS=600`, `AGENT_TRANSPORT_ATTEMPTS=3`; was 5 retries, 500 requests, 3600 s). The
+  backend, service_engineer and frontend agents get a request cap of 60.
+- The provider retries only 429/5xx/connection errors (up to 3 attempts); timeouts are no longer retried, so a
+  stuck run can no longer burn three full timeouts.
+- All stages, the registry and the LangGraph bridge share one LLM concurrency limiter sized by
+  `MAX_CONCURRENT_LLM_CALLS` (the BA and advisory stages used private `Semaphore(10)`s).
 - CTO and backend agents declare `deps_type` and render `OrgContext` / `ProjectState` into their instructions, so
   the CTO can actually verify against the tech stack, compliance tier and budget it is given.
 - Tool `RunContext` annotations are `RunContext[Any]` instead of `RunContext[str]`, which removes the tool-signature `arg-type` errors mypy reported (the remaining mypy errors
@@ -43,6 +50,8 @@ fresh **Unreleased** section above it.
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
 ### Fixed
+- Delegated agent calls run under their parent's concurrency permit instead of acquiring a second one, removing
+  a possible deadlock when concurrent delegation chains exhaust the limiter.
 - `registry.query` passes no deps (instead of `{}`) when an agent has no deps factory, and records the running
   agent's name so `log_activity` no longer logs `agent_name="system"`.
 - Prompts no longer claim "no local I/O" (frontend, sre, test_eng) or demand "100% test coverage" (test_eng), and

@@ -12,5 +12,5 @@ Return Artifact with files dict mapping relative paths to file contents.
 """,
     output_type=Artifact,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )

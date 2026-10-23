@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
@@ -26,7 +27,7 @@ class AdvisoryStage(StageRunner):
 
         cto_agent = registry.get("cto")
         ux_agent = registry.get("ux")
-        semaphore = asyncio.Semaphore(10)
+        semaphore = llm_semaphore()
 
         from pydantic_agents.core.adapters.workspace import WorkspaceContext
 

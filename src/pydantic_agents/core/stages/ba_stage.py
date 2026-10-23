@@ -1,6 +1,6 @@
-import asyncio
 import logging
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import EventTrigger, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
@@ -34,7 +34,7 @@ class BAStage(StageRunner):
         workspace = WorkspaceContext()
         md_context = workspace.get_markdown_context()
 
-        semaphore = asyncio.Semaphore(10)
+        semaphore = llm_semaphore()
         raw_requirements = config.requirement or "Build a standard service."
 
         from pydantic_agents.core.context_engine import retrieve_context

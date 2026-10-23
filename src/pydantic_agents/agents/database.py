@@ -30,7 +30,7 @@ CRITICAL WORKFLOW:
     output_type=Artifact,
     defer_model_check=True,
     model_settings={"max_tokens": 8192},
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

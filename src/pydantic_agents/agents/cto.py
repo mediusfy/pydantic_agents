@@ -52,7 +52,7 @@ cto_agent = Agent(
     output_type=AgentAdvice,
     deps_type=OrgContext,
     defer_model_check=True,
-    retries=5,
+    retries=settings.agent_retries,
 )
 
 

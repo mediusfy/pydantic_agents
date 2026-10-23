@@ -70,6 +70,14 @@ class Settings(BaseSettings):
     output_dir: Path = Path("./generated-app")
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     max_concurrent_llm_calls: int = 5
+    # Per-agent-run limits (see core/limits.py). Timeouts are not retried; 429/5xx/connection errors are.
+    agent_retries: int = 2  # pydantic_ai output/tool validation retries
+    agent_request_limit: int = 40
+    # Cumulative input+output tokens per run: every request resends its context, so this is much larger than any
+    # single response (the database agent caps one response at 8192 tokens).
+    agent_total_tokens_limit: int = 2_000_000
+    agent_transport_attempts: int = 3  # total tries for 429/5xx/connection errors (separate from agent_retries)
+    agent_timeout_seconds: float = 600.0
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
     state_backend: Literal["disk", "turso"] = "disk"
