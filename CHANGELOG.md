@@ -34,6 +34,13 @@ fresh **Unreleased** section above it.
 
 ### Fixed
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+- Sandboxing of model-chosen paths and arguments: `read_file`/`list_dir`/`write_file` are confined to
+  `ORCHESTRATION_CODEBASE_ROOT` (or CWD); `search_codebase` can no longer be made to run commands via
+  ripgrep flags such as `--pre`; `run_gofmt_check`, `run_go_build`, `run_go_vet` and
+  `validate_frontend_code` reject paths that escape their root or temp dir; and `safe_path_join` no longer
+  accepts sibling directories that share a prefix (e.g. `/repo-evil`).
+- `write_file` is no longer attached to 25 of 27 agents. It now sits in an `fs_write` category that no agent
+  is assigned; code-facing agents get `read_file`/`list_dir` through `fs_read`.
 
 ## [0.2.0]
 

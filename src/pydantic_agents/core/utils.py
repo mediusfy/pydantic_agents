@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 from typing import Any
 
@@ -10,9 +11,28 @@ def safe_path_join(base: str | Path, *parts: str) -> Path:
     """
     base_resolved = Path(base).resolve()
     full = base_resolved.joinpath(*parts).resolve()
-    if not str(full).startswith(str(base_resolved)):
+    if not full.is_relative_to(base_resolved):
         raise PathTraversalError(f"Path traversal detected: {'/'.join(parts)} escapes {base}")
     return full
+
+
+def sandbox_root() -> Path:
+    """Root that model-driven file tools may touch.
+
+    Read from ORCHESTRATION_CODEBASE_ROOT (set by run_existing_code_pipeline), with
+    CWD as the safe local-dev default.
+    """
+    return Path(os.environ.get("ORCHESTRATION_CODEBASE_ROOT", os.getcwd())).resolve()
+
+
+def resolve_sandboxed(user_path: str) -> Path:
+    """Resolve a model-chosen path (relative or absolute) and require it to stay inside the sandbox root."""
+    root = sandbox_root()
+    candidate = Path(user_path) if os.path.isabs(user_path) else root / user_path
+    candidate = candidate.resolve()
+    if not candidate.is_relative_to(root):
+        raise PathTraversalError(f"Path '{user_path}' escapes sandbox root {root}")
+    return candidate
 
 
 def safe_write(base: str | Path, relative_path: str, content: str) -> Path:
