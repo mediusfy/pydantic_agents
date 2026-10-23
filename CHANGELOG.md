@@ -31,6 +31,11 @@ fresh **Unreleased** section above it.
 
 ### Fixed
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
+- Quality gate no longer crashes on a failed security audit (it read a nonexistent `vulnerabilities` field);
+  the audit's `feedback` now goes to the retry loop.
+- Gates fail closed: `AgentAdvice.approved_to_proceed` defaults to false, a CTO agent error blocks the
+  pipeline (an explicit human override still applies), `QualityGateResult.passed` is computed from
+  `complexity_score <= 60` instead of trusted from the model, and `SecurityReport.score` is bounded 0-100.
 
 ## [0.2.0]
 

@@ -87,9 +87,7 @@ class QualityGateStage(StageRunner):
             logger.info(f"Security: passed={sec_result.passed}, score={sec_result.score}")
             if not sec_result.passed:
                 logger.warning("Security audit failed.")
-                state.feedback = "Security audit failed. Resolve these vulnerabilities: \n" + "\n".join(
-                    sec_result.vulnerabilities
-                )
+                state.feedback = "Security audit failed. Resolve these findings: \n" + "\n".join(sec_result.feedback)
                 state.failure_report = FailureReport(
                     source="security_audit",
                     error_type="security",
