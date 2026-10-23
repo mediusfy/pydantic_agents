@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
+  `bounded_context`, and `AgentAdvice` carries `architectural_constraints`: the BA and CTO prompts already
+  asked for this data and it was being discarded. The advisory stage passes the constraints on to downstream agents.
+- `ReviewCriteria` deps for the review agent; the pipeline passes the bounded contexts found by the BA stage.
 - promptfoo agent evals: `promptfooconfig.yaml`, an in-process provider in
   `evals/provider.py`, and `make eval` (#18).
 - README section on running the evals, including the gateway key requirements.
@@ -24,12 +28,21 @@ fresh **Unreleased** section above it.
   pull request updates this file.
 
 ### Changed
+- CTO and backend agents declare `deps_type` and render `OrgContext` / `ProjectState` into their instructions, so
+  the CTO can actually verify against the tech stack, compliance tier and budget it is given.
+- Tool `RunContext` annotations are `RunContext[Any]` instead of `RunContext[str]` (mypy errors 33 -> 15).
+- Review agent no longer hardcodes the `payments`/`notifications`/`users` contexts, and its prompt asks for mTLS on
+  service-to-service traffic rather than "everywhere".
 - `uv.lock` is now tracked (local `uv sync` / `make install` reproduce CI's resolution), and
   `make lock-check` fails when it is stale.
 - Image dependencies install from a hash-pinned lockfile with CPU-only torch;
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
 ### Fixed
+- `registry.query` passes no deps (instead of `{}`) when an agent has no deps factory, and records the running
+  agent's name so `log_activity` no longer logs `agent_name="system"`.
+- Prompts no longer claim "no local I/O" (frontend, sre, test_eng) or demand "100% test coverage" (test_eng), and
+  the reviewer is asked to verify earlier feedback is resolved rather than to "address" it.
 - Dependencies: dropped the nonexistent `pydantic-ai-slim[deepseek]` extra and capped `pydantic-ai-slim` at `<2.0`; an unbounded spec made pip backtrack for 25+ minutes (AP-69).
 
 ## [0.2.0]

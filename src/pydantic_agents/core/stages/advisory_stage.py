@@ -88,6 +88,9 @@ class AdvisoryStage(StageRunner):
         if not isinstance(advisory_results[0], BaseException):
             cto_data = advisory_results[0].output
             recs = cto_data.recommendations or []
+            for constraint in cto_data.architectural_constraints:
+                agents = ", ".join(constraint.affected_agents) or "all agents"
+                recs.append(f"[constraint: {agents}] {constraint.description}")
             state.advisory_results["cto"] = "CTO Guidelines:\n" + "\n".join(recs) if recs else "CTO Guidelines: (none)"
             bottlenecks = getattr(cto_data, "bottlenecks_identified", [])
             if bottlenecks:

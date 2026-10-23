@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -73,7 +74,7 @@ Return an Artifact with ONLY the files that changed. Include the full file conte
 
 
 @service_engineer_agent.tool
-async def read_file(ctx: RunContext[str], filepath: str) -> str:
+async def read_file(ctx: RunContext[Any], filepath: str) -> str:
     """Read a file from the codebase (sandboxed to ORCHESTRATION_CODEBASE_ROOT) before modifying it."""
     try:
         path = _resolve_sandboxed(filepath)
@@ -88,7 +89,7 @@ async def read_file(ctx: RunContext[str], filepath: str) -> str:
 
 
 @service_engineer_agent.tool
-def list_directory(ctx: RunContext[str], dirpath: str) -> str:
+def list_directory(ctx: RunContext[Any], dirpath: str) -> str:
     """List files in a directory (sandboxed to ORCHESTRATION_CODEBASE_ROOT) to understand project structure."""
     try:
         path = _resolve_sandboxed(dirpath)
@@ -104,7 +105,7 @@ def list_directory(ctx: RunContext[str], dirpath: str) -> str:
 
 
 @service_engineer_agent.tool
-def run_gofmt_check(ctx: RunContext[str], filepath: str) -> str:
+def run_gofmt_check(ctx: RunContext[Any], filepath: str) -> str:
     """Run gofmt on a file and return any formatting issues."""
     try:
         result = subprocess.run(["gofmt", "-d", filepath], capture_output=True, text=True, timeout=30)

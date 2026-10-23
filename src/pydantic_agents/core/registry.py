@@ -160,18 +160,23 @@ class AgentRegistry:
         agent_name = self._resolve_owner(capability, owner)
         agent, _caps, deps_factory, _post_hook = self._agents[agent_name]
         try:
-            resolved_deps = deps or {}
+            resolved_deps = deps or None
             if deps_factory and not deps:
-                resolved_deps = deps_factory() if callable(deps_factory) else {}
+                resolved_deps = deps_factory() if callable(deps_factory) else None
 
-            result = await self._provider.run_agent(
-                semaphore=self._semaphore,
-                agent_name=agent_name,
-                agent=agent,
-                prompt=prompt,
-                deps=resolved_deps,
-                timeout=timeout or 3600.0,
-            )
+            # Tools such as log_activity attribute their work to the running agent via this context.
+            token = current_run_context.set({**(current_run_context.get() or {}), "agent_name": agent_name})
+            try:
+                result = await self._provider.run_agent(
+                    semaphore=self._semaphore,
+                    agent_name=agent_name,
+                    agent=agent,
+                    prompt=prompt,
+                    deps=resolved_deps,
+                    timeout=timeout or 3600.0,
+                )
+            finally:
+                current_run_context.reset(token)
             if hasattr(result, "data"):
                 return str(result.data)
             return str(result.output) if hasattr(result, "output") else str(result)

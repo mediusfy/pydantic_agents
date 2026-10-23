@@ -1,5 +1,6 @@
 import json
 import re
+from typing import Any
 
 from pydantic_ai import RunContext
 
@@ -11,7 +12,7 @@ except ImportError:
     yaml = None
 
 
-async def validate_protobuf(ctx: RunContext[str], content: str) -> tuple[bool, list[str]]:
+async def validate_protobuf(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     errors = []
     if not content.strip():
         errors.append("Empty protobuf file")
@@ -29,7 +30,7 @@ async def validate_protobuf(ctx: RunContext[str], content: str) -> tuple[bool, l
     return len(errors) == 0, errors
 
 
-async def validate_yaml(ctx: RunContext[str], content: str) -> tuple[bool, list[str]]:
+async def validate_yaml(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     if yaml is None:
         return True, ["yaml library not available, skipping validation"]
     try:
@@ -39,7 +40,7 @@ async def validate_yaml(ctx: RunContext[str], content: str) -> tuple[bool, list[
         return False, [str(e)]
 
 
-async def validate_json(ctx: RunContext[str], content: str) -> tuple[bool, list[str]]:
+async def validate_json(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     try:
         json.loads(content)
         return True, []
@@ -47,7 +48,7 @@ async def validate_json(ctx: RunContext[str], content: str) -> tuple[bool, list[
         return False, [f"line {e.lineno}: {e.msg}"]
 
 
-async def parse_go_ast(ctx: RunContext[str], content: str) -> tuple[bool, list[str]]:
+async def parse_go_ast(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     errors = []
     if not content.strip():
         errors.append("Empty Go file")
@@ -67,7 +68,7 @@ async def parse_go_ast(ctx: RunContext[str], content: str) -> tuple[bool, list[s
     return len(errors) == 0, errors
 
 
-async def validate_go_mod(ctx: RunContext[str], content: str) -> tuple[bool, list[str]]:
+async def validate_go_mod(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     errors = []
     if "module " not in content:
         errors.append("Missing module declaration")

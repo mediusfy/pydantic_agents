@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -33,7 +34,7 @@ CRITICAL WORKFLOW:
 
 
 @devops_agent.tool
-def generate_github_action(ctx: RunContext[str], service_name: str) -> str:
+def generate_github_action(ctx: RunContext[Any], service_name: str) -> str:
     """Returns an enterprise-grade GitHub Actions pipeline for a Go service using centralized settings."""
     return f"""name: {service_name} CI
 
@@ -82,7 +83,7 @@ jobs:
 
 
 @devops_agent.tool
-def generate_docker_compose(ctx: RunContext[str], service_name: str) -> str:
+def generate_docker_compose(ctx: RunContext[Any], service_name: str) -> str:
     """Returns a local Docker Compose setup including PostgreSQL and Redis dependencies."""
     return f"""version: '3.8'
 
@@ -127,7 +128,7 @@ services:
 
 
 @devops_agent.tool
-def generate_makefile(ctx: RunContext[str], service_name: str) -> str:
+def generate_makefile(ctx: RunContext[Any], service_name: str) -> str:
     """Returns a standardized Makefile for local development and build automation."""
     return f"""# Makefile for {service_name}
 

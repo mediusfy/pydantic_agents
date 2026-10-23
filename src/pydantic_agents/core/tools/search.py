@@ -2,13 +2,14 @@ import asyncio
 import glob as pyglob
 import os
 import re
+from typing import Any
 
 from pydantic_ai import RunContext
 
 from pydantic_agents.core.tools.registry import register_tool
 
 
-async def search_codebase(ctx: RunContext[str], pattern: str, path: str = ".", include: str = "*.go") -> list[str]:
+async def search_codebase(ctx: RunContext[Any], pattern: str, path: str = ".", include: str = "*.go") -> list[str]:
     """Search the codebase for a text pattern using ripgrep.
 
     Args:
@@ -49,7 +50,7 @@ async def search_codebase(ctx: RunContext[str], pattern: str, path: str = ".", i
         return [f"Search failed: {e}"]
 
 
-async def search_pattern_in_content(ctx: RunContext[str], pattern: str, content: str) -> list[dict]:
+async def search_pattern_in_content(ctx: RunContext[Any], pattern: str, content: str) -> list[dict]:
     """Search a string for a regex pattern, returning line matches.
 
     Args:
@@ -63,7 +64,7 @@ async def search_pattern_in_content(ctx: RunContext[str], pattern: str, content:
     return results
 
 
-async def search_files(ctx: RunContext[str], glob: str) -> list[str]:
+async def search_files(ctx: RunContext[Any], glob: str) -> list[str]:
     return pyglob.glob(glob, recursive=True)
 
 
