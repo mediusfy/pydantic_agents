@@ -8,13 +8,18 @@ from pydantic_agents.core.pipeline.context import ContextFrame
 
 class EventTrigger(BaseModel):
     id: str
-    name: str = Field(description="Name of the event")
+    name: str = Field(description="Name of the event, past-tense and namespaced (e.g. orders.OrderPlaced)")
     description: str
+    owner: str = Field(default="", description="Bounded context that owns and emits the event")
+    consumers: list[str] = Field(default_factory=list, description="Contexts/services that consume the event")
+    payload_schema: str = Field(default="", description="Sketch of the event payload (field names and types)")
 
 
 class UserStory(BaseModel):
     id: str
     title: str
+    statement: str = Field(default="", description="'As a ... I want ... so that ...' statement")
+    bounded_context: str = Field(default="", description="Bounded context the story belongs to")
     gherkin: str = Field(description="Given/When/Then acceptance criteria")
     event_triggers: list[EventTrigger] = Field(default_factory=list)
 
@@ -64,11 +69,19 @@ class QualityGateResult(BaseModel):
         return self
 
 
+class ArchitecturalConstraint(BaseModel):
+    description: str
+    affected_agents: list[str] = Field(default_factory=list, description="Agents that must honour the constraint")
+
+
 class AgentAdvice(BaseModel):
     bottlenecks_identified: list[str] = Field(
         default_factory=list, description="Potential issues or bottlenecks spotted"
     )
     recommendations: list[str] = Field(default_factory=list, description="Actionable advice for downstream agents")
+    architectural_constraints: list[ArchitecturalConstraint] = Field(
+        default_factory=list, description="Constraints that bind specific downstream agents"
+    )
     approved_to_proceed: bool = Field(
         default=False, description="Must be set explicitly; an omitted value blocks the pipeline"
     )

@@ -6,6 +6,7 @@ from typing import Any
 from pydantic_ai import RunContext
 
 from pydantic_agents.core.models.core import ActivityLog
+from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import safe_path_join
 from pydantic_agents.core.vector_db import vector_db
@@ -14,7 +15,9 @@ from pydantic_agents.core.vector_db import vector_db
 async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact_ids: list[str] | None = None) -> str:
     """Logs a significant agent activity to the project memory for future spot-checking."""
     pass_num = getattr(ctx.deps, "pass_num", 0) if ctx.deps else 0
-    agent_name = getattr(ctx.deps, "agent_name", "system") if ctx.deps else "system"
+    agent_name = (
+        getattr(ctx.deps, "agent_name", None) or (current_run_context.get() or {}).get("agent_name") or "system"
+    )
 
     log_entry = ActivityLog(
         pass_num=pass_num,

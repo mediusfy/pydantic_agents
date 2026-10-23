@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
@@ -111,13 +112,28 @@ backend_agent = Agent(
     create_model(settings.resolve_model(settings.backend_model)),
     system_prompt=backend_prompt,
     output_type=Artifact,
+    deps_type=ProjectState,
     defer_model_check=True,
     retries=5,
 )
 
 
+@backend_agent.instructions
+def _project_state(ctx: RunContext[ProjectState | None]) -> str:
+    """Render the project the service is being built for. Empty when the caller supplied none."""
+    state = ctx.deps
+    if not isinstance(state, ProjectState):
+        return ""
+    return (
+        "## Project\n"
+        f"- Base path: {state.base_path}\n"
+        f"- Environment: {state.environment}\n"
+        f"- Owning team: {state.team_owner}"
+    )
+
+
 @backend_agent.tool
-def scaffold_go_service(ctx: RunContext[str], service_name: str, bounded_context: str) -> dict[str, str]:
+def scaffold_go_service(ctx: RunContext[Any], service_name: str, bounded_context: str) -> dict[str, str]:
     """Returns a complete Go project skeleton. The LLM fills in domain-specific logic in its main response."""
     return {
         "cmd/server/main.go": f"// Scaffolding for {service_name}\npackage main\n\nfunc main() {{}}",
@@ -135,6 +151,6 @@ def scaffold_go_service(ctx: RunContext[str], service_name: str, bounded_context
 
 
 @backend_agent.tool
-def generate_dockerfile(ctx: RunContext[str], service_name: str, port: int) -> str:
+def generate_dockerfile(ctx: RunContext[Any], service_name: str, port: int) -> str:
     """Returns multi-stage Dockerfile using centralized Go version from settings."""
     return f"FROM golang:{settings.go_version}-alpine AS builder\n# Build steps...\nEXPOSE {port}\n"

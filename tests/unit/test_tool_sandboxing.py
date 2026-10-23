@@ -78,12 +78,12 @@ def test_write_file_is_not_granted_by_default():
 
 
 @pytest.mark.parametrize("glob", ["../*", "/etc/*", "../repo-evil/*.go"])
-async def test_search_files_rejects_escape(root, glob):
-    assert await search_files(MagicMock(), glob) == []
+def test_search_files_rejects_escape(root, glob):
+    assert search_files(MagicMock(), glob) == []
 
 
-async def test_search_files_finds_in_root(root):
-    assert await search_files(MagicMock(), "*.go") == ["main.go"]
+def test_search_files_finds_in_root(root):
+    assert search_files(MagicMock(), "*.go") == ["main.go"]
 
 
 @pytest.mark.skipif(shutil.which("rg") is None, reason="ripgrep not installed")

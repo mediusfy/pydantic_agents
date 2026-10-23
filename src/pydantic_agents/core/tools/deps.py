@@ -1,10 +1,12 @@
+from typing import Any
+
 import httpx
 from pydantic_ai import RunContext
 
 from pydantic_agents.core.tools.registry import register_tool
 
 
-async def check_go_package(ctx: RunContext[str], package: str) -> str:
+async def check_go_package(ctx: RunContext[Any], package: str) -> str:
     try:
         url = f"https://proxy.golang.org/{package}/@latest"
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -17,7 +19,7 @@ async def check_go_package(ctx: RunContext[str], package: str) -> str:
         return f"error: {e}"
 
 
-async def check_pypi_package(ctx: RunContext[str], package: str) -> dict:
+async def check_pypi_package(ctx: RunContext[Any], package: str) -> dict:
     try:
         url = f"https://pypi.org/pypi/{package}/json"
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -37,7 +39,7 @@ async def check_pypi_package(ctx: RunContext[str], package: str) -> dict:
         return {"name": package, "error": str(e)}
 
 
-async def check_npm_package(ctx: RunContext[str], package: str) -> dict:
+async def check_npm_package(ctx: RunContext[Any], package: str) -> dict:
     try:
         url = f"https://registry.npmjs.org/{package}/latest"
         async with httpx.AsyncClient(timeout=10.0) as client:
@@ -54,7 +56,7 @@ async def check_npm_package(ctx: RunContext[str], package: str) -> dict:
         return {"name": package, "error": str(e)}
 
 
-async def check_package_version(ctx: RunContext[str], package: str, language: str = "go") -> str:
+async def check_package_version(ctx: RunContext[Any], package: str, language: str = "go") -> str:
     if language == "go":
         return await check_go_package(ctx, package)
     elif language == "python":

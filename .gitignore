@@ -16,3 +16,7 @@ telemetry.jsonl
 
 # promptfoo
 .promptfoo/
+
+# coverage data
+.coverage
+.coverage.*

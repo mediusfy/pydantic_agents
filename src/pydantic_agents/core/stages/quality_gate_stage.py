@@ -1,6 +1,7 @@
 import asyncio
 import logging
 
+from pydantic_agents.agents.review import ReviewCriteria
 from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
@@ -137,7 +138,9 @@ class QualityGateStage(StageRunner):
             "Ensure code is robust, secure, and meets all criteria."
         )
         if state.feedback:
-            review_prompt += f"\n\nAddress previous feedback: {state.feedback}"
+            review_prompt += (
+                f"\n\nPrevious feedback to verify as resolved (report it only if still present): {state.feedback}"
+            )
 
         review_ctx = retrieve_context("review", full_text)
         if review_ctx:
@@ -149,7 +152,14 @@ class QualityGateStage(StageRunner):
             pipeline_stage="quality_gate",
             prompt=review_prompt,
         ) as rec:
-            review_res = await self.provider.run_agent(semaphore, "review", registry.get("review"), review_prompt)
+            contexts = sorted({us.bounded_context for us in state.user_stories if us.bounded_context})
+            review_res = await self.provider.run_agent(
+                semaphore,
+                "review",
+                registry.get("review"),
+                review_prompt,
+                deps=ReviewCriteria(bounded_contexts=contexts),
+            )
             rec.set_output(review_res)
             result = review_res.output
             logger.info(

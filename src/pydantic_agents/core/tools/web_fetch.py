@@ -1,10 +1,12 @@
+from typing import Any
+
 import httpx
 from pydantic_ai import RunContext
 
 from pydantic_agents.core.tools.registry import register_tool
 
 
-async def fetch_url(ctx: RunContext[str], url: str, format: str = "text") -> str:
+async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str:
     """Fetch content from a URL via HTTP GET.
 
     Args:

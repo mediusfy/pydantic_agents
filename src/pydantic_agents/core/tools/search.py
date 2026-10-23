@@ -3,6 +3,7 @@ import glob as pyglob
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 from pydantic_ai import RunContext
 
@@ -11,7 +12,7 @@ from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import resolve_sandboxed, sandbox_root
 
 
-async def search_codebase(ctx: RunContext[str], pattern: str, path: str = ".", include: str = "*.go") -> list[str]:
+async def search_codebase(ctx: RunContext[Any], pattern: str, path: str = ".", include: str = "*.go") -> list[str]:
     """Search the codebase for a text pattern using ripgrep.
 
     Args:
@@ -56,7 +57,7 @@ async def search_codebase(ctx: RunContext[str], pattern: str, path: str = ".", i
         return [f"Search failed: {e}"]
 
 
-async def search_pattern_in_content(ctx: RunContext[str], pattern: str, content: str) -> list[dict]:
+def search_pattern_in_content(ctx: RunContext[Any], pattern: str, content: str) -> list[dict]:
     """Search a string for a regex pattern, returning line matches.
 
     Args:
@@ -70,7 +71,7 @@ async def search_pattern_in_content(ctx: RunContext[str], pattern: str, content:
     return results
 
 
-async def search_files(ctx: RunContext[str], glob: str) -> list[str]:
+def search_files(ctx: RunContext[Any], glob: str) -> list[str]:
     """Search for files matching a glob pattern relative to the workspace (e.g. '**/*.go')."""
     root = sandbox_root()
     if os.path.isabs(glob) or ".." in Path(glob).parts:
