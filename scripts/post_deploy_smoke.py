@@ -129,7 +129,7 @@ async def main() -> int:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
-    # LiteLLM and the pod's own MCP server both accept a bearer token; set MCP_URL for a gateway that wants another scheme.
+    # LiteLLM and the pod's own MCP server accept a bearer token; set MCP_URL for a gateway that wants another scheme.
     headers = {"Authorization": f"Bearer {key}"} if key else None
     async with AsyncExitStack() as stack:
         read, write, _ = await stack.enter_async_context(
