@@ -23,7 +23,9 @@ _semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semap
 permit_held: ContextVar[bool] = ContextVar("llm_permit_held", default=False)
 
 # Id of the pipeline run the current task belongs to. Sent to LiteLLM as the request's session id so Langfuse
-# groups a run's model calls instead of showing them as unrelated generations.
+# groups a run's model calls instead of showing them as unrelated generations. Tasks created after it is set
+# inherit it (contextvars are copied into new tasks); work started from a thread pool or another loop does not,
+# and then simply goes untagged.
 run_id_var: ContextVar[str | None] = ContextVar("pipeline_run_id", default=None)
 
 

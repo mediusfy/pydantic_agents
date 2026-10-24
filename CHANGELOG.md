@@ -22,7 +22,7 @@ fresh **Unreleased** section above it.
 
 ### Fixed
 - Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
-  earlier checkpoint.
+  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
 - `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
