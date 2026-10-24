@@ -32,6 +32,10 @@ fresh **Unreleased** section above it.
 - With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
   `metadata.trace_name` so Langfuse groups a run's generations.
 
+### Added
+- `tests/unit/test_agent_consistency.py` cross-checks every agent's registry entry, `*_model` settings field and
+  tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
+
 ### Fixed
 - `execute_test_suite` started `go mod init` and `go mod tidy` without waiting for them, so `go test` could run
   before the module existed. It now reuses the same awaited, time-limited setup as `run_go_build` / `run_go_vet`
