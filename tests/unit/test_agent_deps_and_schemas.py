@@ -24,7 +24,8 @@ def _captured_instructions(agent, deps):
     Reads the instructions off the first request message, which is pydantic-ai behaviour; the dependency is capped
     at <2.0 in pyproject.toml, so revisit this helper when that cap moves.
     """
-    with agent.override(model=TestModel()):
+    # call_tools=[]: only the first request is needed, and the default would execute every tool the agent has.
+    with agent.override(model=TestModel(call_tools=[])):
         result = agent.run_sync("go", deps=deps)
     return result.all_messages()[0].instructions or ""
 

@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent
 
 from pydantic_agents.agents.non_technical._common import GROUNDING, NOT_ADVICE
+from pydantic_agents.core.models.analysis import MarketAnalysis
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -22,6 +23,11 @@ You MUST:
 3. Cite the factors you weigh (macro environment, company or token fundamentals) and the sources.
 4. Be specific and decisive about what the data implies, while stating the uncertainty and the opposing case.
 
+## Output
+Return a MarketAnalysis: `thesis` (what the data implies), `metrics` (each with its value and source), `bull_case`,
+`bear_case`, `risk_reward` with its inputs, plus `assumptions`, `risks` and `sources`. Give `as_of` as the date from
+`get_current_datetime`. A result with no metrics, no sources or an empty bull or bear case is rejected.
+
 {GROUNDING}
 {NOT_ADVICE}"""
 
@@ -29,7 +35,7 @@ market_shark_agent = Agent(
     create_model(settings.resolve_model(settings.market_shark_model)),
     deps_type=MarketSharkDeps,
     system_prompt=shark_prompt,
-    output_type=str,
+    output_type=MarketAnalysis,
     defer_model_check=True,
     retries=settings.agent_retries,
 )

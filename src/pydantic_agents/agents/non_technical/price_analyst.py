@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent
 
 from pydantic_agents.agents.non_technical._common import GROUNDING, NOT_ADVICE
+from pydantic_agents.core.models.analysis import PurchaseAdvice
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -20,6 +21,12 @@ decide when to buy.
 - Weigh macro variables (inflation, supply chain, sentiment) and opportunity cost, and say which dominate.
 - Give a recommendation as scenarios (buy now / wait) with the conditions that favour each, not a single certain call.
 
+## Output
+Return a PurchaseAdvice: `current_price` (from tool output, or empty if you could not find it), `trend` with the
+calculation behind it, `scenarios` covering both `buy_now` and `wait` with their conditions, and a `leaning`
+(`buy_now`, `wait` or `unclear`, choose `unclear` when the data cannot support a view), plus `assumptions`, `risks` and
+`sources`. Give `as_of` as the date from `get_current_datetime`.
+
 {GROUNDING}
 {NOT_ADVICE}"""
 
@@ -27,7 +34,7 @@ price_analyst_agent = Agent(
     create_model(settings.resolve_model(settings.price_analyst_model)),
     deps_type=PriceAnalystDeps,
     system_prompt=analyst_prompt,
-    output_type=str,
+    output_type=PurchaseAdvice,
     defer_model_check=True,
     retries=settings.agent_retries,
 )
