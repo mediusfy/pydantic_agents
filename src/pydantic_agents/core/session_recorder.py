@@ -11,9 +11,10 @@ import json
 import logging
 import os
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
 from dataclasses import asdict, dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 import logfire
@@ -22,10 +23,9 @@ logger = logging.getLogger(__name__)
 
 # Context variable carrying current agent run info (run_id, agent_name, pipeline_stage)
 # Set by record_span context manager, read by tool wrappers for cross-communication tracing.
-current_run_context: ContextVar[dict[str, Any]] = ContextVar(
-    "current_run_context",
-    default={},  # noqa: B039 — safe: all writers allocate a new dict before .set()
-)
+# The default is an immutable empty mapping so no caller can mutate state shared across contexts; writers always
+# allocate a new dict before .set().
+current_run_context: ContextVar[Mapping[str, Any]] = ContextVar("current_run_context", default=MappingProxyType({}))
 
 
 @dataclass

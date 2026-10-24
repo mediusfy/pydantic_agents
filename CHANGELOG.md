@@ -88,6 +88,14 @@ fresh **Unreleased** section above it.
   returns a real multi-stage, non-root Dockerfile.
 
 ### Fixed
+- `execute_test_suite` wrote model-chosen test and target file names into its temp directory with `os.path.join`, so
+  a name like `../x` or an absolute path escaped it (the same bug fixed for `run_go_build` and
+  `validate_frontend_code` in #26). It now uses `safe_write`, returns `TEST EXECUTION FAILED` for such names, and
+  writes off the event loop.
+- Fixes for the six bugs a local Sonar scan reported: the run-context `ContextVar` default is an immutable mapping
+  instead of a shared `{}`; `BridgeAgent.run` raises `AgentExecutionError` for an unresolved agent instead of an
+  `assert` inside a `try`; `update_documentation` and `execute_test_suite` no longer block the event loop with
+  synchronous file I/O.
 - Delegated agent calls run under their parent's concurrency permit instead of acquiring a second one, removing
   a possible deadlock when concurrent delegation chains exhaust the limiter.
 - `registry.query` passes no deps (instead of `{}`) when an agent has no deps factory, and records the running

@@ -264,12 +264,14 @@ class BridgeAgent:
             )
         # ──────────────────────────────────────────────────────────────────
 
+        if self._agent is None:
+            raise AgentExecutionError(f"BridgeAgent '{self._name}' has no resolved agent", is_retryable=False)
+
         start = time.time()
         success = False
 
         try:
             resolved_deps: dict[str, Any] = self._deps_factory() if callable(self._deps_factory) else {}
-            assert self._agent is not None, "Agent must be resolved before running"
             result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=usage_limits(self._name))
             success = True
 
