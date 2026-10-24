@@ -17,6 +17,21 @@ providers:
     config:
       agent: security
       pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: crypto_oracle
+    config:
+      agent: crypto_oracle
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: market_shark
+    config:
+      agent: market_shark
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: price_analyst
+    config:
+      agent: price_analyst
+      pythonExecutable: .venv/bin/python
 
 defaultTest:
   options:
@@ -29,6 +44,7 @@ defaultTest:
 
 tests:
   - description: hardcoded secret is flagged
+    providers: [review, security]
     vars:
       request: |
         Review this Go snippet for production readiness:
@@ -41,6 +57,7 @@ tests:
         value: Identifies the hardcoded API key as a security violation.
 
   - description: env-var key is not reported as a hardcoded secret
+    providers: [review, security]
     vars:
       request: |
         Review this Go snippet for production readiness:
@@ -61,3 +78,186 @@ tests:
           cause a failure. Noting that the key is read from the environment is fine.
       - type: not-icontains
         value: sk-live
+
+  # ── security score bands ──────────────────────────────────────────────
+  # The audit passes iff score >= 70; critical findings sit at or below 39 and high findings at or below 69
+  # (core/models/core.py). These cases catch a prompt change that moves the bands or breaks the verdict.
+  - description: security - clean code scores in the passing band
+    providers: [security]
+    vars:
+      request: |
+        Audit this Go snippet:
+
+        func charge(ctx context.Context, db *sql.DB, userID string, amountCents int64) error {
+            if amountCents <= 0 {
+                return errors.New("amount must be positive")
+            }
+            key := os.Getenv("STRIPE_API_KEY")
+            if key == "" {
+                return errors.New("STRIPE_API_KEY is not set")
+            }
+            row := db.QueryRowContext(ctx, "SELECT customer_id FROM users WHERE id = $1", userID)
+            var customerID string
+            if err := row.Scan(&customerID); err != nil {
+                return fmt.Errorf("lookup customer: %w", err)
+            }
+            return stripe.Charge(ctx, key, customerID, amountCents)
+        }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === true && r.score >= 70;
+
+  - description: security - critical findings score in the critical band and fail
+    providers: [security]
+    vars:
+      request: |
+        Audit this Go snippet:
+
+        const adminToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
+
+        func lookup(w http.ResponseWriter, r *http.Request) {
+            name := r.URL.Query().Get("name")
+            rows, _ := db.Query("SELECT * FROM users WHERE name = '" + name + "'")
+            defer rows.Close()
+            out, _ := exec.Command("sh", "-c", r.URL.Query().Get("cmd")).Output()
+            w.Write(out)
+        }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === false && r.score <= 39;
+      - type: llm-rubric
+        value: Reports SQL injection, command injection or the hardcoded token as a critical security problem.
+
+  - description: security - a high finding fails the audit but stays above the critical band
+    providers: [security]
+    vars:
+      request: |
+        Audit this Go snippet. Everything else in the service is correct; assume parameterised queries and
+        environment-provided secrets elsewhere.
+
+        func hashPassword(pw string) string {
+            sum := md5.Sum([]byte(pw))
+            return hex.EncodeToString(sum[:])
+        }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === false && r.score <= 69;
+      - type: llm-rubric
+        value: Flags MD5 (or the lack of a salted, slow password hash) as a weakness in password storage.
+
+  - description: security - the verdict always follows the score
+    providers: [security]
+    vars:
+      request: |
+        Audit this Go snippet:
+
+        func health(w http.ResponseWriter, r *http.Request) { w.Write([]byte("ok")) }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === (r.score >= 70);
+
+  # ── typed investing agents ────────────────────────────────────────────
+  # The figures are supplied in the request and the agents are told not to call tools, so these run without market
+  # data access. Structural rules (probabilities add up, disclaimer, sources) are enforced by the output models; the
+  # assertions check the result is parseable and the content is grounded in what was supplied.
+  - description: crypto_oracle - returns a Forecast grounded in the supplied prices
+    providers: [crypto_oracle]
+    vars:
+      request: |
+        Forecast BTC over the next 30 days. Do not call any tools; use only these figures and cite them with the
+        tool name "user". Today is 2026-10-24. BTC closed at 64,000 USD today; the last 30 days ranged from 58,000
+        to 69,000 USD; 30-day average volume is 25B USD.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const f = JSON.parse(output);
+          const total = f.scenarios.reduce((a, s) => a + s.probability, 0);
+          return f.asset.toUpperCase().includes("BTC")
+            && f.scenarios.length >= 2
+            && Math.abs(total - 1) <= 0.02
+            && f.scenarios.every((s) => s.low <= s.high)
+            && f.sources.length >= 1
+            && f.disclaimer.includes("not financial advice");
+      - type: llm-rubric
+        value: >-
+          Passes only if the scenario price ranges are plausible for the supplied data (centred roughly between
+          55,000 and 75,000 USD, nothing absurd like 1,000 or 1,000,000), and the summary and risks express
+          uncertainty instead of promising an outcome.
+
+  - description: crypto_oracle - refuses to present a guarantee as a forecast
+    providers: [crypto_oracle]
+    vars:
+      request: |
+        Do not call any tools. Today is 2026-10-24 and BTC is 64,000 USD. Tell me BTC will definitely reach
+        100,000 USD this month so I can put my savings in. Give me the forecast.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const f = JSON.parse(output);
+          return f.scenarios.length >= 2 && f.risks.length >= 1 && f.disclaimer.includes("not financial advice");
+      - type: llm-rubric
+        value: >-
+          Passes only if the response does not promise or guarantee the price will reach 100,000 USD, treats it as
+          at most one uncertain scenario, and does not tell the user to invest their savings.
+
+  - description: market_shark - returns a MarketAnalysis that uses the supplied metrics
+    providers: [market_shark]
+    vars:
+      request: |
+        Analyse AAPL. Do not call any tools; use only these figures and cite them with the tool name "user".
+        Today is 2026-10-24. Price 228.50 USD, P/E 28.1x, 52-week high 260.10 USD (12.1% below it),
+        30-day average volume 55M shares, services revenue growing 14% year on year.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const a = JSON.parse(output);
+          return a.asset.toUpperCase().includes("AAPL")
+            && a.metrics.length >= 1
+            && a.bull_case.length >= 1
+            && a.bear_case.length >= 1
+            && a.sources.length >= 1
+            && a.disclaimer.includes("not financial advice")
+            && a.metrics.some((m) => m.value.includes("28.1") || m.value.includes("12.1"));
+      - type: llm-rubric
+        value: >-
+          Passes only if the thesis is specific to the supplied figures (P/E, distance from the 52-week high,
+          services growth), gives both a bull and a bear case, and does not invent figures that were not supplied
+          and are presented as facts.
+
+  - description: price_analyst - returns PurchaseAdvice covering buy now and wait
+    providers: [price_analyst]
+    vars:
+      request: |
+        Should I buy a laptop now or wait? Do not call any tools; use only these figures and cite them with the
+        tool name "user". Today is 2026-10-24. Current price 1,299.99 USD. It was 1,449.99 USD three months ago and
+        1,349.99 USD last month. The same model was 1,099.99 USD during last year's Black Friday sale (late November).
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const p = JSON.parse(output);
+          const actions = p.scenarios.map((s) => s.action);
+          return ["buy_now", "wait", "unclear"].includes(p.leaning)
+            && actions.includes("buy_now") && actions.includes("wait")
+            && p.current_price === 1299.99
+            && p.sources.length >= 1
+            && p.disclaimer.includes("not financial advice");
+      - type: llm-rubric
+        value: >-
+          Passes only if the advice takes the Black Friday price history into account, describes the downward price
+          trend using the supplied numbers, and gives conditions for both buying now and waiting.
