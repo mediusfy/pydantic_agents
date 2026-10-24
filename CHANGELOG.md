@@ -43,6 +43,9 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- `make smoke-deploy` (`scripts/post_deploy_smoke.py`): after a deploy, calls `run_review`, `run_security` and
+  `run_crypto_oracle` through the MCP endpoint and checks each result parses as `ReviewResult`, `SecurityReport` and
+  `Forecast`. Costs tokens, so it is not part of `make ci`.
 - Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
   pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
   run after a restart and reports one that was in flight as `interrupted`.
