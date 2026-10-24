@@ -111,7 +111,8 @@ a new `providers:` entry whose `config.agent` is its registry name.
 `make smoke-deploy` (`scripts/post_deploy_smoke.py`) calls `run_review`, `run_security` and `run_crypto_oracle` once each through the
 MCP endpoint and checks that every result parses as its typed model (`ReviewResult`, `SecurityReport`, `Forecast`). It
 catches a rollout that cannot reach the model gateway or the database behind the memory tools, or that returns output
-clients cannot parse. It costs tokens, so run it after a deploy rather than in CI:
+clients cannot parse. It uses the `mcp` SDK client (already a dependency) over streamable HTTP. It costs tokens, so run it
+after a deploy rather than in CI:
 
 ```bash
 export LITELLM_BASE_URL=https://litellm.jocham.io   # the endpoint is $LITELLM_BASE_URL/mcp; or set MCP_URL

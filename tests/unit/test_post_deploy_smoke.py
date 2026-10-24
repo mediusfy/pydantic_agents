@@ -35,12 +35,18 @@ NAMES = ["pydantic_agents-run_review", "pydantic_agents-run_security", "pydantic
         (["run_review"], "run_review", "run_review"),
         (["pydantic_agents_run_review"], "run_review", "pydantic_agents_run_review"),
         (["rerun_review"], "run_review", None),
+        (["x-run_review_v2"], "run_review", None),
         ([], "run_review", None),
     ],
-    ids=["gateway prefix", "bare", "underscore prefix", "not a suffix match", "empty"],
+    ids=["gateway prefix", "bare", "underscore prefix", "not a suffix match", "versioned name", "empty"],
 )
 def test_find_tool(names, suffix, expected):
     assert find_tool(names, suffix) == expected
+
+
+def test_find_tool_refuses_an_ambiguous_match():
+    with pytest.raises(ValueError, match="ambiguous"):
+        find_tool(["a-run_review", "b-run_review"], "run_review")
 
 
 @pytest.mark.parametrize(
@@ -93,3 +99,45 @@ async def test_run_checks_reports_each_failure_and_missing_tool():
     assert failures["run_crypto_oracle"] == "tool not exposed by the endpoint"
     assert failures["run_security"].startswith("ConnectionError")
     assert "ValidationError" in failures["run_review"]
+
+
+async def test_an_ambiguous_tool_name_is_a_failure_not_a_crash():
+    async def call(tool, request):
+        raise AssertionError("must not be called")
+
+    failures = dict(await run_checks(["a-run_review", "b-run_review"], call, CHECKS[:1]))
+    assert "ambiguous" in failures["run_review"]
+
+
+# ── the client wrapper, against the in-process MCP server ─────────────────
+
+
+async def test_the_client_wrapper_lists_tools_and_returns_their_text():
+    from unittest.mock import AsyncMock, patch
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from pydantic_agents.mcp_server import mcp
+    from scripts.post_deploy_smoke import _caller, _tool_names
+
+    with patch("pydantic_agents.mcp_server.run_agent_by_name", new=AsyncMock(return_value=REVIEW)):
+        async with create_connected_server_and_client_session(mcp._mcp_server) as session:
+            names = await _tool_names(session)
+            assert find_tool(names, "run_review") == "run_review"
+            assert await _caller(session)("run_review", "review this") == REVIEW
+            assert await run_checks(names, _caller(session), CHECKS[:1]) == []
+
+
+async def test_a_tool_error_from_the_server_is_a_failure():
+    from unittest.mock import AsyncMock, patch
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from pydantic_agents.mcp_server import mcp
+    from scripts.post_deploy_smoke import _caller, _tool_names
+
+    with patch("pydantic_agents.mcp_server.run_agent_by_name", new=AsyncMock(side_effect=RuntimeError("pool closed"))):
+        async with create_connected_server_and_client_session(mcp._mcp_server) as session:
+            failures = dict(await run_checks(await _tool_names(session), _caller(session), CHECKS[:1]))
+
+    assert "pool closed" in failures["run_review"]

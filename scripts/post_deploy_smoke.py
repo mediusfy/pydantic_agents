@@ -12,7 +12,10 @@ import asyncio
 import os
 import sys
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from dataclasses import dataclass
+from datetime import timedelta
+from typing import TYPE_CHECKING
 
 from pydantic_agents.core.models.analysis import Forecast
 from pydantic_agents.core.models.core import SECURITY_PASS_SCORE, ReviewResult, SecurityReport
@@ -24,7 +27,17 @@ func health(w http.ResponseWriter, r *http.Request) {
 }
 """
 
+# An agent call is a full LLM run with tool use, so it can take minutes; do not tidy this down.
+TOOL_TIMEOUT_SECONDS = 600
+
+if TYPE_CHECKING:
+    from mcp import ClientSession
+
 CallTool = Callable[[str, str], Awaitable[str]]
+
+
+# The checks below prove the output parses as its typed model (and, for security, that the verdict follows the score).
+# They are a smoke test, not a quality gate: a poor but well-formed review passes.
 
 
 def check_review(text: str) -> str:
@@ -59,19 +72,25 @@ CHECKS = (
 
 
 def find_tool(names: list[str], suffix: str) -> str | None:
-    """The gateway prefixes tool names (``pydantic_agents-run_review``); match on the ``run_<agent>`` suffix."""
-    return next((n for n in names if n == suffix or n.endswith(f"-{suffix}") or n.endswith(f"_{suffix}")), None)
+    """The gateway prefixes tool names (``pydantic_agents-run_review``); match on the ``run_<agent>`` suffix.
+
+    Raises ValueError when more than one tool matches, so a versioned or duplicated name cannot silently pick one.
+    """
+    matches = [n for n in names if n == suffix or n.endswith(f"-{suffix}") or n.endswith(f"_{suffix}")]
+    if len(matches) > 1:
+        raise ValueError(f"{suffix} is ambiguous: {sorted(matches)}")
+    return matches[0] if matches else None
 
 
 async def run_checks(names: list[str], call: CallTool, checks: tuple[Check, ...] = CHECKS) -> list[tuple[str, str]]:
     """Returns (check name, error) for every failed check; an empty list means all passed."""
     failures: list[tuple[str, str]] = []
     for check in checks:
-        tool = find_tool(names, check.tool)
-        if tool is None:
-            failures.append((check.tool, "tool not exposed by the endpoint"))
-            continue
         try:
+            tool = find_tool(names, check.tool)
+            if tool is None:
+                failures.append((check.tool, "tool not exposed by the endpoint"))
+                continue
             summary = check.validate(await call(tool, check.request))
         except Exception as e:
             failures.append((check.tool, f"{type(e).__name__}: {str(e)[:300]}"))
@@ -80,9 +99,24 @@ async def run_checks(names: list[str], call: CallTool, checks: tuple[Check, ...]
     return failures
 
 
-async def main() -> int:
-    from fastmcp import Client
+async def _tool_names(session: "ClientSession") -> list[str]:
+    return [t.name for t in (await session.list_tools()).tools]
 
+
+def _caller(session: "ClientSession") -> CallTool:
+    async def call(tool: str, request: str) -> str:
+        result = await session.call_tool(
+            tool, {"request": request}, read_timeout_seconds=timedelta(seconds=TOOL_TIMEOUT_SECONDS)
+        )
+        text = "".join(part.text for part in result.content if part.type == "text")
+        if result.isError:
+            raise RuntimeError(text[:300])
+        return text
+
+    return call
+
+
+async def main() -> int:
     base = os.environ.get("LITELLM_BASE_URL", "").rstrip("/")
     url = os.environ.get("MCP_URL") or (f"{base}/mcp" if base else "")
     key = os.environ.get("MCP_KEY") or os.environ.get("LITELLM_VIRTUAL_KEY")
@@ -90,14 +124,17 @@ async def main() -> int:
         print("set MCP_URL (or LITELLM_BASE_URL)", file=sys.stderr)
         return 2
 
-    async with Client(url, auth=key) as client:
-        names = [t.name for t in await client.list_tools()]
+    from mcp import ClientSession
+    from mcp.client.streamable_http import streamablehttp_client
 
-        async def call(tool: str, request: str) -> str:
-            result = await client.call_tool(tool, {"request": request}, timeout=600)
-            return "".join(getattr(part, "text", "") for part in result.content)
-
-        failures = await run_checks(names, call)
+    headers = {"Authorization": f"Bearer {key}"} if key else None
+    async with AsyncExitStack() as stack:
+        read, write, _ = await stack.enter_async_context(
+            streamablehttp_client(url, headers=headers, sse_read_timeout=TOOL_TIMEOUT_SECONDS)
+        )
+        session = await stack.enter_async_context(ClientSession(read, write))
+        await session.initialize()
+        failures = await run_checks(await _tool_names(session), _caller(session))
 
     for name, error in failures:
         print(f"FAIL {name}: {error}", file=sys.stderr)
