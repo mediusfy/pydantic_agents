@@ -47,6 +47,10 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- Promptfoo cases for the `security` score bands (clean code passes, critical findings score 39 or less, a high finding
+  fails at 69 or less, `passed` follows the score) and for the typed investing agents (`crypto_oracle`, `market_shark`,
+  `price_analyst`: parseable JSON, grounded figures, no guaranteed outcomes). The two existing cases are scoped to
+  `review`/`security` with `providers:`. Not run in CI; they need the LiteLLM key.
 - CI `typecheck` job runs `mypy src` and must report no errors; `make ci` includes `typecheck`. `[tool.mypy]` ignores missing
   imports for optional or untyped packages (turso, redis_agent_memory, crewai, autogen, sentence_transformers, asyncpg,
   yfinance), so the result no longer depends on which extras are installed. The two real errors (`yaml = None` in

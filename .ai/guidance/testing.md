@@ -16,7 +16,7 @@
 ## Evals (cost tokens)
 
 - `make eval` runs promptfoo against `promptfooconfig.yaml`. `evals/provider.py` runs registered agents in-process (no vector context, no Postgres); `llm-rubric` grading goes through the same LiteLLM gateway. It needs `LITELLM_BASE_URL` and `LITELLM_VIRTUAL_KEY` in the environment.
-- Current cases cover the `review` and `security` agents: a hardcoded secret must be flagged, and an environment-read key must not be reported as a secret.
+- Current cases: `review` and `security` (a hardcoded secret must be flagged, an environment-read key must not be), the `security` score bands (clean code passes with a score of 70 or more, critical findings score 39 or less, a high finding fails at 69 or less, `passed` always follows the score), and the typed investing agents `crypto_oracle`, `market_shark` and `price_analyst` (JSON parses, figures are grounded in the request, no guarantees). A test names its agents with `providers: [label]`; without it the case runs against every provider. The investing cases pass their figures in the request and tell the agent not to call tools, so they do not depend on market data.
 - Evals do not run in CI. Run them for changes to agent prompts, `output_type` models, model routing (`settings.py`, `factory.py`) or tool assignments, and report the result on the PR.
 
 ## Merge and verification criteria

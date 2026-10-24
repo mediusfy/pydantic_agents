@@ -104,7 +104,8 @@ curl -s "$LITELLM_BASE_URL/v1/models" -H "Authorization: Bearer $LITELLM_VIRTUAL
 ```
 
 Add a case by appending to `tests:` in `promptfooconfig.yaml`, or cover another agent with
-a new `providers:` entry whose `config.agent` is its registry name.
+a new `providers:` entry whose `config.agent` is its registry name. Give a case
+`providers: [label]` to run it against that agent only; without it the case runs against every provider.
 
 ## Where the agents run
 
