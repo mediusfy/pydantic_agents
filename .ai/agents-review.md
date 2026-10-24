@@ -33,7 +33,7 @@ Use ripgrep and, if available, a code-graph tool for callers and callees. Run wh
 
 | Tool | Command | Why |
 |---|---|---|
-| ruff, mypy | `make lint`, `make typecheck` | Baseline; CI does not run mypy, so type errors may already exist. |
+| ruff, mypy | `make lint`, `make typecheck` | Baseline; CI's `typecheck` job keeps mypy at zero errors. |
 | pytest-cov | `uv run pytest tests -q --cov=pydantic_agents --cov-branch --cov-report=term-missing` | Coverage per module for 4.9. |
 | bandit | `uvx bandit -r src scripts -q` | subprocess, `open()` on caller paths, requests without timeouts. |
 | pip-audit or osv-scanner | `osv-scanner --lockfile uv.lock` | Known CVEs in the locked set. |

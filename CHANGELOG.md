@@ -32,6 +32,10 @@ fresh **Unreleased** section above it.
 - With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
   `metadata.trace_name` so Langfuse groups a run's generations.
 
+### Added
+- `tests/unit/test_agent_consistency.py` cross-checks every agent's registry entry, `*_model` settings field and
+  tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
+
 ### Fixed
 - `execute_test_suite` started `go mod init` and `go mod tidy` without waiting for them, so `go test` could run
   before the module existed. It now reuses the same awaited, time-limited setup as `run_go_build` / `run_go_vet`
@@ -47,6 +51,10 @@ fresh **Unreleased** section above it.
   fails at 69 or less, `passed` follows the score) and for the typed investing agents (`crypto_oracle`, `market_shark`,
   `price_analyst`: parseable JSON, grounded figures, no guaranteed outcomes). The two existing cases are scoped to
   `review`/`security` with `providers:`. Not run in CI; they need the LiteLLM key.
+- CI `typecheck` job runs `mypy src` and must report no errors; `make ci` includes `typecheck`. `[tool.mypy]` ignores missing
+  imports for optional or untyped packages (turso, redis_agent_memory, crewai, autogen, sentence_transformers, asyncpg,
+  yfinance), so the result no longer depends on which extras are installed. The two real errors (`yaml = None` in
+  `tools/validate.py`, the Wikipedia wrapper call in `tools/langchain_bridge.py`) are fixed.
 - Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
   pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
   run after a restart and reports one that was in flight as `interrupted`.

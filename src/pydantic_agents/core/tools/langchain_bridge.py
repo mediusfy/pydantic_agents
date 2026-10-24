@@ -25,7 +25,7 @@ try:
     from langchain_community.tools import WikipediaQueryRun
     from langchain_community.utilities import WikipediaAPIWrapper
 
-    _wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())
+    _wikipedia = WikipediaQueryRun(api_wrapper=WikipediaAPIWrapper())  # type: ignore[call-arg]  # wiki_client is injected by the wrapper's own before-validator
 
     def search_wikipedia(query: str) -> str:
         """Search Wikipedia for information on a topic (via LangChain)."""
