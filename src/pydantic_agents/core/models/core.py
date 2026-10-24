@@ -103,10 +103,27 @@ class ActivityLog(BaseModel):
     artifact_ids: list[str] = Field(default_factory=list)
 
 
+# Security score bands (100 = clean). The audit passes iff the score is at least SECURITY_PASS_SCORE; the agent's
+# prompt asks it to put critical findings at or below SECURITY_CRITICAL_MAX_SCORE and high findings at or below
+# SECURITY_HIGH_MAX_SCORE, so "no critical/high findings" and "score >= SECURITY_PASS_SCORE" mean the same thing.
+SECURITY_PASS_SCORE = 70
+SECURITY_HIGH_MAX_SCORE = SECURITY_PASS_SCORE - 1
+SECURITY_CRITICAL_MAX_SCORE = 39
+
+
 class SecurityReport(BaseModel):
-    passed: bool
-    score: int = Field(ge=0, le=100)
+    passed: bool = Field(
+        default=False,
+        description=f"Derived in code from score >= {SECURITY_PASS_SCORE}; supplied value ignored",
+    )
+    score: int = Field(ge=0, le=100, description="0-100, 100 is clean; see the security score bands")
     feedback: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_passed(self) -> "SecurityReport":
+        # The model reported both fields and they could disagree (passed=false with score 55 and no high findings).
+        self.passed = self.score >= SECURITY_PASS_SCORE
+        return self
 
 
 class PipelineState(BaseModel):

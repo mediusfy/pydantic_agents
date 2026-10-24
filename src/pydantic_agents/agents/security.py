@@ -2,7 +2,12 @@ from dataclasses import dataclass
 
 from pydantic_ai import Agent
 
-from pydantic_agents.core.models.core import SecurityReport
+from pydantic_agents.core.models.core import (
+    SECURITY_CRITICAL_MAX_SCORE,
+    SECURITY_HIGH_MAX_SCORE,
+    SECURITY_PASS_SCORE,
+    SecurityReport,
+)
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -43,10 +48,19 @@ Check for:
 ## Output
 
 Return a SecurityReport with:
-- `passed`: true if no critical/high findings
-- `score`: 0-100 (100 = clean)
+- `score`: 0-100 (100 = clean), using these bands:
+  - any CRITICAL finding: __CRITICAL_MAX__ or lower
+  - any HIGH finding (and no critical): __HIGH_MAX__ or lower
+  - only medium/low findings, or none: __PASS__ or higher
+- `passed`: do not worry about getting this right; it is derived from the score (true iff score is __PASS__ or higher)
 - `feedback`: specific findings with file:line, vulnerability type, severity, and remediation
 """
+
+security_prompt = (
+    security_prompt.replace("__CRITICAL_MAX__", str(SECURITY_CRITICAL_MAX_SCORE))
+    .replace("__HIGH_MAX__", str(SECURITY_HIGH_MAX_SCORE))
+    .replace("__PASS__", str(SECURITY_PASS_SCORE))
+)
 
 security_agent = Agent(
     create_model(settings.resolve_model(settings.security_model)),
