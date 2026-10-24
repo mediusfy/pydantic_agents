@@ -19,6 +19,13 @@ fresh **Unreleased** section above it.
   checkpoints) and `approve_cto_gate` (writes the approval marker the CTO gate polls for, so a caller outside the
   pod can approve a run; the project name is checked against path traversal).
 
+### Fixed
+- The CTO gate no longer treats any existing `.cto_approved` file as approval: the content is read, so a marker
+  containing `false`/`0`/`no` stops the run (it used to pass the existence check), and the poller ends on an
+  explicit rejection instead of waiting for the timeout.
+- `submit_pipeline_run` rejects a caller-supplied run id that is not `pipe_` plus 12 hex characters, and
+  refuses to start a run id whose previous task is still alive (its handle would become unreachable).
+
 ### Changed
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy

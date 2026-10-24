@@ -159,3 +159,69 @@ def test_write_approval(monkeypatch, tmp_path, project, approved, content, raise
             write_approval(project, approved)
         return
     assert write_approval(project, approved).read_text() == content
+
+
+@pytest.mark.parametrize(
+    ("content", "want"),
+    [("true\n", True), ("", True), ("yes", True), ("false\n", False), ("0", False), ("maybe", None)],
+)
+def test_marker_decision(tmp_path, content, want):
+    from pydantic_agents.core.cto_gate import read_marker
+
+    marker = tmp_path / ".cto_approved"
+    marker.write_text(content)
+    assert read_marker(marker) is want
+    assert read_marker(tmp_path / "missing") is None
+
+
+@pytest.mark.parametrize(("approved", "proceeds"), [(True, True), (False, False)])
+async def test_gate_honours_an_existing_marker(monkeypatch, tmp_path, approved, proceeds):
+    """A rejection written by approve_cto_gate must stop the run, not pass the old exists() check."""
+    from pydantic_agents.core import cto_gate
+    from pydantic_agents.core.models.core import PipelineState
+
+    monkeypatch.setattr(settings, "output_dir", tmp_path)
+    monkeypatch.delenv("ORCHESTRATION_CTO_OVERRIDE", raising=False)
+    write_approval("svc", approved)
+    state = PipelineState(run_id="r", stage="advisory", cto_approved=False)
+    assert await cto_gate.apply(state, project="svc", timeout=0.05) is proceeds
+
+
+async def test_poll_stops_on_rejection(tmp_path):
+    from pydantic_agents.core import cto_gate
+
+    marker = tmp_path / ".cto_approved"
+    marker.write_text("false")
+    assert await cto_gate._poll_for_file_approval(marker, poll_interval=0.01, timeout=1.0) is False
+
+
+async def test_cancelled_run_is_persisted_as_cancelled(pool, monkeypatch):
+    started = asyncio.Event()
+
+    class _Slow:
+        async def execute(self):
+            started.set()
+            await asyncio.sleep(30)
+
+    monkeypatch.setattr(pipeline_jobs, "build_default_pipeline", lambda _c: _Slow())
+    run_id = await pipeline_jobs.submit_pipeline_run("svc", "req")
+    await started.wait()
+    task = pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert pool.db[run_id]["status"] == "cancelled" and pool.db[run_id]["completed_at"] is not None
+
+
+async def test_resume_refuses_a_run_with_a_live_task(pool, monkeypatch):
+    live = asyncio.get_running_loop().create_future()  # not done
+    pipeline_jobs.PIPELINE_RUNS["pipe_aaaaaaaaaaaa"] = _run("failed", _task=live)
+    assert await pipeline_jobs.resume_pipeline_run("pipe_aaaaaaaaaaaa") is None
+    with pytest.raises(RuntimeError):
+        await pipeline_jobs.submit_pipeline_run("svc", "req", run_id="pipe_aaaaaaaaaaaa", resume=True)
+
+
+@pytest.mark.parametrize("bad", ["../etc", "pipe_short", "run-123", "pipe_ZZZZZZZZZZZZ"])
+async def test_caller_supplied_run_ids_are_validated(bad):
+    with pytest.raises(ValueError):
+        await pipeline_jobs.submit_pipeline_run("svc", "req", run_id=bad)

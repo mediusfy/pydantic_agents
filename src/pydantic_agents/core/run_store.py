@@ -16,6 +16,8 @@ from pydantic_agents.core.settings import settings
 logger = logging.getLogger(__name__)
 
 _COLUMNS = ("status", "project", "requirement", "result", "error", "started_at", "completed_at", "elapsed_seconds")
+# Per process: skips CREATE TABLE IF NOT EXISTS after the first success. Two concurrent first calls both run it,
+# which is harmless because the statement is idempotent.
 _table_ready = False
 
 

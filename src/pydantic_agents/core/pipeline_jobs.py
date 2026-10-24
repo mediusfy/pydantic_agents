@@ -12,6 +12,7 @@ checkpoints.
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import UTC, datetime
@@ -32,6 +33,8 @@ logger = logging.getLogger(__name__)
 #               "elapsed_seconds": float | None, "_task": asyncio.Task | None }
 PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
 
+_RUN_ID = re.compile(r"pipe_[0-9a-f]{12}")
+
 
 async def submit_pipeline_run(
     project_name: str, requirement: str, *, run_id: str | None = None, resume: bool = False
@@ -45,7 +48,13 @@ async def submit_pipeline_run(
     The caller should poll with ``PIPELINE_RUNS[run_id]["status"]`` to check
     completion.
     """
-    run_id = run_id or f"pipe_{uuid.uuid4().hex[:12]}"
+    if run_id is None:
+        run_id = f"pipe_{uuid.uuid4().hex[:12]}"
+    elif not _RUN_ID.fullmatch(run_id):
+        raise ValueError(f"Invalid run id {run_id!r}: expected pipe_ followed by 12 hex characters")
+    live = PIPELINE_RUNS.get(run_id, {}).get("_task")
+    if live is not None and not live.done():
+        raise RuntimeError(f"Run {run_id} still has a live task; cancel it before resubmitting")
 
     PIPELINE_RUNS[run_id] = {
         "status": "pending",
@@ -115,7 +124,8 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
 
 async def get_run(run_id: str) -> dict[str, Any] | None:
     """The run from memory, else from the database. A stored run that is still pending/running but has no live
-    task in this process was cut off by a restart, so it is reported as ``interrupted``."""
+    task in this process was cut off by a restart, so it is reported as ``interrupted``. That status exists only in
+    the returned dict; the stored row keeps its last written status until the run is resumed or finishes."""
     run = PIPELINE_RUNS.get(run_id)
     if run is not None:
         return run
@@ -131,6 +141,9 @@ async def resume_pipeline_run(run_id: str) -> str | None:
 
     Returns the run id, or None when the run is unknown, still running, or already completed.
     """
+    live = PIPELINE_RUNS.get(run_id, {}).get("_task")
+    if live is not None and not live.done():
+        return None  # a task is still alive (e.g. a cancel not yet reaped): keep its handle reachable
     run = await get_run(run_id)
     if run is None or run["status"] not in ("interrupted", "failed", "cancelled"):
         return None
