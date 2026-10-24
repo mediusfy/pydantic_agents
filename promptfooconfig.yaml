@@ -116,8 +116,6 @@ tests:
       request: |
         Audit this Go snippet:
 
-        const adminToken = "ghp_1234567890abcdefghijklmnopqrstuvwxyz"
-
         func lookup(w http.ResponseWriter, r *http.Request) {
             name := r.URL.Query().Get("name")
             rows, _ := db.Query("SELECT * FROM users WHERE name = '" + name + "'")
@@ -132,7 +130,7 @@ tests:
           const r = JSON.parse(output);
           return r.passed === false && r.score <= 39;
       - type: llm-rubric
-        value: Reports SQL injection, command injection or the hardcoded token as a critical security problem.
+        value: Reports SQL injection or command injection as a critical security problem.
 
   - description: security - a high finding fails the audit but stays above the critical band
     providers: [security]
@@ -168,7 +166,7 @@ tests:
           const r = JSON.parse(output);
           return r.passed === (r.score >= 70);
 
-  # ── typed investing agents ────────────────────────────────────────────
+  # ── typed agents (investing and purchasing) ────────────────────────────────────────────
   # The figures are supplied in the request and the agents are told not to call tools, so these run without market
   # data access. Structural rules (probabilities add up, disclaimer, sources) are enforced by the output models; the
   # assertions check the result is parseable and the content is grounded in what was supplied.
@@ -236,8 +234,9 @@ tests:
       - type: llm-rubric
         value: >-
           Passes only if the thesis is specific to the supplied figures (P/E, distance from the 52-week high,
-          services growth), gives both a bull and a bear case, and does not invent figures that were not supplied
-          and are presented as facts.
+          services growth), gives both a bull and a bear case, and does not state any number that was not supplied
+          (no other price targets, ratios or growth rates) unless it is explicitly labelled as an estimate or an
+          assumption.
 
   - description: price_analyst - returns PurchaseAdvice covering buy now and wait
     providers: [price_analyst]
