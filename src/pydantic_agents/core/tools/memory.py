@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic_ai import RunContext
 
+from pydantic_agents.core.exceptions import OrgitrationDependencyError, OrgitrationError
 from pydantic_agents.core.models.core import ActivityLog
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.tools.registry import register_tool
@@ -15,7 +16,22 @@ from pydantic_agents.core.vector_db import vector_db
 logger = logging.getLogger(__name__)
 
 
-def _memory_unavailable(tool: str, exc: Exception) -> str:
+def _store_errors() -> tuple[type[BaseException], ...]:
+    """Errors that mean the memory store is unavailable (as opposed to a bug in the caller, which must stay loud).
+
+    OSError covers connection and timeout failures, OrgitrationError/OrgitrationDependencyError the typed errors
+    raised by this package (a missing vector extra), and asyncpg's own hierarchy (which is not OSError) is added
+    when the vector extra is installed.
+    """
+    errors: tuple[type[BaseException], ...] = (OSError, OrgitrationError, OrgitrationDependencyError)
+    try:
+        import asyncpg  # type: ignore[import-untyped]
+    except ImportError:
+        return errors
+    return (*errors, asyncpg.PostgresError, asyncpg.InterfaceError)
+
+
+def _degrade_message(tool: str, exc: BaseException) -> str:
     """Memory is best-effort: an unreachable store must not abort the agent run that called the tool.
 
     The full error is logged; the model only gets the exception type, which avoids echoing connection details.
@@ -32,7 +48,11 @@ def _scope(ctx: RunContext[Any]) -> tuple[str, str | None]:
 
 
 async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact_ids: list[str] | None = None) -> str:
-    """Logs a significant agent activity to the project memory for future spot-checking."""
+    """Logs a significant agent activity to the project memory for future spot-checking.
+
+    Best-effort: if the memory store is unreachable this returns a message saying the activity was not logged
+    instead of raising, so the calling agent's run continues. Programming errors still raise.
+    """
     pass_num = getattr(ctx.deps, "pass_num", 0) if ctx.deps else 0
     agent_name, run_id = _scope(ctx)
 
@@ -58,8 +78,8 @@ async def log_activity(ctx: RunContext[Any], action: str, summary: str, artifact
 
     try:
         await vector_db.async_add_documents("activity_logs", [narrative_doc], [metadata], [doc_id])
-    except Exception as e:
-        return f"Activity not logged. {_memory_unavailable('log_activity', e)}"
+    except _store_errors() as e:
+        return f"Activity not logged. {_degrade_message('log_activity', e)}"
     return f"Activity logged successfully: {action}"
 
 
@@ -71,6 +91,9 @@ async def query_history(
     include_legacy: bool = False,
 ) -> str:
     """Queries this agent's history for the current run to find past decisions or actions.
+
+    Best-effort: if the memory store is unreachable this returns a message saying no history is available instead
+    of raising. Programming errors still raise.
 
     Args:
         query: What to look for.
@@ -95,8 +118,8 @@ async def query_history(
                 "activity_logs", query, n_results=5, filters={"type": "activity", "agent_name": None}
             )
             results = results + [r for r in legacy if r not in results]
-    except Exception as e:
-        return f"No history available. {_memory_unavailable('query_history', e)}"
+    except _store_errors() as e:
+        return f"No history available. {_degrade_message('query_history', e)}"
     if not results:
         return "No relevant history found."
 
