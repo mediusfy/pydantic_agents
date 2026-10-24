@@ -5,9 +5,8 @@ import contextlib
 import os
 import tempfile
 
-from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
 FRONTEND_VALIDATE_TIMEOUT = 60.0
 
@@ -27,8 +26,8 @@ async def validate_frontend_code(file_name: str, source_code: str) -> str:
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             filepath = str(safe_write(temp_dir, file_name, source_code))
-        except PathTraversalError as e:
-            return f"VALIDATION FAILED: {e}"
+        except WRITE_NAME_ERRORS as e:
+            return f"VALIDATION FAILED: cannot write {file_name!r}: {e}"
 
         # Determine command based on extension. Default to vue-tsc or eslint.
         # Running against the filepath but keeping CWD as the project root so it

@@ -4,52 +4,18 @@ import asyncio
 import contextlib
 import tempfile
 
-from pydantic_agents.core.exceptions import PathTraversalError
+from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
-GO_MOD_INIT_TIMEOUT = 10.0
-GO_MOD_TIDY_TIMEOUT = 30.0
 GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
 
 
-async def _run_cmd(*args: str, cwd: str, timeout: float = 30.0) -> None:
-    """Run a command with timeout, discarding output."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        raise
-
-
 async def _write_files(temp_dir: str, files: dict[str, str]) -> None:
-    """Write a dict of file paths to content into temp_dir; raises PathTraversalError if a name escapes it."""
+    """Write a dict of file paths to content into temp_dir; raises (see WRITE_NAME_ERRORS) if a name escapes it or is invalid."""
     for filename, content in files.items():
         safe_write(temp_dir, filename, content)
-
-
-async def _init_and_tidy(temp_dir: str) -> str | None:
-    """Initialize go module and run go mod tidy. Returns error string or None."""
-    try:
-        await _run_cmd("go", "mod", "init", "tempmodule", cwd=temp_dir, timeout=GO_MOD_INIT_TIMEOUT)
-    except TimeoutError:
-        return "'go mod init' timed out."
-    try:
-        await _run_cmd("go", "mod", "tidy", cwd=temp_dir, timeout=GO_MOD_TIDY_TIMEOUT)
-    except TimeoutError:
-        return (
-            "'go mod tidy' timed out — the generated code likely imports "
-            "a private or non-existent module. Check import paths."
-        )
-    return None
 
 
 async def _run_build(temp_dir: str) -> str:
@@ -109,9 +75,9 @@ async def run_go_build(files: dict[str, str]) -> str:
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             await _write_files(temp_dir, files)
-        except PathTraversalError as e:
-            return f"BUILD FAILED: {e}"
-        err = await _init_and_tidy(temp_dir)
+        except WRITE_NAME_ERRORS as e:
+            return f"BUILD FAILED: cannot write the given files: {e}"
+        err = await init_and_tidy(temp_dir)
         if err:
             return f"BUILD FAILED: {err}"
         return await _run_build(temp_dir)
@@ -130,9 +96,9 @@ async def run_go_vet(files: dict[str, str]) -> str:
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
             await _write_files(temp_dir, files)
-        except PathTraversalError as e:
-            return f"VET FAILED: {e}"
-        err = await _init_and_tidy(temp_dir)
+        except WRITE_NAME_ERRORS as e:
+            return f"VET FAILED: cannot write the given files: {e}"
+        err = await init_and_tidy(temp_dir)
         if err:
             return f"VET FAILED: {err}"
         return await _run_vet(temp_dir)
