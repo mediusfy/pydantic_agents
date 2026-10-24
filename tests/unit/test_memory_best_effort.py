@@ -24,6 +24,14 @@ def test_asyncpg_errors_are_store_errors_when_installed():
     assert issubclass(asyncpg.InterfaceError, errors)
 
 
+def test_without_asyncpg_only_the_generic_store_errors_are_caught():
+    import sys
+
+    with patch.dict(sys.modules, {"asyncpg": None}):  # a None entry makes `import asyncpg` raise ImportError
+        errors = memory._store_errors()
+    assert errors == (OSError, OrgitrationError, OrgitrationDependencyError)
+
+
 @pytest.mark.parametrize("bug", [ValueError("bad payload"), TypeError("bad type"), KeyError("k"), RuntimeError("bug")])
 async def test_programming_errors_stay_loud(bug):
     ctx = MagicMock(deps=None)
