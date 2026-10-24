@@ -27,6 +27,13 @@ func health(w http.ResponseWriter, r *http.Request) {
 }
 """
 
+# Figures are supplied and tools are ruled out: an open-ended forecast lets the agent research freely, which can
+# exceed the pod key's tokens-per-minute limit (HTTP 429) and says nothing about whether the deploy works.
+FORECAST_REQUEST = (
+    "Forecast BTC over the next 7 days. Use only these figures: spot 60000 USD, 30-day range 55000-65000 USD. "
+    "Do not call tools."
+)
+
 # An agent call is a full LLM run with tool use, so it can take minutes; do not tidy this down.
 TOOL_TIMEOUT_SECONDS = 600
 
@@ -67,7 +74,7 @@ class Check:
 CHECKS = (
     Check("run_review", f"Review this Go snippet for production readiness:\n\n{REVIEW_SNIPPET}", check_review),
     Check("run_security", f"Audit this Go snippet:\n\n{REVIEW_SNIPPET}", check_security),
-    Check("run_crypto_oracle", "Forecast BTC over the next 30 days.", check_forecast),
+    Check("run_crypto_oracle", FORECAST_REQUEST, check_forecast),
 )
 
 
