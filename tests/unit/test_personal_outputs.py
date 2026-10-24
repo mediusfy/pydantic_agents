@@ -74,7 +74,9 @@ def test_a_complete_itinerary_is_accepted_and_totals_are_derived():
 
 
 @pytest.mark.parametrize(
-    ("budget", "expected"), [(36.0, True), (35.99, False), (None, None)], ids=["exactly at budget", "over", "no budget"]
+    ("budget", "expected"),
+    [(36.0, True), (35.99, False), (36.004, True), (None, None)],
+    ids=["exactly at budget", "over", "budget with sub-cent noise", "no budget"],
 )
 def test_within_budget_follows_the_costs(budget, expected):
     assert Itinerary(**_itinerary(budget=budget)).within_budget is expected
@@ -109,6 +111,7 @@ def test_an_itinerary_without_days_or_questions_is_rejected():
         ({"days": [_day(1, "2026-11-01")]}, "fall outside"),
         ({"days": [_day(1, "2026-11-02"), _day(2, "2026-11-05")]}, "fall outside"),
         ({"days": [_day(1, "02/11/2026")]}, "ISO 8601"),
+        ({"start_date": "2026-02-31", "end_date": "2026-03-02"}, "ISO 8601"),
     ],
     ids=[
         "no sources",
@@ -120,6 +123,7 @@ def test_an_itinerary_without_days_or_questions_is_rejected():
         "before start",
         "after end",
         "bad day date",
+        "impossible date",
     ],
 )
 def test_itinerary_rules(overrides, message):
@@ -189,6 +193,11 @@ def test_breakdown_rules(overrides, message):
     kwargs = _breakdown(**overrides)
     with pytest.raises(ValidationError, match=message):
         CostBreakdown(**kwargs)
+
+
+def test_a_fixed_cost_must_be_exact_to_the_cent():
+    with pytest.raises(ValidationError, match="fixed but has a range"):
+        CostLine(**_line(low=100.0, high=100.01))
 
 
 def test_an_estimate_may_have_equal_bounds():
@@ -286,3 +295,25 @@ def test_the_mcp_tool_descriptions_name_the_result_types():
 
     assert "Itinerary" in AGENT_DOCSTRINGS["holiday_planner"]
     assert "CostBreakdown" in AGENT_DOCSTRINGS["accountant"]
+
+
+@pytest.mark.parametrize(
+    ("name", "model", "data"),
+    [("holiday_planner", Itinerary, _itinerary), ("accountant", CostBreakdown, _breakdown)],
+)
+async def test_the_mcp_server_returns_the_model_json(name, model, data):
+    from unittest.mock import AsyncMock, patch
+
+    from pydantic_agents.mcp_server import run_agent_by_name
+
+    agent = AsyncMock()
+    agent.run.return_value = MagicMock(output=model(**data()))
+    with (
+        patch("pydantic_agents.mcp_server.registry") as reg,
+        patch("pydantic_agents.mcp_server.retrieve_context", return_value=""),
+    ):
+        reg.get.return_value = agent
+        reg._agents = {name: (None, None, lambda: None, None)}
+        result = await run_agent_by_name(name, "go")
+
+    assert model.model_validate_json(result) == model(**data())

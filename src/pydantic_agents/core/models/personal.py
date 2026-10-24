@@ -2,11 +2,13 @@
 
 As with the investing agents (core/models/analysis.py), rules the prompts used to ask for in prose are enforced here, so
 a result that breaks them fails validation and pydantic-ai asks the model to correct it: unverified details say where
-to confirm them, fixed costs are exact, totals are added up in code, and every figure is sourced. A request that is
+to confirm them, fixed costs are exact, totals are added up in code, and the result cites at least one source (that
+each figure traces to a source is asked of the model in the prompt, not checked here). A request that is
 missing key details is answered with ``open_questions`` instead of an invented plan.
 """
 
 import re
+from datetime import date
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -16,13 +18,18 @@ from pydantic_agents.core.models.analysis import Source
 ACCOUNTING_DISCLAIMER = "This is a calculation based on the figures provided, not tax, legal or financial advice."
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-# Totals are sums of floats the model typed, so allow for representation error but not for a real difference.
-_MONEY_SLACK = 0.005
+# Covers float representation error only (0.1 + 0.2), not model imprecision: a fixed cost must be exact to the cent.
+_FLOAT_EPSILON = 1e-9
 
 
 def _check_iso_date(value: str, field: str) -> None:
-    if not _ISO_DATE.match(value):
-        raise ValueError(f"{field} must be an ISO 8601 date (YYYY-MM-DD), got {value!r}")
+    """YYYY-MM-DD and a real calendar date (2026-02-31 is rejected)."""
+    try:
+        if not _ISO_DATE.match(value):
+            raise ValueError
+        date.fromisoformat(value)
+    except ValueError:
+        raise ValueError(f"{field} must be an ISO 8601 date (YYYY-MM-DD), got {value!r}") from None
 
 
 # ── holiday_planner ───────────────────────────────────────────────────────
@@ -111,7 +118,8 @@ class Itinerary(BaseModel):
         costs = [i.cost for d in self.days for i in d.items if i.cost is not None]
         self.estimated_total = round(sum(costs), 2) if costs else None
         if self.estimated_total is not None and self.budget is not None:
-            self.within_budget = self.estimated_total <= self.budget + _MONEY_SLACK
+            # estimated_total is rounded to the cent, so compare it with the budget at the same precision.
+            self.within_budget = self.estimated_total <= round(self.budget, 2)
         else:
             self.within_budget = None
         return self
@@ -145,7 +153,7 @@ class CostLine(BaseModel):
     def _range_matches_kind(self) -> "CostLine":
         if self.low > self.high:
             raise ValueError(f"'{self.name}': low ({self.low}) is above high ({self.high})")
-        if self.kind == "fixed" and abs(self.low - self.high) > _MONEY_SLACK:
+        if self.kind == "fixed" and abs(self.low - self.high) > _FLOAT_EPSILON:
             raise ValueError(f"'{self.name}' is fixed but has a range ({self.low}..{self.high}); mark it an estimate")
         return self
 

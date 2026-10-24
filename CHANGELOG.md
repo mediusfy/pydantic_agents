@@ -32,7 +32,7 @@ fresh **Unreleased** section above it.
   cites a source; a breakdown's fixed costs are exact, estimates have ordered ranges, exchange rates are dated, and it
   cites a source. Totals are computed in code (`estimated_total`, `within_budget`, `total_low`, `total_high`), the
   accountant's `disclaimer` is set by code, and a request missing key details is answered with `open_questions`
-  instead of an invented plan. (Also corrects the investing entry above: probabilities must add up within 0.02, not 0.05.)
+  instead of an invented plan.
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
   has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
