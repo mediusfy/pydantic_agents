@@ -15,11 +15,12 @@ make typecheck        # mypy src
 make test             # pytest tests -q (make test-unit / make test-integration for one level)
 make cov              # tests with a coverage report
 make smoke            # import the MCP server and count its tools (same as the CI smoke job)
+make smoke-deploy     # after a deploy: real run_review / run_security / run_crypto_oracle calls via the MCP endpoint
 make lock-check       # fails if requirements.lock or uv.lock is stale; make lock regenerates
-make ci               # lint + test + smoke + lock-check
+make ci               # lint + typecheck + test + smoke + lock-check
 ```
 
-Do not run `make eval` (promptfoo, real LLM calls through the gateway) or `make seed-apply` (writes to the vector database) unless asked. `make seed` is a dry run.
+Do not run `make eval` (promptfoo, real LLM calls through the gateway), `make smoke-deploy` (real agent calls against the deployed endpoint) or `make seed-apply` (writes to the vector database) unless asked. `make seed` is a dry run.
 
 ## Before you design
 
@@ -28,9 +29,9 @@ Before starting task design or major refactors, review [`.ai/recent_context.md`]
 ## Rules that are easy to break
 
 - **Changelog is mandatory.** Every PR adds at least one bullet under `## [Unreleased]` in `CHANGELOG.md`, in the matching `### Added` / `### Changed` / `### Fixed` / `### Removed` subsection. The `changelog` CI check enforces it; only a maintainer applies the `skip-changelog` label, never an agent. Details in [coding standards](.ai/guidance/coding_standards.md#changelog).
-- `make lint && make typecheck && make test` must pass locally before pushing. CI does not run mypy, so `make typecheck` is the only check for it.
+- `make lint && make typecheck && make test` must pass locally before pushing. CI runs mypy in the `typecheck` job (it must be 0 errors); the missing-import ignores for optional packages are in `[tool.mypy]`.
 - After changing dependencies or extras in `pyproject.toml`, run `make lock` and `uv lock` and commit both lockfiles. The image installs only from the hash-pinned `requirements.lock` (linux/arm64, Python 3.12).
-- Adding an agent needs a model field in `core/settings.py` and an entry in `agents/registration.py`; it gets tools only through a category list in `core/tool_assignments.py`. Nothing checks these three agree.
+- Adding an agent needs a model field in `core/settings.py` and an entry in `agents/registration.py`; it gets tools only through a category list in `core/tool_assignments.py`. `tests/unit/test_agent_consistency.py` fails if the three disagree.
 - Model output chooses file paths. New code that writes or reads a model-chosen path goes through `safe_path_join` / `safe_write` in `core/utils.py`, as `writer.py`, `tools/docs.py` and `tools/memory.py` do (`tools/fs_tools.py` does not yet; see [security](.ai/guidance/security.md)).
 - Never commit secrets: credentials come from the environment (`.env` is gitignored; `.env.example` holds empty placeholders) or a secret manager.
 - Fill in the PR template's "AI Context & Rules Update" section, or write "None".

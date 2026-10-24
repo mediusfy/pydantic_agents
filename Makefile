@@ -3,7 +3,7 @@
 IMAGE ?= pydantic-agents:dev
 PORT  ?= 8080
 
-.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke serve seed seed-apply docker-build lock lock-check ci clean eval
+.PHONY: help install lint lint-fix format typecheck test test-unit test-integration cov smoke smoke-deploy serve seed seed-apply docker-build lock lock-check ci clean eval
 
 help: ## Show this help
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z_-]+:.*## / {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -38,6 +38,9 @@ cov: ## Tests with coverage report
 smoke: ## Import the MCP server and count its tools (mirrors CI smoke job)
 	uv run python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
 
+smoke-deploy: ## After a deploy: call run_review, run_security and run_crypto_oracle through the MCP endpoint (costs tokens; needs MCP_URL/MCP_KEY or LITELLM_BASE_URL/LITELLM_VIRTUAL_KEY)
+	uv run python scripts/post_deploy_smoke.py
+
 serve: ## Run the MCP server locally on $(PORT)
 	uv run uvicorn pydantic_agents.mcp_server:mcp.sse_app --host 127.0.0.1 --port $(PORT)
 
@@ -68,7 +71,7 @@ lock-check: ## Fail if requirements.lock or uv.lock no longer satisfies pyprojec
 		rm -f .requirements.lock.a .requirements.lock.b .requirements.lock.check; \
 		if [ $$rc -ne 0 ]; then echo "requirements.lock is stale; run 'make lock'"; exit 1; fi
 
-ci: lint test smoke lock-check ## Everything CI runs
+ci: lint typecheck test smoke lock-check ## Everything CI runs
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage dist build
