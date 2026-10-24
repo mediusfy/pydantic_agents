@@ -3,10 +3,11 @@
 Nothing else ties them together, so adding an agent to one and forgetting another fails silently (an agent with no
 tools, a model field nobody reads, a tool category nothing provides).
 
-Conventions this relies on: agents read their model as ``settings.<name>_model`` (the repo-wide ``settings`` singleton,
-no aliasing or ``getattr``; a ``self.settings.`` or ``other.settings.`` prefix is still found, because the scan is
-deliberately over-inclusive rather than missing a read), and every ``*_model`` field on ``Settings`` belongs to an agent. A new non-agent field
-ending in ``_model`` (an embedding model, say) must be exempted in ``NON_AGENT_MODEL_FIELDS`` below.
+Conventions this relies on: agents read their model as ``settings.<name>_model`` (the repo-wide ``settings``
+singleton, no aliasing or ``getattr``; a ``self.settings.`` or ``other.settings.`` prefix is still found, because the
+scan is deliberately over-inclusive rather than missing a read), and every ``*_model`` field on ``Settings`` belongs to
+an agent. A new non-agent field ending in ``_model`` (an embedding model, say) must be exempted in
+``NON_AGENT_MODEL_FIELDS`` below.
 """
 
 import re
@@ -83,7 +84,8 @@ def test_every_assigned_category_is_provided_by_a_registered_tool():
 
 def test_the_exemptions_name_real_model_fields():
     real = {name for name in Settings.model_fields if name.endswith("_model")}
-    assert NON_AGENT_MODEL_FIELDS <= real, f"exempted fields that do not exist: {sorted(NON_AGENT_MODEL_FIELDS - real)}"
+    unknown = NON_AGENT_MODEL_FIELDS - real
+    assert not unknown, f"exempted fields that do not exist: {sorted(unknown)}"
 
 
 def test_every_model_field_an_agent_reads_exists_in_settings():
