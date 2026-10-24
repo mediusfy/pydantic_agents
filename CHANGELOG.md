@@ -11,6 +11,14 @@ fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
+  pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
+  run after a restart and reports one that was in flight as `interrupted`.
+- MCP tools `resume_pipeline_run` (restart an interrupted, failed or cancelled run under the same id from its
+  checkpoints) and `approve_cto_gate` (writes the approval marker the CTO gate polls for, so a caller outside the
+  pod can approve a run; the project name is checked against path traversal).
+
 ### Changed
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy

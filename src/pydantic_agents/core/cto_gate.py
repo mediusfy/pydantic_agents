@@ -27,6 +27,20 @@ def _approval_file_path(project: str) -> Path:
     return p
 
 
+def write_approval(project: str, approved: bool = True) -> Path:
+    """Write the approval marker for a project (what an MCP caller outside the pod cannot do with ``touch``).
+
+    The project name is caller-chosen, so the path is checked to stay inside the output dir.
+    """
+    from pydantic_agents.core.settings import settings
+    from pydantic_agents.core.utils import safe_path_join
+
+    path = safe_path_join(settings.output_dir, project, _APPROVAL_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("true\n" if approved else "false\n")
+    return path
+
+
 async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, timeout: float = 3600.0) -> bool:
     """Wait for a `.cto_approved` marker file to exist.
 
