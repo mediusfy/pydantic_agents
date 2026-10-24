@@ -16,7 +16,7 @@
 ## Evals (cost tokens)
 
 - `make eval` runs promptfoo against `promptfooconfig.yaml`. `evals/provider.py` runs registered agents in-process (no vector context, no Postgres); `llm-rubric` grading goes through the same LiteLLM gateway. It needs `LITELLM_BASE_URL` and `LITELLM_VIRTUAL_KEY` in the environment.
-- Current cases cover the `review` and `security` agents: a hardcoded secret must be flagged, and an environment-read key must not be reported as a secret.
+- Current cases: `review` and `security` (a hardcoded secret must be flagged, an environment-read key must not be), the `security` score bands (clean code passes with a score of 70 or more, critical findings score 39 or less, a high finding fails at 69 or less, `passed` always follows the score), and the typed investing agents `crypto_oracle`, `market_shark` and `price_analyst` (JSON parses, figures are grounded in the request, no guarantees). A test names its agents with `providers: [label]`; without it the case runs against every provider. The investing cases pass their figures in the request and tell the agent not to call tools, so they do not depend on market data.
 - Evals do not run in CI. Run them for changes to agent prompts, `output_type` models, model routing (`settings.py`, `factory.py`) or tool assignments, and report the result on the PR.
 
 ## Merge and verification criteria
@@ -26,7 +26,7 @@ A PR is ready for review or merge only when every step below passes. If one does
 1. **Green CI.** On the PR's latest commit, `CI` (`lint`, `test` on 3.11 and 3.12, `smoke`, `lock`, `image-smoke`) and `Changelog` pass. A red job that isn't caused by this PR is reported on the PR, never ignored.
 2. **Sonar addressed.** The repo uses SonarCloud automatic analysis (`.sonarcloud.properties`). Its quality gate passes and the PR adds no new blocker, critical or major issues; fix lower-severity issues too, or say on the PR why one stays.
 3. **Tests pass at every level that applies:**
-   - **Unit:** `make lint && make typecheck && make test-unit` locally (CI does not run mypy).
+   - **Unit:** `make lint && make typecheck && make test-unit` locally (CI's `typecheck` job runs mypy too).
    - **Integration:** `make test-integration` for changes to `core/pipeline/`, `core/stages/`, the registry or the MCP server.
    - **Evals:** `make eval` for prompt, output model, model routing or tool assignment changes.
    - **Smoke:** `make smoke`; for Dockerfile or dependency changes, `make lock-check` and the `image-smoke` job.

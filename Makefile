@@ -71,7 +71,7 @@ lock-check: ## Fail if requirements.lock or uv.lock no longer satisfies pyprojec
 		rm -f .requirements.lock.a .requirements.lock.b .requirements.lock.check; \
 		if [ $$rc -ne 0 ]; then echo "requirements.lock is stale; run 'make lock'"; exit 1; fi
 
-ci: lint test smoke lock-check ## Everything CI runs
+ci: lint typecheck test smoke lock-check ## Everything CI runs
 
 clean: ## Remove caches and build artifacts
 	rm -rf .pytest_cache .ruff_cache .mypy_cache .coverage dist build

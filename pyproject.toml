@@ -59,6 +59,15 @@ dev = [
     "types-pyyaml>=6.0",
 ]
 
+[tool.mypy]
+python_version = "3.11"  # the oldest supported version (requires-python), as for ruff
+# Optional integrations that are not installed everywhere (turso, redis_agent_memory, crewai, autogen) and
+# libraries that ship no type information (asyncpg, yfinance): ignore their missing imports so the result does not
+# depend on which extras happen to be installed. Everything else is checked.
+[[tool.mypy.overrides]]
+module = ["turso.*", "redis_agent_memory.*", "crewai.*", "autogen.*", "sentence_transformers.*", "asyncpg.*", "yfinance.*"]
+ignore_missing_imports = true
+
 [project.scripts]
 orchestration-agy = "pydantic_agents.core.agy_bridge.server:main"
 
