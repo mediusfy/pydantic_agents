@@ -31,8 +31,9 @@ async def execute_test_suite(
         try:
             test_path = await asyncio.to_thread(safe_write, temp_dir, test_file_name, test_source_code)
             await asyncio.to_thread(safe_write, temp_dir, target_code_file, target_source_code)
-        except PathTraversalError as e:
-            return f"TEST EXECUTION FAILED: {e}"
+        except (PathTraversalError, OSError, ValueError) as e:
+            # Model-chosen names can also be invalid (NUL bytes, a directory, a name that is too long).
+            return f"TEST EXECUTION FAILED: cannot write {test_file_name!r} / {target_code_file!r}: {e}"
 
         # Determine the test runner based on file extension
         if test_file_name.endswith(".go"):

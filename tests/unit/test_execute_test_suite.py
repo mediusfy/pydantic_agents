@@ -29,6 +29,17 @@ async def test_traversal_in_file_names_is_rejected_before_anything_runs(test_nam
 
 
 @pytest.mark.parametrize(
+    "test_name, target_name",
+    [("bad\x00name_test.go", "svc.go"), ("svc_test.go", "bad\x00.go"), ("pkg", "pkg/svc.go")],
+)
+async def test_unwritable_names_return_a_failure_instead_of_raising(test_name, target_name):
+    with patch("asyncio.create_subprocess_exec", AsyncMock()) as spawn:
+        result = await execute_test_suite(test_name, "package x", target_name, "package x")
+    assert result.startswith("TEST EXECUTION FAILED")
+    spawn.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
     "returncode, expected_prefix",
     [(0, "SUCCESS"), (1, "FAILED")],
 )

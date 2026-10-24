@@ -1,5 +1,6 @@
 import asyncio
 import os
+from pathlib import Path
 
 from pydantic_ai import RunContext
 
@@ -7,8 +8,10 @@ from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import safe_path_join
 
+_DOC_MODES = ("append", "overwrite")
 
-def _write_doc(full_path, content: str, *, overwrite: bool) -> None:
+
+def _write_doc(full_path: Path, content: str, *, overwrite: bool) -> None:
     os.makedirs(os.path.dirname(str(full_path)), exist_ok=True)
     if overwrite:
         with open(full_path, "w") as f:
@@ -20,6 +23,8 @@ def _write_doc(full_path, content: str, *, overwrite: bool) -> None:
 
 async def update_documentation(ctx: RunContext, file_path: str, content: str, mode: str = "append") -> str:
     """Updates project documentation. Use this to proactively document decisions or implementation details."""
+    if mode not in _DOC_MODES:
+        return f"Error: mode must be one of {', '.join(_DOC_MODES)}, got {mode!r}"
     base_docs_dir = os.path.realpath("docs")
     safe_file = file_path.lstrip("/")
     try:

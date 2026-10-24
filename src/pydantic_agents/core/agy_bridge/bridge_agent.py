@@ -235,6 +235,33 @@ class BridgeAgent:
             },
         }
 
+    async def _run_pre_turn_hooks(self, prompt: str) -> tuple[str, str | None]:
+        """Apply the pre-turn hooks. Returns the (possibly modified) prompt and a denial message if a hook denied."""
+        modified_prompt = prompt
+        for hook in self._hooks.pre_turn:
+            result = await hook(modified_prompt)
+            if result is None:
+                continue
+            if not result.allow:
+                return modified_prompt, f"Hook denied: {result.message}"
+            if result.modified_input:
+                modified_prompt = result.modified_input
+        return modified_prompt, None
+
+    @staticmethod
+    def _record_turn(conversation: Conversation | None, prompt: str, output: str) -> None:
+        if conversation:
+            conversation.history.append({"role": "user", "content": prompt})
+            conversation.history.append({"role": "assistant", "content": output})
+            conversation.updated_at = time.time()
+            conversation.status = "active"
+
+    @staticmethod
+    def _mark_failed(conversation: Conversation | None) -> None:
+        if conversation:
+            conversation.status = "failed"
+            conversation.updated_at = time.time()
+
     async def run(
         self,
         prompt: str,
@@ -243,16 +270,9 @@ class BridgeAgent:
     ) -> str:
         self._resolve()
 
-        # ── Hook: pre-turn
-        modified_prompt = prompt
-        for hook in self._hooks.pre_turn:
-            result = await hook(modified_prompt)
-            if result is not None:
-                if not result.allow:
-                    return f"Hook denied: {result.message}"
-                if result.modified_input:
-                    modified_prompt = result.modified_input
-        # ──────────────────────────────────────────────────────────────────
+        modified_prompt, denied = await self._run_pre_turn_hooks(prompt)
+        if denied is not None:
+            return denied
 
         # ── Context enrichment
         enriched = modified_prompt
@@ -264,26 +284,20 @@ class BridgeAgent:
             )
         # ──────────────────────────────────────────────────────────────────
 
-        if self._agent is None:
-            raise AgentExecutionError(f"BridgeAgent '{self._name}' has no resolved agent", is_retryable=False)
-
         start = time.time()
         success = False
 
         try:
+            if self._agent is None:
+                # Inside the try so the failure is recorded on the conversation and in telemetry like any other.
+                raise AgentExecutionError("agent was not resolved", is_retryable=False)
             resolved_deps: dict[str, Any] = self._deps_factory() if callable(self._deps_factory) else {}
             result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=usage_limits(self._name))
             success = True
 
             output = serialize_output(result)
 
-            # ── Update conversation state
-            if conversation:
-                conversation.history.append({"role": "user", "content": modified_prompt})
-                conversation.history.append({"role": "assistant", "content": output})
-                conversation.updated_at = time.time()
-                conversation.status = "active"
-            # ──────────────────────────────────────────────────────────────
+            self._record_turn(conversation, modified_prompt, output)
 
             # ── Hook: post-turn
             for hook in self._hooks.post_turn:
@@ -293,9 +307,7 @@ class BridgeAgent:
             return output
 
         except Exception as e:
-            if conversation:
-                conversation.status = "failed"
-                conversation.updated_at = time.time()
+            self._mark_failed(conversation)
             raise AgentExecutionError(f"BridgeAgent '{self._name}' failed: {e}", is_retryable=False) from e
         finally:
             duration = time.time() - start
