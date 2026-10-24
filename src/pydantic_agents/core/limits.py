@@ -6,6 +6,7 @@ from contextvars import ContextVar
 
 from pydantic_ai import UsageLimits
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
+from pydantic_ai.settings import ModelSettings
 
 from pydantic_agents.core.settings import settings
 
@@ -20,6 +21,21 @@ _semaphores: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semap
 # True while the current task already holds an LLM permit. A delegated child call runs under its parent's
 # permit instead of acquiring a second one, so nested chains cannot exhaust the limiter and deadlock.
 permit_held: ContextVar[bool] = ContextVar("llm_permit_held", default=False)
+
+# Id of the pipeline run the current task belongs to. Sent to LiteLLM as the request's session id so Langfuse
+# groups a run's model calls instead of showing them as unrelated generations.
+run_id_var: ContextVar[str | None] = ContextVar("pipeline_run_id", default=None)
+
+
+def trace_model_settings(agent_name: str) -> ModelSettings | None:
+    """Per-call settings that tag the request for LiteLLM/Langfuse (session = run id, trace name = agent).
+
+    Only with MODEL_PROVIDER=litellm and inside a run: other providers would receive an unknown body field.
+    """
+    run_id = run_id_var.get()
+    if run_id is None or settings.model_provider != "litellm":
+        return None
+    return ModelSettings(extra_body={"metadata": {"session_id": run_id, "trace_name": f"pydantic-agents/{agent_name}"}})
 
 
 def llm_semaphore() -> asyncio.Semaphore:
