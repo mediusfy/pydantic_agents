@@ -75,8 +75,8 @@ def test_a_complete_itinerary_is_accepted_and_totals_are_derived():
 
 @pytest.mark.parametrize(
     ("budget", "expected"),
-    [(36.0, True), (35.99, False), (36.004, True), (None, None)],
-    ids=["exactly at budget", "over", "budget with sub-cent noise", "no budget"],
+    [(36.0, True), (35.99, False), (36.004, True), (35.996, True), (35.994, False), (None, None)],
+    ids=["exactly at budget", "over", "rounds up to 36.00", "rounds up (35.996)", "rounds down (35.994)", "no budget"],
 )
 def test_within_budget_follows_the_costs(budget, expected):
     assert Itinerary(**_itinerary(budget=budget)).within_budget is expected
