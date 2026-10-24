@@ -31,6 +31,11 @@ fresh **Unreleased** section above it.
   PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
+- `log_activity` and `query_history` are best-effort: when the memory store is unreachable (for example Postgres
+  rejects the connection) they log a warning and return a short message instead of raising, so the agent run that
+  called them continues. Previously one failed memory write aborted the whole run (seen in `make eval`, where the
+  review agent happened to call `log_activity` with no database configured). The message names only the exception
+  type, not its text.
 - **Behaviour change:** with `MODEL_PROVIDER=litellm` (the default) a missing `LITELLM_VIRTUAL_KEY` /
   `LITELLM_MASTER_KEY` now raises `ConfigurationError` when the model is first used, instead of silently
   sending the request to api.openai.com. Prefixed models are built lazily on first use, so environment changes
