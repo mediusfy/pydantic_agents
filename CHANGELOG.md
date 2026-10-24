@@ -25,6 +25,32 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
+  pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
+  run after a restart and reports one that was in flight as `interrupted`.
+- MCP tools `resume_pipeline_run` (restart an interrupted, failed or cancelled run under the same id from its
+  checkpoints) and `approve_cto_gate` (writes the approval marker the CTO gate polls for, so a caller outside the
+  pod can approve a run; the project name is checked against path traversal).
+
+### Fixed
+- The CTO gate no longer treats any existing `.cto_approved` file as approval: the content is read, so a marker
+  containing `false`/`0`/`no` stops the run (it used to pass the existence check), and the poller ends on an
+  explicit rejection instead of waiting for the timeout.
+- `submit_pipeline_run` rejects a caller-supplied run id that is not `pipe_` plus 12 hex characters, and
+  refuses to start a run id whose previous task is still alive (its handle would become unreachable).
+- Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
+  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
+
+### Changed
+- Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
+  utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
+  has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
+- `AGENT_TRANSPORT_ATTEMPTS` defaults to 1: LiteLLM already retries and walks its fallback chain, and stacking a
+  second retry layer turned one call into up to ~12 upstream attempts.
+- With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
+  `metadata.trace_name` so Langfuse groups a run's generations.
+
+### Added
 - `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
   `bounded_context`, and `AgentAdvice` carries `architectural_constraints`: the BA and CTO prompts already
   asked for this data and it was being discarded. The advisory stage passes the constraints on to downstream agents.

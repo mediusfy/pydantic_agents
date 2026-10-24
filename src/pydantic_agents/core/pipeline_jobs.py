@@ -4,15 +4,15 @@ This module provides lightweight in-process background task execution so MCP
 tools can submit a pipeline run, return a run_id immediately, and let the
 caller poll for completion. No Redis/DB dependency — simple asyncio task + dict.
 
-.. caution::
-
-   ``PIPELINE_RUNS`` is process-local and lost on restart.  For durable job
-   tracking, back this with the existing pgvector PostgreSQL connection
-   (table: ``pipeline_runs``).  Not implemented — open ticket.
+``PIPELINE_RUNS`` is the process-local view (it holds the task handle). Every status change is also written
+to the ``pipeline_runs`` table (``core/run_store.py``, best-effort), so after a restart ``get_run`` still finds
+a run and reports one that was in flight as ``interrupted``; ``resume_pipeline_run`` restarts it from its
+checkpoints.
 """
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from datetime import UTC, datetime
@@ -20,6 +20,7 @@ from typing import Any
 
 import logfire
 
+from pydantic_agents.core import run_store
 from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.pipeline.factory import build_default_pipeline
@@ -32,8 +33,12 @@ logger = logging.getLogger(__name__)
 #               "elapsed_seconds": float | None, "_task": asyncio.Task | None }
 PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
 
+_RUN_ID = re.compile(r"pipe_[0-9a-f]{12}")
 
-async def submit_pipeline_run(project_name: str, requirement: str) -> str:
+
+async def submit_pipeline_run(
+    project_name: str, requirement: str, *, run_id: str | None = None, resume: bool = False
+) -> str:
     """Submit a pipeline run as a background asyncio task.
 
     Creates a new asyncio task running ``OrgitrationPipeline`` (assembled via
@@ -43,7 +48,13 @@ async def submit_pipeline_run(project_name: str, requirement: str) -> str:
     The caller should poll with ``PIPELINE_RUNS[run_id]["status"]`` to check
     completion.
     """
-    run_id = f"pipe_{uuid.uuid4().hex[:12]}"
+    if run_id is None:
+        run_id = f"pipe_{uuid.uuid4().hex[:12]}"
+    elif not _RUN_ID.fullmatch(run_id):
+        raise ValueError(f"Invalid run id {run_id!r}: expected pipe_ followed by 12 hex characters")
+    live = PIPELINE_RUNS.get(run_id, {}).get("_task")
+    if live is not None and not live.done():
+        raise RuntimeError(f"Run {run_id} still has a live task; cancel it before resubmitting")
 
     PIPELINE_RUNS[run_id] = {
         "status": "pending",
@@ -58,13 +69,14 @@ async def submit_pipeline_run(project_name: str, requirement: str) -> str:
 
     # Fire-and-forget background task; stash the handle so cancel_pipeline_run
     # can reach it.
-    task = asyncio.create_task(_run_pipeline_in_background(run_id, project_name, requirement))
+    await run_store.save_run(run_id, PIPELINE_RUNS[run_id])
+    task = asyncio.create_task(_run_pipeline_in_background(run_id, project_name, requirement, resume))
     PIPELINE_RUNS[run_id]["_task"] = task
 
     return run_id
 
 
-async def _run_pipeline_in_background(run_id: str, project_name: str, requirement: str) -> None:
+async def _run_pipeline_in_background(run_id: str, project_name: str, requirement: str, resume: bool = False) -> None:
     """Run the ``OrgitrationPipeline`` in a background task, updating ``PIPELINE_RUNS``.
 
     Constructs a fully-staged pipeline via ``build_default_pipeline`` — the
@@ -75,13 +87,14 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
 
     with logfire.span("pipeline.background_run", run_id=run_id, project=project_name):
         PIPELINE_RUNS[run_id]["status"] = "running"
+        await run_store.save_run(run_id, PIPELINE_RUNS[run_id])
         run_id_var.set(run_id)  # this task's own context: sent to LiteLLM as the Langfuse session id
         try:
             config = PipelineConfig(
                 project=project_name,
                 step="all",
                 blueprint="new_feature",
-                resume=False,
+                resume=resume,
                 auto_yes=True,
                 requirement=requirement,
             )
@@ -105,3 +118,33 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
             elapsed = time.time() - start_time
             PIPELINE_RUNS[run_id]["completed_at"] = datetime.now(UTC).isoformat()
             PIPELINE_RUNS[run_id]["elapsed_seconds"] = elapsed
+            # Shielded: a cancelled task must still record that it was cancelled.
+            await asyncio.shield(run_store.save_run(run_id, PIPELINE_RUNS[run_id]))
+
+
+async def get_run(run_id: str) -> dict[str, Any] | None:
+    """The run from memory, else from the database. A stored run that is still pending/running but has no live
+    task in this process was cut off by a restart, so it is reported as ``interrupted``. That status exists only in
+    the returned dict; the stored row keeps its last written status until the run is resumed or finishes."""
+    run = PIPELINE_RUNS.get(run_id)
+    if run is not None:
+        return run
+    stored = await run_store.load_run(run_id)
+    if stored is not None and stored["status"] in ("pending", "running"):
+        stored["status"] = "interrupted"
+        stored["error"] = "The server restarted while this run was in flight. Use resume_pipeline_run to continue it."
+    return stored
+
+
+async def resume_pipeline_run(run_id: str) -> str | None:
+    """Restart an interrupted or failed run under the same id, resuming from its checkpoints.
+
+    Returns the run id, or None when the run is unknown, still running, or already completed.
+    """
+    live = PIPELINE_RUNS.get(run_id, {}).get("_task")
+    if live is not None and not live.done():
+        return None  # a task is still alive (e.g. a cancel not yet reaped): keep its handle reachable
+    run = await get_run(run_id)
+    if run is None or run["status"] not in ("interrupted", "failed", "cancelled"):
+        return None
+    return await submit_pipeline_run(run["project"], run.get("requirement") or "", run_id=run_id, resume=True)

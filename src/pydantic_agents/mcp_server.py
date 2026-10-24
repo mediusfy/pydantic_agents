@@ -264,14 +264,15 @@ async def run_orchestration_pipeline(project_name: str, requirement: str) -> str
 
 
 @mcp.tool()
-def check_pipeline_status(run_id: str) -> str:
+async def check_pipeline_status(run_id: str) -> str:
     """Check the status of a background pipeline run.
 
-    Returns current status (pending/running/completed/failed) and any result.
+    Returns current status (pending/running/completed/failed/interrupted) and any result. A run cut off by a
+    server restart shows as interrupted; continue it with resume_pipeline_run.
     """
-    from pydantic_agents.core.pipeline_jobs import PIPELINE_RUNS
+    from pydantic_agents.core.pipeline_jobs import get_run
 
-    run = PIPELINE_RUNS.get(run_id)
+    run = await get_run(run_id)
     if not run:
         return f"No pipeline run found with id '{run_id}'."
 
@@ -288,6 +289,30 @@ def check_pipeline_status(run_id: str) -> str:
         elapsed = run.get("elapsed_seconds", 0)
         line += f"Elapsed: {elapsed:.1f}s\n"
     return line
+
+
+@mcp.tool()
+async def resume_pipeline_run(run_id: str) -> str:
+    """Resume an interrupted, failed or cancelled pipeline run under the same run_id, from its checkpoints."""
+    from pydantic_agents.core.pipeline_jobs import resume_pipeline_run as resume
+
+    resumed = await resume(run_id)
+    if resumed is None:
+        return f"Run '{run_id}' is unknown, still running or already completed; nothing to resume."
+    return f"Run '{resumed}' resumed in the background. Poll with check_pipeline_status(run_id='{resumed}')."
+
+
+@mcp.tool()
+async def approve_cto_gate(project_name: str, approved: bool = True) -> str:
+    """Approve (or reject) the CTO gate of a project's pipeline run that is waiting for approval.
+
+    The gate polls for a marker file inside the server; this writes it, so an MCP caller can approve a run
+    without shell access to the pod.
+    """
+    from pydantic_agents.core.cto_gate import write_approval
+
+    path = write_approval(project_name, approved)
+    return f"CTO gate for '{project_name}' set to {'approved' if approved else 'rejected'} ({path.name})."
 
 
 @mcp.tool()

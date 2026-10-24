@@ -27,23 +27,49 @@ def _approval_file_path(project: str) -> Path:
     return p
 
 
-async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, timeout: float = 3600.0) -> bool:
-    """Wait for a `.cto_approved` marker file to exist.
+def write_approval(project: str, approved: bool = True) -> Path:
+    """Write the approval marker for a project (what an MCP caller outside the pod cannot do with ``touch``).
 
-    The file can be created by an external actor (e.g., CTO agent approval via
-    `touch .cto_approved` or a UI button that writes the file). Returns True
-    once detected, or False on timeout.
+    The project name is caller-chosen, so the path is checked to stay inside the output dir.
+    """
+    from pydantic_agents.core.settings import settings
+    from pydantic_agents.core.utils import safe_path_join
+
+    path = safe_path_join(settings.output_dir, project, _APPROVAL_FILE)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("true\n" if approved else "false\n")
+    return path
+
+
+def read_marker(filepath: Path) -> bool | None:
+    """The decision in an approval marker: True (approved), False (explicitly rejected), None (no marker, or
+    content that is neither, which keeps the gate waiting). An empty file counts as approved, as `touch` creates it."""
+    if not filepath.exists():
+        return None
+    content = filepath.read_text().strip().lower()
+    if content in ("true", "1", "yes", ""):
+        return True
+    if content in ("false", "0", "no"):
+        return False
+    logger.info("CTO approval marker has unrecognised content %r; still waiting.", content)
+    return None
+
+
+async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, timeout: float = 3600.0) -> bool:
+    """Wait for a decision in the `.cto_approved` marker file.
+
+    The file can be written by `approve_cto_gate` (MCP), by `touch .cto_approved`, or by a UI. Returns True on
+    approval, False on an explicit rejection or on timeout.
     """
     deadline = asyncio.get_event_loop().time() + timeout
     while asyncio.get_event_loop().time() < deadline:
-        if filepath.exists():
-            content = filepath.read_text().strip().lower()
-            approved = content in ("true", "1", "yes", "")
-            if not approved:
-                logger.info("CTO approval marker file exists but content says no: %r", content)
-            else:
-                logger.info("CTO approval marker file detected — proceeding.")
-                return True
+        decision = read_marker(filepath)
+        if decision is True:
+            logger.info("CTO approval marker file detected — proceeding.")
+            return True
+        if decision is False:
+            logger.warning("CTO rejected the run via the marker file.")
+            return False
         await asyncio.sleep(poll_interval)
     logger.warning("CTO approval timed out after %.0fs.", timeout)
     return False
@@ -69,11 +95,15 @@ async def apply(state: PipelineState, project: str = "default", timeout: float =
             logger.warning("ORCHESTRATION_CTO_OVERRIDE set — bypassing gate.")
             return True
 
-        # Check for marker file override
+        # Check for a marker file left by an earlier decision (a rejection stops the run, it is not an approval)
         filepath = _approval_file_path(project)
-        if filepath.exists():
+        decision = read_marker(filepath)
+        if decision is True:
             logger.info("Approval marker file found — proceeding.")
             return True
+        if decision is False:
+            logger.error("CTO rejected the run via the marker file. Pipeline will stop.")
+            return False
 
         # Wait for external approval
         logger.info(
