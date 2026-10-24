@@ -43,6 +43,10 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- CI `typecheck` job runs `mypy src` and must report no errors; `make ci` includes `typecheck`. `[tool.mypy]` ignores missing
+  imports for optional or untyped packages (turso, redis_agent_memory, crewai, autogen, sentence_transformers, asyncpg,
+  yfinance), so the result no longer depends on which extras are installed. The two real errors (`yaml = None` in
+  `tools/validate.py`, the Wikipedia wrapper call in `tools/langchain_bridge.py`) are fixed.
 - Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
   pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
   run after a restart and reports one that was in flight as `interrupted`.

@@ -4,7 +4,7 @@
 
 - Python `>=3.11` (`requires-python`); CI tests on 3.11 and 3.12, and the image runs 3.12. Use `uv run` (the Makefile does) so the locked `uv.lock` environment is used.
 - ruff: line length 120, target `py311`, rule sets `E`, `F`, `I`, `N`, `W`, `UP`, `B`, `SIM`, `ARG`, `C4`, `T20`. `T20` bans `print`; the exceptions are listed in `[tool.ruff.lint.per-file-ignores]`. `make lint` checks, `make lint-fix` and `make format` change files.
-- mypy runs on `src` with default settings (`make typecheck`). There is no `[tool.mypy]` block and CI does not run it, so run it yourself.
+- mypy runs on `src` (`make typecheck`) and CI's `typecheck` job enforces zero errors. `[tool.mypy]` in `pyproject.toml` only ignores missing imports for optional or untyped packages (turso, crewai, autogen, asyncpg, yfinance, ...); fix new errors rather than adding ignores.
 - Package layout is `src/pydantic_agents/` (hatchling wheel). `core/` holds the framework, `agents/` the agent definitions, `mcp_server.py` the MCP entry point.
 
 ## Dependencies
