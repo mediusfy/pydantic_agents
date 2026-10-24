@@ -4,53 +4,18 @@ import asyncio
 import contextlib
 import tempfile
 
+from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
-GO_MOD_INIT_TIMEOUT = 10.0
-GO_MOD_TIDY_TIMEOUT = 30.0
 GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
-
-
-async def _run_cmd(*args: str, cwd: str, timeout: float = 30.0) -> None:
-    """Run a command with timeout, discarding output."""
-    proc = await asyncio.create_subprocess_exec(
-        *args,
-        cwd=cwd,
-        stdout=asyncio.subprocess.DEVNULL,
-        stderr=asyncio.subprocess.DEVNULL,
-    )
-    try:
-        await asyncio.wait_for(proc.communicate(), timeout=timeout)
-    except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        raise
 
 
 async def _write_files(temp_dir: str, files: dict[str, str]) -> None:
     """Write a dict of file paths to content into temp_dir; raises (see WRITE_NAME_ERRORS) if a name escapes it or is invalid."""
     for filename, content in files.items():
         safe_write(temp_dir, filename, content)
-
-
-async def init_and_tidy(temp_dir: str) -> str | None:
-    """Initialize a go module and run go mod tidy, waiting for both. Returns an error string or None."""
-    try:
-        await _run_cmd("go", "mod", "init", "tempmodule", cwd=temp_dir, timeout=GO_MOD_INIT_TIMEOUT)
-    except FileNotFoundError:
-        return "the 'go' toolchain is not installed."
-    except TimeoutError:
-        return "'go mod init' timed out."
-    try:
-        await _run_cmd("go", "mod", "tidy", cwd=temp_dir, timeout=GO_MOD_TIDY_TIMEOUT)
-    except TimeoutError:
-        return (
-            "'go mod tidy' timed out — the generated code likely imports "
-            "a private or non-existent module. Check import paths."
-        )
-    return None
 
 
 async def _run_build(temp_dir: str) -> str:

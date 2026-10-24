@@ -1,11 +1,11 @@
-"""Go module setup is awaited, and invalid file names make tools return a failure instead of raising."""
+"""Go module setup is awaited and time-limited, and unwritable file names make tools return a failure."""
 
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pydantic_agents.core.tools import frontend_tools, gobuild
+from pydantic_agents.core.tools import frontend_tools, go_common, gobuild
 from pydantic_agents.core.tools.test_tools import execute_test_suite
 
 
@@ -15,6 +15,7 @@ class _Recorder:
     def __init__(self, hang_on=None):
         self.events: list[str] = []
         self.hang_on = hang_on
+        self.procs: list[MagicMock] = []
 
     async def __call__(self, *args, **_kwargs):
         label = " ".join(args[:3])
@@ -28,7 +29,9 @@ class _Recorder:
             recorder.events.append(f"done {label}")
             return b"ok", b""
 
-        return MagicMock(returncode=0, communicate=communicate, kill=MagicMock())
+        proc = MagicMock(returncode=0, communicate=communicate, kill=MagicMock(), wait=AsyncMock())
+        recorder.procs.append(proc)
+        return proc
 
 
 async def test_go_test_starts_only_after_mod_init_and_tidy_finished():
@@ -46,8 +49,8 @@ async def test_go_test_starts_only_after_mod_init_and_tidy_finished():
     [("mod init", "'go mod init' timed out"), ("mod tidy", "'go mod tidy' timed out")],
 )
 async def test_slow_go_module_setup_fails_the_run_instead_of_hanging(monkeypatch, hang_on, expected):
-    monkeypatch.setattr(gobuild, "GO_MOD_INIT_TIMEOUT", 0.05)
-    monkeypatch.setattr(gobuild, "GO_MOD_TIDY_TIMEOUT", 0.05)
+    monkeypatch.setattr(go_common, "GO_MOD_INIT_TIMEOUT", 0.05)
+    monkeypatch.setattr(go_common, "GO_MOD_TIDY_TIMEOUT", 0.05)
     spawn = _Recorder(hang_on=hang_on)
     with patch("asyncio.create_subprocess_exec", spawn):
         result = await execute_test_suite("svc_test.go", "package svc", "svc.go", "package svc")
@@ -55,6 +58,9 @@ async def test_slow_go_module_setup_fails_the_run_instead_of_hanging(monkeypatch
     assert result.startswith("TEST EXECUTION FAILED")
     assert expected in result
     assert not any("go test" in e for e in spawn.events)
+    hung = spawn.procs[-1]
+    hung.kill.assert_called_once()  # the stuck process is killed...
+    hung.wait.assert_awaited_once()  # ...and reaped, not left as a zombie
 
 
 async def test_missing_go_toolchain_is_a_failure_message():
@@ -100,3 +106,13 @@ async def test_validate_frontend_code_returns_a_failure_for_invalid_names(name):
 
     assert result.startswith("VALIDATION FAILED")
     spawn.assert_not_awaited()
+
+
+async def test_validate_frontend_code_still_runs_the_linter_for_a_good_name():
+    proc = MagicMock(returncode=0, communicate=AsyncMock(return_value=(b"", b"")))
+    with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as spawn:
+        result = await frontend_tools.validate_frontend_code("components/Button.vue", "<template><b/></template>")
+
+    assert result == "SUCCESS"
+    assert spawn.await_args.args[:2] == ("npx", "eslint")
+    assert spawn.await_args.args[2].endswith("components/Button.vue")

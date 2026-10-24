@@ -4,7 +4,7 @@ import asyncio
 import contextlib
 import tempfile
 
-from pydantic_agents.core.tools.gobuild import init_and_tidy
+from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
