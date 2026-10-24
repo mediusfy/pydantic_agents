@@ -31,6 +31,12 @@ fresh **Unreleased** section above it.
   PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
+- `SecurityReport.passed` is derived from `score >= SECURITY_PASS_SCORE` (70) in code, as `QualityGateResult.passed`
+  already is from its complexity score; the value the model supplies is ignored. The security agent's prompt now
+  defines the score bands (critical at most 39, high at most 69, medium/low or clean 70 and above), so "no
+  critical/high findings" and a passing score mean the same thing. This fixes verdicts such as `passed: false` with
+  score 55 and "no critical/high findings". Behaviour change: an audit whose score is below 70 now blocks the
+  quality gate even if the model said `passed: true`.
 - `log_activity` and `query_history` are best-effort: when the memory store is unreachable (for example Postgres
   rejects the connection) they log a warning and return a short message instead of raising, so the agent run that
   called them continues. Previously one failed memory write aborted the whole run (seen in `make eval`, where the
