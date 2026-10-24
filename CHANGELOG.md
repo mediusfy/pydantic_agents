@@ -19,11 +19,20 @@ fresh **Unreleased** section above it.
 - **Behaviour change:** `crypto_oracle`, `market_shark` and `price_analyst` return typed results instead of free text:
   `Forecast`, `MarketAnalysis` and `PurchaseAdvice` (JSON through the MCP server and `registry.query`). The rules their
   prompts asked for are now enforced by validation, so a violation makes the model retry: scenario probabilities add
-  up to 1 (within 0.05), price ranges are ordered, at least one source is cited, and `disclaimer` is always the
+  up to 1 (within 0.02), price ranges are ordered, at least one source is cited, and `disclaimer` is always the
   standard not-financial-advice line, set by code. `crypto_oracle`'s accountability step is the `previous_forecast`
   field. This affects every caller, not only MCP: `registry.query`, `delegate_to_agent` (another agent receiving the
   reply) and the `run_<agent>` MCP tools now return the JSON text of the model (`model_dump_json()`), so code that
   treated the reply as prose must `json.loads` it. The exact shapes are the models in `core/models/analysis.py`.
+- **Behaviour change:** `holiday_planner` and `accountant` return typed results instead of free text: `Itinerary` and
+  `CostBreakdown` (`core/models/personal.py`). Same caller impact as the investing agents: `registry.query`,
+  `delegate_to_agent` and the `run_<agent>` MCP tools return the JSON text of the model, so code that treated the reply
+  as prose must `json.loads` it. Enforced by validation (a violation makes the model retry): an itinerary's days are
+  numbered from 1 with ordered ISO dates inside the trip dates, an unverified item says where to confirm it, and it
+  cites a source; a breakdown's fixed costs are exact, estimates have ordered ranges, exchange rates are dated, and it
+  cites a source. Totals are computed in code (`estimated_total`, `within_budget`, `total_low`, `total_high`), the
+  accountant's `disclaimer` is set by code, and a request missing key details is answered with `open_questions`
+  instead of an invented plan. (Also corrects the investing entry above: probabilities must add up within 0.02, not 0.05.)
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
   has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.

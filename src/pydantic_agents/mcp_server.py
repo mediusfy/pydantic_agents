@@ -100,12 +100,18 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
 
 
 AGENT_DOCSTRINGS = {
-    "holiday_planner": "Invokes the Holiday Planner Agent.",
+    "holiday_planner": (
+        "Invokes the Holiday Planner Agent. "
+        "Returns a JSON Itinerary (days, items with confirm-where, budget check, or open_questions)."
+    ),
     "region_analyzer": "Invokes the Region Analyzer Agent.",
     "asymmetric_reviewer": "Invokes the Asymmetric Reviewer Agent (law & corporate tricks for travel savings).",
     "current_events": "Invokes the Current Events Agent (history buff).",
     "weather": "Invokes the Weather Agent.",
-    "accountant": "Invokes the Accountant Agent.",
+    "accountant": (
+        "Invokes the Accountant Agent. "
+        "Returns a JSON CostBreakdown (cost lines, totals, exchange rates, or open_questions)."
+    ),
     "ba": "Invokes the Business Analyst (BA) agent to write user stories and requirements.",
     "cto": "Invokes the CTO agent for architectural guidance and advisories.",
     "backend": "Invokes the Backend Engineer agent to generate high-concurrency Go services.",
