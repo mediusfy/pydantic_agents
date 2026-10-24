@@ -43,6 +43,10 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- Promptfoo cases for the `security` score bands (clean code passes, critical findings score 39 or less, a high finding
+  fails at 69 or less, `passed` follows the score) and for the typed investing agents (`crypto_oracle`, `market_shark`,
+  `price_analyst`: parseable JSON, grounded figures, no guaranteed outcomes). The two existing cases are scoped to
+  `review`/`security` with `providers:`. Not run in CI; they need the LiteLLM key.
 - Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
   pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
   run after a restart and reports one that was in flight as `interrupted`.
