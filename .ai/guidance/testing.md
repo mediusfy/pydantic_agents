@@ -26,7 +26,7 @@ A PR is ready for review or merge only when every step below passes. If one does
 1. **Green CI.** On the PR's latest commit, `CI` (`lint`, `test` on 3.11 and 3.12, `smoke`, `lock`, `image-smoke`) and `Changelog` pass. A red job that isn't caused by this PR is reported on the PR, never ignored.
 2. **Sonar addressed.** The repo uses SonarCloud automatic analysis (`.sonarcloud.properties`). Its quality gate passes and the PR adds no new blocker, critical or major issues; fix lower-severity issues too, or say on the PR why one stays.
 3. **Tests pass at every level that applies:**
-   - **Unit:** `make lint && make typecheck && make test-unit` locally (CI does not run mypy).
+   - **Unit:** `make lint && make typecheck && make test-unit` locally (CI's `typecheck` job runs mypy too).
    - **Integration:** `make test-integration` for changes to `core/pipeline/`, `core/stages/`, the registry or the MCP server.
    - **Evals:** `make eval` for prompt, output model, model routing or tool assignment changes.
    - **Smoke:** `make smoke`; for Dockerfile or dependency changes, `make lock-check` and the `image-smoke` job.
