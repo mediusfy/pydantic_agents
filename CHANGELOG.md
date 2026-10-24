@@ -25,6 +25,8 @@ fresh **Unreleased** section above it.
   explicit rejection instead of waiting for the timeout.
 - `submit_pipeline_run` rejects a caller-supplied run id that is not `pipe_` plus 12 hex characters, and
   refuses to start a run id whose previous task is still alive (its handle would become unreachable).
+- Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
+  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Changed
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
@@ -34,10 +36,6 @@ fresh **Unreleased** section above it.
   second retry layer turned one call into up to ~12 upstream attempts.
 - With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
   `metadata.trace_name` so Langfuse groups a run's generations.
-
-### Fixed
-- Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
-  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
 - `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
