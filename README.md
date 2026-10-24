@@ -17,11 +17,19 @@ Model routing is provider-agnostic via `Settings.resolve_model()` in
 - `MODEL_PROVIDER=litellm` (default) — every agent call goes through an OpenAI-compatible
   LiteLLM proxy (`LITELLM_BASE_URL`, auth via `LITELLM_VIRTUAL_KEY`/`LITELLM_MASTER_KEY`).
 - `MODEL_PROVIDER=deepseek|openai|gemini|vertexai` — routes natively to that provider.
-- Per-agent model fields (`backend_model`, `frontend_model`, ...) in `settings.py` currently
-  all default to the same `"claude-sonnet-5"` alias (resolved by the LiteLLM proxy to
-  Anthropic Claude Sonnet, with its own fallback chain) rather than being split by
-  fast/reasoner tier. The `_FAST_TIER`/`_REASONER_TIER` frozensets that used to live here
-  were removed — they were never actually read by `resolve_model()`.
+- Per-agent model fields (`backend_model`, `frontend_model`, ...) in `settings.py` name real LiteLLM
+  model groups: `deepseek-v4-pro` for the SDLC roles and `subagent` (the cheap group) for the docs
+  agent and the personal utility agents. They used to default to `"claude-sonnet-5"`, an alias the
+  proxy silently resolves to `deepseek-v4-pro` (it has no Anthropic credential), so nothing ever ran
+  on Claude. A virtual key must allow every group an agent requests; override one with its
+  `<AGENT>_MODEL` environment variable.
+- Run limits live in `core/limits.py` and `settings.py`: 40 model requests per run (60 for `backend`,
+  `frontend`, `service_engineer`), 2 M tokens, 600 s, 5 concurrent LLM calls. LiteLLM does the
+  retrying and fallbacks, so `AGENT_TRANSPORT_ATTEMPTS` defaults to 1; raising it stacks a second
+  retry layer on top of LiteLLM's.
+- With `MODEL_PROVIDER=litellm`, calls inside a pipeline run send `metadata.session_id` (the run id)
+  and `metadata.trace_name` (`pydantic-agents/<agent>`), which LiteLLM's Langfuse callback turns into
+  a session and a trace name.
 
 Agents are registered into a shared `AgentRegistry` (`pydantic_agents/core/registry.py`) via
 `pydantic_agents/agents/registration.py`. **Tools are attached lazily, not via `@agent.tool`
@@ -79,8 +87,8 @@ result = await agent.run("Review this proposed service architecture...")
 `make eval` (or `promptfoo eval`) runs the promptfoo suite in `promptfooconfig.yaml`. The
 provider in `evals/provider.py` runs registered agents in-process, so only the LiteLLM
 gateway is needed (no Postgres), and the `llm-rubric` grader goes through the same gateway.
-The key must be allowed to call `claude-sonnet-5`, which the gateway aliases to
-`deepseek-v4-pro`:
+The key must be allowed to call `deepseek-v4-pro` (the agents and the grader) and `subagent`
+(the docs and utility agents):
 
 ```bash
 export LITELLM_BASE_URL=https://litellm.jocham.io
@@ -131,6 +139,27 @@ MCP tools through the LiteLLM MCP gateway as `pydantic_agents-run_<name>`
    tag there.
 3. CI for this repo (`.github/workflows/ci.yml`) runs lint, tests and an MCP smoke check; run
    the same locally with `make ci`.
+
+### Background pipeline runs and the CTO gate
+
+`run_orchestration_pipeline` starts a run as an asyncio task and returns a `run_id` (`pipe_` plus
+12 hex characters). The run record is also written to a `pipeline_runs` table in the pgvector
+database (`core/run_store.py`; created on first use, best-effort: without `DATABASE_URL`, or with
+the database down, runs are tracked in memory only).
+
+- `check_pipeline_status(run_id)` reads memory, then the database. A run that was in flight when the
+  server restarted shows as `interrupted`.
+- `resume_pipeline_run(run_id)` restarts an interrupted, failed or cancelled run under the same id
+  with `resume=True`, which reuses the project's latest checkpoint. It refuses a run whose task is
+  still alive. Resume only helps if the checkpoints survived: `CHECKPOINT_DIR` has no volume in the
+  chart yet (see the next section), so after a pod restart a resumed run mostly starts over.
+- `cancel_pipeline_run(run_id)` cancels the task; the record is saved as `cancelled`.
+- The CTO gate waits for a `.cto_approved` marker in the project's output directory when the CTO
+  does not approve on its own. `approve_cto_gate(project_name, approved)` writes it, so a caller
+  outside the pod can approve (`true`) or reject (`false`) a run; the gate reads the content, so a
+  rejection stops the run. `ORCHESTRATION_CTO_OVERRIDE=true` bypasses the gate.
+- `submit_async_task`, `check_task_status` and `wait_for_task` are a separate mechanism (the
+  in-process event broker) and are not persisted.
 
 ### Checkpoint state backend (`STATE_BACKEND`)
 
@@ -183,16 +212,16 @@ yet fixed here — tracked for follow-up:
    nothing in `crypto_oracle.py` itself hints that its capabilities come from an external
    category mapping, so a reader (or an agent-generated review) can't tell what tools an agent
    has without also reading `tool_assignments.py` + `tools/registry.py::get_tools_for_agent`.
-2. **`factory.py` silently degrades on missing LiteLLM key** — falls back to returning
-   the raw model spec string instead of raising, which can silently bypass the proxy
-   (and its cost tracking/guardrails) using whatever ambient API key is present.
-3. **`"pytest" in sys.modules` test-detection hack** in `factory.py` — replace with
-   explicit dependency injection (a settings flag or injected key provider).
+2. ~~`factory.py` silently degrades on missing LiteLLM key~~ — **fixed**: a missing key raises
+   `ConfigurationError` instead of falling back to `openai:<name>`.
+3. ~~`"pytest" in sys.modules` test-detection hack in `factory.py`~~ — **fixed**: removed.
 4. **Hardcoded fallback URL** `https://litellm-proxy.run.app` in `factory.py` — should
    fail loudly if `LITELLM_CLOUD_URL` is unset in a cloud environment instead of guessing.
-5. **No HTTP timeout/retry/observability on the LiteLLM client** — `OpenAIProvider` is
-   constructed with no explicit `httpx` timeout; add one plus structured per-call logging
-   (settings already carries unused `logfire_token`/`logfire_api_key`).
+5. **No HTTP timeout on the LiteLLM client, no agent-level traces** — run limits, a per-run
+   timeout and a retry policy now exist in `core/limits.py`, but `OpenAIProvider` still has no
+   explicit `httpx` timeout, and Logfire only exports spans when `LOGFIRE_TOKEN` is set (the chart
+   sets none), so agent and tool spans are dropped. LiteLLM's Langfuse traces carry the run id as
+   the session.
 6. **~150 lines of duplicated `Agent(...)` boilerplate** across ~20 agent files — extract
    a shared `make_agent(model_setting, prompt, output_type, deps_type=None, retries=5)`
    factory.

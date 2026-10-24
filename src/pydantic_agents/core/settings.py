@@ -3,8 +3,8 @@
 All environment variables are validated and typed here.
 Usage:
     from pydantic_agents.core.settings import settings
-    settings.ba_model       # "deepseek-reasoner" by default
-    settings.max_retries    # 2 by default
+    settings.ba_model       # "deepseek-v4-pro" by default
+    settings.max_retries    # 3 by default
 """
 
 import logging

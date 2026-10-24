@@ -22,7 +22,7 @@ defaultTest:
   options:
     # Grader for llm-rubric assertions, through the same gateway as the agents.
     provider:
-      id: openai:chat:claude-sonnet-5
+      id: openai:chat:deepseek-v4-pro
       config:
         apiBaseUrl: "{{ env.LITELLM_BASE_URL }}"
         apiKeyEnvar: LITELLM_VIRTUAL_KEY
