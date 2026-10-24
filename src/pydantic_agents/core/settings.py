@@ -15,7 +15,7 @@ from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Model-name prefixes that identify a provider's own models, and the default used when an agent's configured name
-# (e.g. the shared "claude-sonnet-5" alias) is not one of them.
+# (e.g. a LiteLLM group such as "deepseek-v4-pro") is not one of them.
 logger = logging.getLogger(__name__)
 
 _NATIVE_MODEL_PREFIXES = {
@@ -63,36 +63,38 @@ class Settings(BaseSettings):
     redis_iris_token: str | None = None
 
     # Agent Model Overrides
-    # NOTE: All agents are pinned to the same model ("claude-sonnet-5", an
-    # alias the LiteLLM proxy resolves to Anthropic Claude Sonnet with its
-    # own fallback chain) rather than split across fast/reasoner tiers. See
-    # resolve_model() below for how this is turned into a pydantic_ai model
-    # spec depending on model_provider.
-    ba_model: str = "claude-sonnet-5"
-    backend_model: str = "claude-sonnet-5"
-    frontend_model: str = "claude-sonnet-5"
-    test_model: str = "claude-sonnet-5"
-    sre_model: str = "claude-sonnet-5"
-    review_model: str = "claude-sonnet-5"
-    database_model: str = "claude-sonnet-5"
-    devops_model: str = "claude-sonnet-5"
-    docs_model: str = "claude-sonnet-5"
-    security_model: str = "claude-sonnet-5"
-    ux_model: str = "claude-sonnet-5"
-    cto_model: str = "claude-sonnet-5"
-    planner_model: str = "claude-sonnet-5"
-    quality_gate_model: str = "claude-sonnet-5"
-    service_engineer_model: str = "claude-sonnet-5"
+    # NOTE: these are real LiteLLM model groups, not Claude aliases. The proxy
+    # has no Anthropic credential (Claude is reachable only through Claude Code's
+    # OAuth login), so the old shared "claude-sonnet-5" alias silently meant
+    # deepseek-v4-pro and then mistral-large. Reasoning roles use
+    # "deepseek-v4-pro"; docs and the personal utility agents use the cheap
+    # "subagent" group. See resolve_model() below for how a name becomes a
+    # pydantic_ai model spec depending on model_provider.
+    ba_model: str = "deepseek-v4-pro"
+    backend_model: str = "deepseek-v4-pro"
+    frontend_model: str = "deepseek-v4-pro"
+    test_model: str = "deepseek-v4-pro"
+    sre_model: str = "deepseek-v4-pro"
+    review_model: str = "deepseek-v4-pro"
+    database_model: str = "deepseek-v4-pro"
+    devops_model: str = "deepseek-v4-pro"
+    docs_model: str = "subagent"
+    security_model: str = "deepseek-v4-pro"
+    ux_model: str = "deepseek-v4-pro"
+    cto_model: str = "deepseek-v4-pro"
+    planner_model: str = "deepseek-v4-pro"
+    quality_gate_model: str = "deepseek-v4-pro"
+    service_engineer_model: str = "deepseek-v4-pro"
 
-    holiday_planner_model: str = "claude-sonnet-5"
-    region_analyzer_model: str = "claude-sonnet-5"
-    asymmetric_reviewer_model: str = "claude-sonnet-5"
-    current_events_model: str = "claude-sonnet-5"
-    weather_model: str = "claude-sonnet-5"
-    accountant_model: str = "claude-sonnet-5"
-    price_analyst_model: str = "claude-sonnet-5"
-    market_shark_model: str = "claude-sonnet-5"
-    crypto_oracle_model: str = "claude-sonnet-5"
+    holiday_planner_model: str = "subagent"
+    region_analyzer_model: str = "subagent"
+    asymmetric_reviewer_model: str = "deepseek-v4-pro"
+    current_events_model: str = "subagent"
+    weather_model: str = "subagent"
+    accountant_model: str = "subagent"
+    price_analyst_model: str = "subagent"
+    market_shark_model: str = "subagent"
+    crypto_oracle_model: str = "subagent"
 
     # Pipeline Configuration
     output_dir: Path = Path("./generated-app")
@@ -104,7 +106,9 @@ class Settings(BaseSettings):
     # Cumulative input+output tokens per run: every request resends its context, so this is much larger than any
     # single response (the database agent caps one response at 8192 tokens).
     agent_total_tokens_limit: int = 2_000_000
-    agent_transport_attempts: int = 3  # total tries for 429/5xx/connection errors (separate from agent_retries)
+    # Total tries for 429/5xx/connection errors (separate from agent_retries). 1 because LiteLLM already retries
+    # once and walks its fallback chain: stacking more here multiplied one call into ~12 upstream attempts.
+    agent_transport_attempts: int = 1
     agent_timeout_seconds: float = 600.0
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
@@ -125,9 +129,8 @@ class Settings(BaseSettings):
     # resolve_model() (or anything else in this module) — despite the old
     # docstring's claim, resolve_model() only ever maps the per-agent model
     # name through model_provider, it never special-cased agents by tier.
-    # Now that every *_model field is pinned to the same "claude-sonnet-5"
-    # value, keeping unused fast/reasoner groupings around would only
-    # mislead readers into thinking agents still get different models.
+    # Unused fast/reasoner groupings would only mislead readers; the tiering
+    # is the per-agent *_model defaults above.
 
     @property
     def go_entrypoint_dir(self) -> str:
@@ -137,24 +140,23 @@ class Settings(BaseSettings):
     def resolve_model(self, model_name: str) -> str:
         """Resolve an agent-level model name to a fully-qualified pydantic_ai model spec.
 
-        Every agent currently defaults to the same model_name
-        ("claude-sonnet-5"); this method is only responsible for turning that
-        name into a provider-qualified pydantic_ai model spec, based on
-        model_provider. It does not apply any per-agent tiering.
+        Each agent has its own *_model default (see above); this method is
+        only responsible for turning that name into a provider-qualified
+        pydantic_ai model spec, based on model_provider.
 
         When MODEL_PROVIDER is set, each model name is prefixed with (or
         otherwise mapped through) that provider.
 
         Examples with MODEL_PROVIDER=litellm (the default):
-        - backend_model="claude-sonnet-5"  → "openai:claude-sonnet-5"
-          (LiteLLM's OpenAI-compatible proxy resolves the "claude-sonnet-5"
-          alias to Anthropic Claude Sonnet, with its own fallback chain.)
+        - backend_model="deepseek-v4-pro"  → "openai:deepseek-v4-pro"
+          (LiteLLM's OpenAI-compatible proxy serves the model group of that
+          name, with its own fallback chain.)
 
         With MODEL_PROVIDER=deepseek:
         - backend_model="deepseek-reasoner"  → "deepseek:deepseek-reasoner"
 
         With MODEL_PROVIDER=openai (likewise gemini, vertexai):
-        - backend_model="claude-sonnet-5"  → "openai:gpt-4o" (not an OpenAI model name, so the default is used)
+        - backend_model="deepseek-v4-pro"  → "openai:gpt-4o" (not an OpenAI model name, so the default is used)
         - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider

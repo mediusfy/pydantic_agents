@@ -20,6 +20,7 @@ from typing import Any
 
 import logfire
 
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.pipeline.factory import build_default_pipeline
 
@@ -74,6 +75,7 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
 
     with logfire.span("pipeline.background_run", run_id=run_id, project=project_name):
         PIPELINE_RUNS[run_id]["status"] = "running"
+        run_id_var.set(run_id)  # this task's own context: sent to LiteLLM as the Langfuse session id
         try:
             config = PipelineConfig(
                 project=project_name,

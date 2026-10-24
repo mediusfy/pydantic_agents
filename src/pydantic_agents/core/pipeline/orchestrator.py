@@ -5,6 +5,7 @@ from pydantic_agents.core.adapters.agents import PydanticAIAgentProvider
 from pydantic_agents.core.adapters.state_repository import build_state_repository
 from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter, WorkspaceContext
 from pydantic_agents.core.checkpoint import CheckpointManager
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.pipeline.config import STAGES, PipelineConfig
 from pydantic_agents.core.stages.base import StageRunner
@@ -37,7 +38,13 @@ class OrgitrationPipeline:
 
         # Initialize state repository with project isolation
         repository = build_state_repository(config.project)
-        self.checkpoint_mgr = CheckpointManager(repository=repository)
+        # A fresh random run id never matches an earlier checkpoint, so a resume must name the latest one.
+        resume_run_id = repository.find_latest_run_id() if config.resume else None
+        if config.resume and resume_run_id is None:
+            logger.warning(
+                "Resume requested for project %s but no checkpoint exists; starting a fresh run.", config.project
+            )
+        self.checkpoint_mgr = CheckpointManager(repository=repository, run_id=resume_run_id)
 
         # Workspace context pointing at the target project for repo-awareness
         self.workspace = WorkspaceContext(root_dir=config.target_root)
@@ -57,6 +64,8 @@ class OrgitrationPipeline:
         self.stages[name] = stage
 
     async def execute(self):
+        if run_id_var.get() is None:
+            run_id_var.set(self.state.run_id)
         logger.info(f"Starting Orgitration Pipeline for project: {self.config.project}")
         logger.info(f"Target root: {self.config.target_root}")
         logger.info(f"Output dir: {self.config.output_dir()}")

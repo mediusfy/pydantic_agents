@@ -85,6 +85,7 @@ def test_role_request_limits_name_registered_agents():
 )
 async def test_provider_retries_transient_errors_until_success(monkeypatch, errors):
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())  # skip tenacity's backoff
+    monkeypatch.setattr(settings, "agent_transport_attempts", 3)  # the default is 1: LiteLLM does the retrying
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=[*errors, "ok"])
 
@@ -110,6 +111,7 @@ async def test_provider_does_not_retry_permanent_errors(monkeypatch, error):
 
 async def test_provider_gives_up_after_the_configured_attempts(monkeypatch):
     monkeypatch.setattr(asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(settings, "agent_transport_attempts", 3)
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=ModelHTTPError(429, "m"))
 

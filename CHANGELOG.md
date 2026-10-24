@@ -11,6 +11,19 @@ fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Changed
+- Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
+  utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
+  has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
+- `AGENT_TRANSPORT_ATTEMPTS` defaults to 1: LiteLLM already retries and walks its fallback chain, and stacking a
+  second retry layer turned one call into up to ~12 upstream attempts.
+- With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
+  `metadata.trace_name` so Langfuse groups a run's generations.
+
+### Fixed
+- Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
+  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
+
 ### Added
 - `EventTrigger` now carries `owner`, `consumers` and `payload_schema`, `UserStory` carries `statement` and
   `bounded_context`, and `AgentAdvice` carries `architectural_constraints`: the BA and CTO prompts already

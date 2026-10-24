@@ -4,7 +4,7 @@ from typing import Any
 
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
-from pydantic_agents.core.limits import is_transient_error, permit_held, usage_limits
+from pydantic_agents.core.limits import is_transient_error, permit_held, trace_model_settings, usage_limits
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 
@@ -47,10 +47,11 @@ class PydanticAIAgentProvider(AgentProviderPort):
         )
         async def _run_with_retry():
             limits = usage_limits(agent_name)
+            extra = {"model_settings": ms} if (ms := trace_model_settings(agent_name)) else {}
             run = (
-                agent.run(prompt, usage_limits=limits)
+                agent.run(prompt, usage_limits=limits, **extra)
                 if deps is None
-                else agent.run(prompt, deps=deps, usage_limits=limits)
+                else agent.run(prompt, deps=deps, usage_limits=limits, **extra)
             )
             return await asyncio.wait_for(run, timeout=timeout_seconds)
 

@@ -13,7 +13,7 @@ def test_settings_defaults(monkeypatch):
     monkeypatch.delenv("CHECKPOINT_DIR", raising=False)
 
     s = Settings(_env_file=None)
-    assert s.ba_model == "claude-sonnet-5"
+    assert s.ba_model == "deepseek-v4-pro"
     assert s.max_retries == 3
     assert s.max_concurrent_llm_calls == 5
     assert s.output_dir == Path("./generated-app")
