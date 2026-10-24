@@ -11,8 +11,10 @@ from pydantic import BaseModel, Field, model_validator
 
 DISCLAIMER = "This is analysis based on public data, not financial advice."
 
-# Scenario probabilities may be rounded by the model; anything further from 1.0 than this is a mistake.
-PROBABILITY_TOLERANCE = 0.05
+# Scenario probabilities may be rounded by the model (0.33 + 0.33 + 0.33 = 0.99); anything further from 1.0 than this
+# is a mistake. The tiny epsilon keeps a sum of exactly 0.98 or 1.02 inside the tolerance despite float rounding.
+PROBABILITY_TOLERANCE = 0.02
+_FLOAT_SLACK = 1e-9
 
 
 class Source(BaseModel):
@@ -36,7 +38,7 @@ class Scenario(BaseModel):
 
 class _Analysis(BaseModel):
     as_of: str = Field(description="Date of the analysis (ISO 8601), taken from get_current_datetime")
-    summary: str
+    summary: str = Field(description="Two or three sentences: the conclusion and how confident you are in it")
     assumptions: list[str] = Field(default_factory=list)
     risks: list[str] = Field(default_factory=list, description="Main risks and what would change the view")
     sources: list[Source] = Field(min_length=1, description="Where every number came from; at least one")
@@ -50,14 +52,19 @@ class _Analysis(BaseModel):
 
 def _check_probabilities(scenarios: list[Scenario]) -> None:
     total = sum(s.probability for s in scenarios)
-    if abs(total - 1.0) > PROBABILITY_TOLERANCE:
+    if abs(total - 1.0) > PROBABILITY_TOLERANCE + _FLOAT_SLACK:
         raise ValueError(f"scenario probabilities add up to {total:.2f}, expected 1.0 (+/- {PROBABILITY_TOLERANCE})")
 
 
 class PreviousForecast(BaseModel):
     prediction: str = Field(description="What the earlier forecast said, as logged in history")
     actual: str = Field(description="What the price actually did since, from tool data")
-    error_pct: float | None = Field(default=None, description="Margin of error in percent, if it can be computed")
+    error_pct: float | None = Field(
+        default=None,
+        description=(
+            "Signed percent error: (actual - predicted midpoint) / predicted midpoint * 100; None if not computable"
+        ),
+    )
     lesson: str = Field(description="Why it was off (or right) and what changes in this forecast")
 
 
@@ -78,7 +85,7 @@ class Forecast(_Analysis):
 
 class Metric(BaseModel):
     name: str = Field(description="e.g. P/E, 30d average volume, % below 52-week high")
-    value: str
+    value: str = Field(description="As reported, with units (a string on purpose: '28.1x', '3.2M shares', '-12.4%')")
     source: str = Field(description="Tool or reference the inputs came from")
 
 
@@ -101,7 +108,9 @@ class PurchaseScenario(BaseModel):
 class PurchaseAdvice(_Analysis):
     item: str
     currency: str = "USD"
-    current_price: float | None = Field(default=None, description="From tool output; None if it could not be found")
+    current_price: float | None = Field(
+        default=None, gt=0, description="From tool output, above zero; None if it could not be found"
+    )
     leaning: Literal["buy_now", "wait", "unclear"]
     trend: str = Field(description="Past and present price trend, with the calculation behind it")
     scenarios: list[PurchaseScenario] = Field(min_length=2, description="Buy-now and wait, each with its conditions")

@@ -81,27 +81,42 @@ def _purchase(**overrides):
 
 
 @pytest.mark.parametrize(
-    "probs, valid",
-    [((0.5, 0.3, 0.2), True), ((0.49, 0.3, 0.2), True), ((0.5, 0.3, 0.1), False), ((0.9, 0.9, 0.9), False)],
+    "probs",
+    [(0.5, 0.3, 0.2), (0.49, 0.3, 0.2), (0.33, 0.33, 0.33), (0.5, 0.3, 0.18), (0.52, 0.3, 0.2)],
+    ids=["exact", "-0.01", "rounded thirds", "exactly -0.02", "exactly +0.02"],
 )
-def test_forecast_probabilities_must_add_up(probs, valid):
-    scenarios = [_scenario(n, probability=p) for n, p in zip(("base", "bull", "bear"), probs, strict=True)]
-    if valid:
-        assert Forecast(**_forecast(scenarios=scenarios))
-    else:
-        with pytest.raises(ValidationError, match="add up"):
-            Forecast(**_forecast(scenarios=scenarios))
+def test_forecast_probabilities_within_tolerance_are_accepted(probs):
+    scenarios = [
+        _scenario(n, probability=p) for n, p in zip(("base", "bull", "bear")[: len(probs)], probs, strict=True)
+    ]
+    assert Forecast(**_forecast(scenarios=scenarios))
+
+
+@pytest.mark.parametrize(
+    "probs",
+    [(0.5, 0.3, 0.17), (0.53, 0.3, 0.2), (0.5, 0.45), (0.9, 0.9, 0.9)],
+    ids=["just under 0.98", "just over 1.02", "0.95 total", "2.7 total"],
+)
+def test_forecast_probabilities_outside_tolerance_are_rejected(probs):
+    scenarios = [
+        _scenario(n, probability=p) for n, p in zip(("base", "bull", "bear")[: len(probs)], probs, strict=True)
+    ]
+    kwargs = _forecast(scenarios=scenarios)
+    with pytest.raises(ValidationError, match="add up"):
+        Forecast(**kwargs)
 
 
 def test_scenario_range_must_be_ordered():
+    kwargs = _scenario(low=80_000, high=60_000)
     with pytest.raises(ValidationError, match="above high"):
-        Scenario(**_scenario(low=80_000, high=60_000))
+        Scenario(**kwargs)
 
 
 @pytest.mark.parametrize("model, data", [(Forecast, _forecast), (MarketAnalysis, _market), (PurchaseAdvice, _purchase)])
 def test_every_result_must_cite_a_source(model, data):
+    kwargs = data(sources=[])
     with pytest.raises(ValidationError, match="sources"):
-        model(**data(sources=[]))
+        model(**kwargs)
 
 
 @pytest.mark.parametrize("model, data", [(Forecast, _forecast), (MarketAnalysis, _market), (PurchaseAdvice, _purchase)])
@@ -111,8 +126,9 @@ def test_disclaimer_is_set_by_code_not_the_model(model, data):
 
 
 def test_forecast_needs_at_least_two_scenarios():
+    kwargs = _forecast(scenarios=[_scenario(probability=1.0)])
     with pytest.raises(ValidationError):
-        Forecast(**_forecast(scenarios=[_scenario(probability=1.0)]))
+        Forecast(**kwargs)
 
 
 def test_previous_forecast_is_optional_but_typed():
@@ -121,23 +137,38 @@ def test_previous_forecast_is_optional_but_typed():
     assert Forecast(**_forecast(previous_forecast=prev)).previous_forecast.error_pct == -2.1
 
 
-def test_market_analysis_needs_metrics_and_both_cases():
-    for field in ("metrics", "bull_case", "bear_case"):
-        with pytest.raises(ValidationError):
-            MarketAnalysis(**_market(**{field: []}))
+@pytest.mark.parametrize("field", ["metrics", "bull_case", "bear_case"])
+def test_market_analysis_needs_metrics_and_both_cases(field):
+    kwargs = _market(**{field: []})
+    with pytest.raises(ValidationError):
+        MarketAnalysis(**kwargs)
 
 
 @pytest.mark.parametrize("actions", [["buy_now", "buy_now"], ["wait", "wait"]])
 def test_purchase_advice_must_cover_both_choices(actions):
     scenarios = [{"action": a, "conditions": ["c"], "rationale": "r"} for a in actions]
+    kwargs = _purchase(scenarios=scenarios)
     with pytest.raises(ValidationError, match="both buy_now and wait"):
-        PurchaseAdvice(**_purchase(scenarios=scenarios))
+        PurchaseAdvice(**kwargs)
 
 
 def test_purchase_leaning_allows_unclear_and_rejects_other_values():
     assert PurchaseAdvice(**_purchase(leaning="unclear")).leaning == "unclear"
+    kwargs = _purchase(leaning="definitely buy")
     with pytest.raises(ValidationError):
-        PurchaseAdvice(**_purchase(leaning="definitely buy"))
+        PurchaseAdvice(**kwargs)
+
+
+@pytest.mark.parametrize("price", [0.0, -5.0])
+def test_current_price_must_be_positive_when_given(price):
+    kwargs = _purchase(current_price=price)
+    with pytest.raises(ValidationError):
+        PurchaseAdvice(**kwargs)
+
+
+def test_current_price_may_be_absent():
+    assert PurchaseAdvice(**_purchase()).current_price is None
+    assert PurchaseAdvice(**_purchase(current_price=1299.99)).current_price == 1299.99
 
 
 # ── agents return the typed models, and a rule violation makes the model retry ──
@@ -214,3 +245,23 @@ def test_the_mcp_tool_descriptions_name_the_result_types():
     assert "Forecast" in AGENT_DOCSTRINGS["crypto_oracle"]
     assert "MarketAnalysis" in AGENT_DOCSTRINGS["market_shark"]
     assert "PurchaseAdvice" in AGENT_DOCSTRINGS["price_analyst"]
+
+
+async def test_the_mcp_server_returns_parseable_json_for_a_typed_investing_result():
+    from unittest.mock import AsyncMock, patch
+
+    from pydantic_agents.mcp_server import run_agent_by_name
+
+    agent = AsyncMock()
+    agent.run.return_value = MagicMock(output=Forecast(**_forecast()))
+    with (
+        patch("pydantic_agents.mcp_server.registry") as reg,
+        patch("pydantic_agents.mcp_server.retrieve_context", return_value=""),
+    ):
+        reg.get.return_value = agent
+        reg._agents = {"crypto_oracle": (None, None, lambda: None, None)}
+        result = await run_agent_by_name("crypto_oracle", "BTC outlook?")
+
+    parsed = json.loads(result)
+    assert parsed["asset"] == "BTC"
+    assert parsed["disclaimer"] == DISCLAIMER

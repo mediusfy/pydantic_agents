@@ -17,7 +17,9 @@ fresh **Unreleased** section above it.
   prompts asked for are now enforced by validation, so a violation makes the model retry: scenario probabilities add
   up to 1 (within 0.05), price ranges are ordered, at least one source is cited, and `disclaimer` is always the
   standard not-financial-advice line, set by code. `crypto_oracle`'s accountability step is the `previous_forecast`
-  field. MCP clients that read these agents' replies as plain text must now parse JSON.
+  field. This affects every caller, not only MCP: `registry.query`, `delegate_to_agent` (another agent receiving the
+  reply) and the `run_<agent>` MCP tools now return the JSON text of the model (`model_dump_json()`), so code that
+  treated the reply as prose must `json.loads` it. The exact shapes are the models in `core/models/analysis.py`.
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
   has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
