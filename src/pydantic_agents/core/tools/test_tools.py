@@ -2,10 +2,11 @@
 
 import asyncio
 import contextlib
-import os
 import tempfile
 
+from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
+from pydantic_agents.core.utils import safe_write
 
 TEST_EXECUTION_TIMEOUT = 60.0
 
@@ -27,16 +28,12 @@ async def execute_test_suite(
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         # Write files
-        test_path = os.path.join(temp_dir, test_file_name)
-        target_path = os.path.join(temp_dir, target_code_file)
-
-        os.makedirs(os.path.dirname(test_path), exist_ok=True)
-        os.makedirs(os.path.dirname(target_path), exist_ok=True)
-
-        with open(test_path, "w") as f:
-            f.write(test_source_code)
-        with open(target_path, "w") as f:
-            f.write(target_source_code)
+        try:
+            test_path = await asyncio.to_thread(safe_write, temp_dir, test_file_name, test_source_code)
+            await asyncio.to_thread(safe_write, temp_dir, target_code_file, target_source_code)
+        except (PathTraversalError, OSError, ValueError) as e:
+            # Model-chosen names can also be invalid (NUL bytes, a directory, a name that is too long).
+            return f"TEST EXECUTION FAILED: cannot write {test_file_name!r} / {target_code_file!r}: {e}"
 
         # Determine the test runner based on file extension
         if test_file_name.endswith(".go"):
@@ -60,7 +57,7 @@ async def execute_test_suite(
                 "npx",
                 "vitest",
                 "run",
-                test_path,
+                str(test_path),
                 cwd=temp_dir,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
