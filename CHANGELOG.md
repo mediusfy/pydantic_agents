@@ -21,6 +21,12 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Fixed
+- `execute_test_suite` started `go mod init` and `go mod tidy` without waiting for them, so `go test` could run
+  before the module existed. It now reuses the same awaited, time-limited setup as `run_go_build` / `run_go_vet`
+  (`init_and_tidy`); a slow setup or a missing `go` toolchain returns a failure message instead of hanging or raising.
+- `run_go_build`, `run_go_vet`, `validate_frontend_code` and `execute_test_suite` return a failure message for any
+  file name that cannot be written (NUL byte, a path whose parent is a file, a name that is too long), not only for
+  traversal attempts; they used to raise out of the tool. The shared error tuple is `WRITE_NAME_ERRORS`.
 - Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 

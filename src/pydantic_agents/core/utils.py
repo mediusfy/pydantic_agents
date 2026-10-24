@@ -18,6 +18,12 @@ def safe_path_join(base: str | Path, *parts: str) -> Path:
     return full
 
 
+# What writing a model-chosen file name can raise: an escape (PathTraversalError), or an invalid name such as a NUL byte
+# (ValueError), a directory, a missing parent or a name that is too long (OSError). Tools return a failure message for
+# these instead of raising.
+WRITE_NAME_ERRORS: tuple[type[BaseException], ...] = (PathTraversalError, OSError, ValueError)
+
+
 def sandbox_root() -> Path:
     """Root that model-driven file tools may touch.
 
