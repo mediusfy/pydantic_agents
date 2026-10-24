@@ -47,6 +47,9 @@ fresh **Unreleased** section above it.
   earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
 
 ### Added
+- `make smoke-deploy` (`scripts/post_deploy_smoke.py`): after a deploy, calls `run_review`, `run_security` and
+  `run_crypto_oracle` through the MCP endpoint and checks each result parses as `ReviewResult`, `SecurityReport` and
+  `Forecast`. Costs tokens, so it is not part of `make ci`.
 - Promptfoo cases for the `security` score bands (clean code passes, critical findings score 39 or less, a high finding
   fails at 69 or less, `passed` follows the score) and for the typed investing agents (`crypto_oracle`, `market_shark`,
   `price_analyst`: parseable JSON, grounded figures, no guaranteed outcomes). The two existing cases are scoped to
