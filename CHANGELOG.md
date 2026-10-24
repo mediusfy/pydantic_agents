@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Docs brought in line with the code: README and `.ai/guidance/architecture.md` describe the real model
+  defaults, run limits, `AGENT_TRANSPORT_ATTEMPTS`, durable pipeline runs, `resume_pipeline_run`, the CTO gate
+  and `approve_cto_gate`; the "known improvement areas" list marks the fixed items; the settings docstring and
+  the promptfoo grader name `deepseek-v4-pro`; `.env.example` lists the run-limit and model overrides.
 - **Behaviour change:** `crypto_oracle`, `market_shark` and `price_analyst` return typed results instead of free text:
   `Forecast`, `MarketAnalysis` and `PurchaseAdvice` (JSON through the MCP server and `registry.query`). The rules their
   prompts asked for are now enforced by validation, so a violation makes the model retry: scenario probabilities add

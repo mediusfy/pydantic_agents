@@ -17,17 +17,17 @@ Short map for agents. The README has the longer description, and [docs/turso-age
 1. Importing `mcp_server.py` configures observability, registers every agent, and creates one `run_<name>` MCP tool per registered agent.
 2. `run_agent_by_name` gets the agent from the registry; the first `get` attaches its tools by category (`tool_assignments.py` → `tools/registry.py::apply_tools`).
 3. `context_engine.retrieve_context` prepends up to three snippets from the vector store (ADRs, architecture, conventions) to the request.
-4. The agent runs with `UsageLimits(request_limit=500)` and its `deps_factory`; output is stringified. Failures become `AgentExecutionError`; telemetry is logged best-effort.
+4. The agent runs with `usage_limits(agent_name)` (40 requests, 60 for `backend`, `frontend` and `service_engineer`, 2 M tokens; `core/limits.py`) and its `deps_factory`; output is stringified. Failures become `AgentExecutionError`; telemetry is logged best-effort.
 
 ## Model routing
 
-`core/settings.py` holds one model field per agent (all default to the same alias today). `Settings.resolve_model()` turns it into a spec for `MODEL_PROVIDER` (`litellm` by default, or `deepseek`, `openai`, `gemini`, `vertexai`), and `core/models/factory.py::create_model` builds the pydantic_ai model. With `litellm`, the base URL comes from `LITELLM_BASE_URL` / `OPENAI_BASE_URL` (or a default by `LITELLM_ENV`) and the key from `LITELLM_VIRTUAL_KEY` / `LITELLM_MASTER_KEY`. Without a key it logs a warning and returns the raw spec (README "Known improvement areas" item 2).
+`core/settings.py` holds one model field per agent (`deepseek-v4-pro`, or `subagent` for docs and the utility agents; real LiteLLM groups, not `claude-*` aliases). `Settings.resolve_model()` turns it into a spec for `MODEL_PROVIDER` (`litellm` by default, or `deepseek`, `openai`, `gemini`, `vertexai`), and `core/models/factory.py::create_model` builds the pydantic_ai model. With `litellm`, the base URL comes from `LITELLM_BASE_URL` / `OPENAI_BASE_URL` (or a default by `LITELLM_ENV`) and the key from `LITELLM_VIRTUAL_KEY` / `LITELLM_MASTER_KEY`. Without a key it logs a warning and returns the raw spec (README "Known improvement areas" item 2).
 
 ## Orchestration pipeline
 
 - `core/pipeline/config.py` defines blueprints, `Framework` (`legacy`, `langgraph`, `crewai`, `autogen`, `composite`) and stages (`ba`, `advisory`, `implementation`, `quality_gate`, `merge`).
 - `core/pipeline/factory.py::build_pipeline` dispatches by framework; `crewai` and `autogen` need their extras. The legacy `OrgitrationPipeline` (`core/pipeline/orchestrator.py`) runs `core/stages/*` in order.
-- MCP tools `run_orchestration_pipeline`, `submit_async_task`, `check_task_status`, `wait_for_task` and `cancel_pipeline_run` run pipelines as in-process asyncio tasks (`core/pipeline_jobs.py`); that state is lost on restart.
+- MCP tools `run_orchestration_pipeline`, `check_pipeline_status`, `resume_pipeline_run` and `cancel_pipeline_run` run pipelines as asyncio tasks (`core/pipeline_jobs.py`). Run records are also written to a `pipeline_runs` table in the pgvector database (`core/run_store.py`, best-effort), so a restart leaves an `interrupted` record that `resume_pipeline_run` can continue. `approve_cto_gate` writes the marker the CTO gate (`core/cto_gate.py`) waits for; the gate reads its content, so `false` rejects. `submit_async_task`, `check_task_status` and `wait_for_task` use the in-process event broker and are not persisted.
 - Checkpoints and stage events go through `core/adapters/state_repository.py`: disk JSON files by default, or an embedded Turso database with `STATE_BACKEND=turso` (needs the `turso` extra). One process should own a project's `state.db`.
 
 ## Modules worth knowing
