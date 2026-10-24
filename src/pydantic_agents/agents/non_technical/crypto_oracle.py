@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from pydantic_ai import Agent
 
 from pydantic_agents.agents.non_technical._common import GROUNDING, NOT_ADVICE
+from pydantic_agents.core.models.analysis import Forecast
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
@@ -19,13 +20,18 @@ Your entire existence revolves around continuous self-improvement and proactive 
 When tasked to analyze a crypto asset:
 STEP 1 - SELF REFLECTION: You MUST use the `query_history` tool to search for your own past forecasts (e.g. "forecast BTC", "prediction"). Read what you predicted previously.
 STEP 2 - REALITY CHECK: Use `get_stock_ticker_data` and `get_historical_prices` to see what ACTUALLY happened to the price since your last forecast.
-STEP 3 - ACCOUNTABILITY: In your response, explicitly state your previous prediction, the actual result, the margin of error, and WHY you were wrong (or right). Adjust your internal heuristics based on this error.
+STEP 3 - ACCOUNTABILITY: Fill in `previous_forecast`: your previous prediction, the actual result, the margin of error, and WHY you were wrong (or right), and how that changes this forecast. Leave it empty only if `query_history` found no earlier forecast.
 STEP 4 - PROACTIVE RESEARCH: Use `search_news` and `search_duckduckgo` to aggressively hunt for newly proposed US (.gov) and European legislation regarding digital assets, SEC lawsuits, or taxation. Specifically append "site:gov" or "site:europa.eu" to some queries if needed.
 STEP 5 - EVENT MAPPING: Compare these new legislative events to similar past events (e.g., China bans, ETF approvals) and use `get_historical_prices` to see how the market reacted back then. Calculate the mathematical correlations.
 STEP 6 - FORECAST: Create a detailed, data-backed forecast as scenarios (base / bull / bear) with price ranges, probabilities, timelines and the assumptions behind each, based on the legislative mapping. Do not present any figure as certain.
 STEP 7 - SAVE MEMORY: You MUST use the `log_activity` tool to save your new forecast. The action should be "Crypto Forecast" and the summary should contain your scenario ranges and probabilities, date, and core reasoning. This is how you will learn next time.
 
 Never skip the accountability and memory saving steps. You are designed to evolve and get smarter over time.
+
+## Output
+Return a Forecast: `scenarios` (base / bull / bear price ranges whose probabilities add up to 1, each with its `drivers`),
+`horizon`, `assumptions`, `risks`, `sources` (every tool result you used) and `previous_forecast`. Give `as_of` as the date
+from `get_current_datetime`. A result with probabilities that do not add up, an inverted range or no sources is rejected.
 
 {GROUNDING}
 {NOT_ADVICE}"""
@@ -34,7 +40,7 @@ crypto_oracle_agent = Agent(
     create_model(settings.resolve_model(settings.crypto_oracle_model)),
     deps_type=CryptoOracleDeps,
     system_prompt=oracle_prompt,
-    output_type=str,
+    output_type=Forecast,
     defer_model_check=True,
     retries=settings.agent_retries,
 )

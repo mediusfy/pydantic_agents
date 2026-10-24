@@ -123,9 +123,18 @@ AGENT_DOCSTRINGS = {
     "quality_gate": "Invokes the Quality Gate agent to check for over-engineering and complexity.",
     "service_engineer": "Invokes the Service Engineer agent to modify existing Go codebases.",
     "planner": "Invokes the Planner agent to create execution plans.",
-    "crypto_oracle": "Invokes the Crypto Oracle Agent to analyze crypto markets and trends.",
-    "market_shark": "Invokes the Market Shark Agent to analyze stock markets and investments.",
-    "price_analyst": "Invokes the Price Analyst Agent to analyze and compare pricing.",
+    "crypto_oracle": (
+        "Invokes the Crypto Oracle Agent to analyze crypto markets and trends. "
+        "Returns a JSON Forecast (scenarios, sources, previous-forecast accountability)."
+    ),
+    "market_shark": (
+        "Invokes the Market Shark Agent to analyze stock markets and investments. "
+        "Returns a JSON MarketAnalysis (metrics, bull/bear case, sources)."
+    ),
+    "price_analyst": (
+        "Invokes the Price Analyst Agent to analyze and compare pricing. "
+        "Returns a JSON PurchaseAdvice (buy-now / wait scenarios, sources)."
+    ),
 }
 
 

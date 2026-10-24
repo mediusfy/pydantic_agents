@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- **Behaviour change:** `crypto_oracle`, `market_shark` and `price_analyst` return typed results instead of free text:
+  `Forecast`, `MarketAnalysis` and `PurchaseAdvice` (JSON through the MCP server and `registry.query`). The rules their
+  prompts asked for are now enforced by validation, so a violation makes the model retry: scenario probabilities add
+  up to 1 (within 0.05), price ranges are ordered, at least one source is cited, and `disclaimer` is always the
+  standard not-financial-advice line, set by code. `crypto_oracle`'s accountability step is the `previous_forecast`
+  field. MCP clients that read these agents' replies as plain text must now parse JSON.
 - Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
   utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
   has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
