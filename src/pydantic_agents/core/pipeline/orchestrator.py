@@ -38,10 +38,13 @@ class OrgitrationPipeline:
 
         # Initialize state repository with project isolation
         repository = build_state_repository(config.project)
-        self.checkpoint_mgr = CheckpointManager(repository=repository)
-        if config.resume and (latest := self.checkpoint_mgr.find_latest_run_id()):
-            # A fresh random run id never matches an earlier checkpoint, so resume would silently start over.
-            self.checkpoint_mgr.run_id = latest
+        # A fresh random run id never matches an earlier checkpoint, so a resume must name the latest one.
+        resume_run_id = repository.find_latest_run_id() if config.resume else None
+        if config.resume and resume_run_id is None:
+            logger.warning(
+                "Resume requested for project %s but no checkpoint exists; starting a fresh run.", config.project
+            )
+        self.checkpoint_mgr = CheckpointManager(repository=repository, run_id=resume_run_id)
 
         # Workspace context pointing at the target project for repo-awareness
         self.workspace = WorkspaceContext(root_dir=config.target_root)
