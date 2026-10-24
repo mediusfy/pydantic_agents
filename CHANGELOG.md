@@ -11,6 +11,19 @@ fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Changed
+- Agent model defaults name real LiteLLM groups: reasoning roles use `deepseek-v4-pro`, docs and the personal
+  utility agents use `subagent`. The old shared `claude-sonnet-5` alias silently resolved to DeepSeek (the proxy
+  has no Anthropic credential), so prompts and evals tuned on the belief that agents ran on Claude were wrong.
+- `AGENT_TRANSPORT_ATTEMPTS` defaults to 1: LiteLLM already retries and walks its fallback chain, and stacking a
+  second retry layer turned one call into up to ~12 upstream attempts.
+- With `MODEL_PROVIDER=litellm`, calls made inside a pipeline run send `metadata.session_id` (the run id) and
+  `metadata.trace_name` so Langfuse groups a run's generations.
+
+### Fixed
+- Resuming a pipeline reuses the latest checkpointed run id instead of a fresh random one that never matched an
+  earlier checkpoint, and logs a warning when `resume` is requested but no checkpoint exists.
+
 ### Added
 - Durable pipeline runs: every status change of a background run is written to a `pipeline_runs` table in the
   pgvector database (best-effort; memory only when `DATABASE_URL` is unset). `check_pipeline_status` still finds a
@@ -57,6 +70,12 @@ fresh **Unreleased** section above it.
   PR's "AI Context & Rules Update" section into `.ai/recent_context.md`.
 
 ### Changed
+- `SecurityReport.passed` is derived from `score >= SECURITY_PASS_SCORE` (70) in code, as `QualityGateResult.passed`
+  already is from its complexity score; the value the model supplies is ignored. The security agent's prompt now
+  defines the score bands (critical at most 39, high at most 69, medium/low or clean 70 and above), so "no
+  critical/high findings" and a passing score mean the same thing. This fixes verdicts such as `passed: false` with
+  score 55 and "no critical/high findings". Behaviour change: an audit whose score is below 70 now blocks the
+  quality gate even if the model said `passed: true`.
 - `log_activity` and `query_history` are best-effort: when the memory store is unreachable (for example Postgres
   rejects the connection) they log a warning and return a short message instead of raising, so the agent run that
   called them continues. Previously one failed memory write aborted the whole run (seen in `make eval`, where the
