@@ -60,6 +60,7 @@ dev = [
 ]
 
 [tool.mypy]
+python_version = "3.11"  # the oldest supported version (requires-python), as for ruff
 # Optional integrations that are not installed everywhere (turso, redis_agent_memory, crewai, autogen) and
 # libraries that ship no type information (asyncpg, yfinance): ignore their missing imports so the result does not
 # depend on which extras happen to be installed. Everything else is checked.
