@@ -15,11 +15,12 @@ make typecheck        # mypy src
 make test             # pytest tests -q (make test-unit / make test-integration for one level)
 make cov              # tests with a coverage report
 make smoke            # import the MCP server and count its tools (same as the CI smoke job)
+make smoke-deploy     # after a deploy: real run_review / run_security / run_crypto_oracle calls via the MCP endpoint
 make lock-check       # fails if requirements.lock or uv.lock is stale; make lock regenerates
 make ci               # lint + test + smoke + lock-check
 ```
 
-Do not run `make eval` (promptfoo, real LLM calls through the gateway) or `make seed-apply` (writes to the vector database) unless asked. `make seed` is a dry run.
+Do not run `make eval` (promptfoo, real LLM calls through the gateway), `make smoke-deploy` (real agent calls against the deployed endpoint) or `make seed-apply` (writes to the vector database) unless asked. `make seed` is a dry run.
 
 ## Before you design
 
