@@ -108,6 +108,8 @@ class ActivityLog(BaseModel):
 # SECURITY_HIGH_MAX_SCORE, so "no critical/high findings" and "score >= SECURITY_PASS_SCORE" mean the same thing.
 SECURITY_PASS_SCORE = 70
 SECURITY_HIGH_MAX_SCORE = SECURITY_PASS_SCORE - 1
+# Fixed on purpose: critical findings sit well below the high band (40..SECURITY_HIGH_MAX_SCORE) whatever the pass
+# score is, so moving SECURITY_PASS_SCORE widens or narrows only the high band and never leaves a gap.
 SECURITY_CRITICAL_MAX_SCORE = 39
 
 
@@ -121,6 +123,7 @@ class SecurityReport(BaseModel):
 
     @model_validator(mode="after")
     def _derive_passed(self) -> "SecurityReport":
+        """Overrides (does not validate) the supplied `passed`: the score is the single source of truth."""
         # The model reported both fields and they could disagree (passed=false with score 55 and no high findings).
         self.passed = self.score >= SECURITY_PASS_SCORE
         return self

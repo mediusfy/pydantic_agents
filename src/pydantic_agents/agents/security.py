@@ -1,3 +1,4 @@
+import re
 from dataclasses import dataclass
 
 from pydantic_ai import Agent
@@ -56,10 +57,26 @@ Return a SecurityReport with:
 - `feedback`: specific findings with file:line, vulnerability type, severity, and remediation
 """
 
-security_prompt = (
-    security_prompt.replace("__CRITICAL_MAX__", str(SECURITY_CRITICAL_MAX_SCORE))
-    .replace("__HIGH_MAX__", str(SECURITY_HIGH_MAX_SCORE))
-    .replace("__PASS__", str(SECURITY_PASS_SCORE))
+
+def _render_prompt(template: str, values: dict[str, int]) -> str:
+    """Substitute __NAME__ placeholders, failing at import time if one is missing from the template or left over."""
+    for name, value in values.items():
+        if f"__{name}__" not in template:
+            raise ValueError(f"security prompt has no __{name}__ placeholder")
+        template = template.replace(f"__{name}__", str(value))
+    leftover = re.findall(r"__[A-Z_]+__", template)
+    if leftover:
+        raise ValueError(f"security prompt has unfilled placeholders: {leftover}")
+    return template
+
+
+security_prompt = _render_prompt(
+    security_prompt,
+    {
+        "CRITICAL_MAX": SECURITY_CRITICAL_MAX_SCORE,
+        "HIGH_MAX": SECURITY_HIGH_MAX_SCORE,
+        "PASS": SECURITY_PASS_SCORE,
+    },
 )
 
 security_agent = Agent(

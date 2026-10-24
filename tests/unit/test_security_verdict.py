@@ -82,3 +82,18 @@ async def test_quality_gate_blocks_on_the_derived_verdict_not_the_claimed_one():
     assert result.approved is False
     assert "weak hash" in result.feedback
     assert result.failure_report.error_type == "security"
+
+
+def test_render_prompt_fails_loudly_on_a_missing_or_leftover_placeholder():
+    from pydantic_agents.agents.security import _render_prompt
+
+    assert _render_prompt("a __X__ b", {"X": 3}) == "a 3 b"
+    with pytest.raises(ValueError, match="no __Y__ placeholder"):
+        _render_prompt("a __X__ b", {"X": 3, "Y": 4})
+    with pytest.raises(ValueError, match="unfilled placeholders"):
+        _render_prompt("a __X__ __Z__ b", {"X": 3})
+
+
+def test_high_band_always_sits_between_critical_and_pass():
+    # Guards the "moving SECURITY_PASS_SCORE leaves a gap" worry: the high band is (critical, pass).
+    assert SECURITY_CRITICAL_MAX_SCORE + 1 <= SECURITY_HIGH_MAX_SCORE == SECURITY_PASS_SCORE - 1
