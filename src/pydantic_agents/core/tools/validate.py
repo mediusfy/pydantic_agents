@@ -9,7 +9,7 @@ from pydantic_agents.core.tools.registry import register_tool
 try:
     import yaml
 except ImportError:
-    yaml = None
+    yaml = None  # type: ignore[assignment]
 
 
 def validate_protobuf(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
