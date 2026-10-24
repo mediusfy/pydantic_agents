@@ -111,6 +111,8 @@ def _caller(session: "ClientSession") -> CallTool:
         text = "".join(part.text for part in result.content if part.type == "text")
         if result.isError:
             raise RuntimeError(text[:300])
+        if not text:
+            raise RuntimeError("the tool returned no text content")
         return text
 
     return call
@@ -127,6 +129,7 @@ async def main() -> int:
     from mcp import ClientSession
     from mcp.client.streamable_http import streamablehttp_client
 
+    # LiteLLM and the pod's own MCP server both accept a bearer token; set MCP_URL for a gateway that wants another scheme.
     headers = {"Authorization": f"Bearer {key}"} if key else None
     async with AsyncExitStack() as stack:
         read, write, _ = await stack.enter_async_context(

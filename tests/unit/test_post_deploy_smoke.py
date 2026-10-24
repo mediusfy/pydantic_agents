@@ -141,3 +141,19 @@ async def test_a_tool_error_from_the_server_is_a_failure():
             failures = dict(await run_checks(await _tool_names(session), _caller(session), CHECKS[:1]))
 
     assert "pool closed" in failures["run_review"]
+
+
+async def test_an_empty_tool_result_is_reported_as_such():
+    from unittest.mock import AsyncMock, patch
+
+    from mcp.shared.memory import create_connected_server_and_client_session
+
+    from pydantic_agents.mcp_server import mcp
+    from scripts.post_deploy_smoke import _caller, _tool_names
+
+    # mcp._mcp_server is private SDK API; this in-process connection is the only way to test the wrapper offline.
+    with patch("pydantic_agents.mcp_server.run_agent_by_name", new=AsyncMock(return_value="")):
+        async with create_connected_server_and_client_session(mcp._mcp_server) as session:
+            failures = dict(await run_checks(await _tool_names(session), _caller(session), CHECKS[:1]))
+
+    assert "no text content" in failures["run_review"]
