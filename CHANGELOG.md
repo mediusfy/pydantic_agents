@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in the four largest functions, by splitting them into small helpers:
+  `ImplementationStage.run` (73), `run_existing_code_pipeline` (52), `parse_code_blocks_to_files` (39) and
+  `OrgitrationPipeline.execute` (37). Each now has tests that were written first and run against the old code
+  (none had any for its main path). Prompts, recorded events and results are unchanged.
+- `OrgitrationPipeline` runs a stage normally when a checkpoint is listed but cannot be loaded, instead of carrying `None` forward as its state.
 - **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
   `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
   are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.

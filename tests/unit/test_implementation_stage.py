@@ -388,3 +388,62 @@ async def test_with_no_user_stories_only_the_global_agents_run(env):
     assert sorted(env.provider.agents()) == ["devops", "docs"]
     assert state.failure_report is None
     assert state.stage == "implementation"
+
+
+# --- helpers ----------------------------------------------------------------------------------------------------
+
+
+def _art(agent: str, story: str = "US-1", **files: str) -> Artifact:
+    return Artifact(agent_name=agent, files=dict(files), metadata={"user_story_id": story})
+
+
+class TestCollectArtifacts:
+    def test_artifacts_lists_and_nones_are_handled_and_exceptions_logged(self, caplog):
+        first, second, third = _art("backend", a="1"), _art("frontend", b="2"), _art("docs", c="3")
+        tasks = [("backend", None), ("frontend", None), ("database", None), ("devops", None), ("docs", None)]
+        results = [first, [second, "not an artifact", third], None, RuntimeError("boom"), KeyboardInterrupt()]
+
+        with caplog.at_level(logging.ERROR, logger=impl.logger.name):
+            collected = impl._collect_artifacts([], tasks, results, is_retry=False)
+
+        assert collected == [first, second, third]
+        assert [r.getMessage() for r in caplog.records] == ["Implementation task (devops) raised: boom"]
+
+    def test_on_a_retry_the_results_merge_into_existing_artifacts(self):
+        existing = _art("backend", **{"a.go": "old", "keep.go": "k"})
+        new = _art("backend", **{"a.go": "new"})
+
+        collected = impl._collect_artifacts([existing], [("backend", None)], [[new]], is_retry=True)
+
+        assert collected == [existing]
+        assert existing.files == {"a.go": "new", "keep.go": "k"}
+
+
+class TestFindTestTarget:
+    def test_the_first_source_file_with_content_wins(self):
+        artifacts = [_art("backend", **{"README.md": "docs", "api.go": "package api", "b.go": "package b"})]
+
+        assert impl._find_test_target(artifacts, "US-1") == ("api.go", "package api")
+
+    @pytest.mark.parametrize("name", ["App.vue", "view.tsx", "main.go"])
+    def test_go_vue_and_tsx_files_qualify(self, name):
+        assert impl._find_test_target([_art("backend", **{name: "src"})], "US-1") == (name, "src")
+
+    def test_an_empty_first_source_moves_on_to_the_next_artifact(self):
+        artifacts = [_art("backend", **{"empty.go": ""}), _art("backend", **{"full.go": "package full"})]
+
+        assert impl._find_test_target(artifacts, "US-1") == ("full.go", "package full")
+
+    @pytest.mark.parametrize(
+        "artifacts",
+        [
+            [],
+            [_art("frontend", **{"app.vue": "ui"})],  # not a backend artifact
+            [_art("backend", "US-2", **{"a.go": "x"})],  # another story
+            [_art("backend", **{"notes.txt": "x"})],  # no source file
+            [_art("backend")],  # no files
+        ],
+        ids=["none", "not-backend", "other-story", "no-source", "no-files"],
+    )
+    def test_with_no_match_the_default_is_returned_with_no_source(self, artifacts):
+        assert impl._find_test_target(artifacts, "US-1") == ("service.go", "")
