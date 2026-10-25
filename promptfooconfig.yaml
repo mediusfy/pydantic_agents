@@ -32,6 +32,16 @@ providers:
     config:
       agent: price_analyst
       pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: holiday_planner
+    config:
+      agent: holiday_planner
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: accountant
+    config:
+      agent: accountant
+      pythonExecutable: .venv/bin/python
 
 defaultTest:
   options:
@@ -88,20 +98,15 @@ tests:
       request: |
         Audit this Go snippet:
 
-        func charge(ctx context.Context, db *sql.DB, userID string, amountCents int64) error {
-            if amountCents <= 0 {
-                return errors.New("amount must be positive")
+        func parsePort(s string) (int, error) {
+            n, err := strconv.Atoi(s)
+            if err != nil {
+                return 0, fmt.Errorf("port %q: %w", s, err)
             }
-            key := os.Getenv("STRIPE_API_KEY")
-            if key == "" {
-                return errors.New("STRIPE_API_KEY is not set")
+            if n < 1 || n > 65535 {
+                return 0, fmt.Errorf("port %d is out of range", n)
             }
-            row := db.QueryRowContext(ctx, "SELECT customer_id FROM users WHERE id = $1", userID)
-            var customerID string
-            if err := row.Scan(&customerID); err != nil {
-                return fmt.Errorf("lookup customer: %w", err)
-            }
-            return stripe.Charge(ctx, key, customerID, amountCents)
+            return n, nil
         }
     assert:
       - type: is-json
@@ -234,9 +239,10 @@ tests:
       - type: llm-rubric
         value: >-
           Passes only if the thesis is specific to the supplied figures (P/E, distance from the 52-week high,
-          services growth), gives both a bull and a bear case, and does not state any number that was not supplied
-          (no other price targets, ratios or growth rates) unless it is explicitly labelled as an estimate or an
-          assumption.
+          services growth), gives both a bull and a bear case, and does not present a fact it was not given
+          (no fundamentals, forecasts, analyst targets or growth rates beyond the supplied ones). Arithmetic on the
+          supplied figures and scenario assumptions that are shown as assumptions (for example "if the multiple
+          falls to 24x") are fine.
 
   - description: price_analyst - returns PurchaseAdvice covering buy now and wait
     providers: [price_analyst]
@@ -260,3 +266,88 @@ tests:
         value: >-
           Passes only if the advice takes the Black Friday price history into account, describes the downward price
           trend using the supplied numbers, and gives conditions for both buying now and waiting.
+
+  - description: holiday_planner - returns an Itinerary inside the dates, with the budget check derived
+    providers: [holiday_planner]
+    vars:
+      request: |
+        Plan a 3-day trip to Lisbon for 2 people from 2026-11-06 to 2026-11-08. Do not call any tools; use only
+        what I give you and cite it with the tool name "user". Budget 400 EUR in total. Known costs: tram 28 day
+        pass 6.60 EUR per person per day, Belem Tower entry 12 EUR per person on day 1, dinner 70 EUR for two each
+        night. I have not checked any opening hours.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const t = JSON.parse(output);
+          const items = t.days.flatMap((d) => d.items);
+          return t.days.length === 3
+            && t.days.map((d) => d.day).join() === "1,2,3"
+            && t.days.every((d) => d.date >= "2026-11-06" && d.date <= "2026-11-08")
+            && t.sources.length >= 1
+            && items.every((i) => i.status === "confirmed" || i.confirm_where.length > 0)
+            && t.estimated_total !== null
+            && t.within_budget === (t.estimated_total <= 400);
+      - type: llm-rubric
+        value: >-
+          Passes only if the plan fits the three days and two travellers, uses the supplied costs rather than
+          inventing prices, marks opening hours as still to be confirmed instead of presenting them as checked, and
+          does not claim a weather forecast it was not given.
+
+  - description: holiday_planner - asks for the missing details instead of inventing a plan
+    providers: [holiday_planner]
+    vars:
+      request: |
+        Do not call any tools. Plan me a holiday somewhere nice.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const t = JSON.parse(output);
+          return t.days.length === 0 && t.open_questions.length >= 2;
+      - type: llm-rubric
+        value: >-
+          Passes only if the response asks for the missing basics (such as destination, dates, number of travellers
+          or budget) and does not invent a destination or a day-by-day plan.
+
+  - description: accountant - totals are summed from the lines in one currency with the supplied rate listed
+    providers: [accountant]
+    vars:
+      request: |
+        Do not call any tools; use only these figures and cite them with the tool name "user". Today is 2026-10-24.
+        Give me the total in USD for 3 nights in a hotel at 120 EUR per night (exact price) plus a taxi that will
+        cost between 30 and 45 EUR. The exchange rate to use is 1 EUR = 1.10 USD, from the user, dated 2026-10-24.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const b = JSON.parse(output);
+          const sum = (k) => Math.round(b.lines.reduce((a, l) => a + l[k], 0) * 100) / 100;
+          return b.currency === "USD"
+            && b.lines.length >= 2
+            && b.exchange_rates.some((r) => Math.abs(r.rate - 1.1) < 1e-9)
+            && b.total_low === sum("low")
+            && b.total_high === sum("high")
+            && Math.abs(b.total_low - 429) < 0.01
+            && Math.abs(b.total_high - 445.5) < 0.01
+            && b.lines.filter((l) => l.kind === "fixed").every((l) => l.low === l.high);
+      - type: llm-rubric
+        value: >-
+          Passes only if the hotel is treated as an exact cost and the taxi as an estimate with a range, every line is
+          expressed in USD using the supplied 1.10 rate, and no price or rate that was not supplied appears.
+
+  - description: accountant - asks for the missing inputs instead of guessing a cost
+    providers: [accountant]
+    vars:
+      request: |
+        Do not call any tools. How much will my trip cost?
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const b = JSON.parse(output);
+          return b.lines.length === 0 && b.open_questions.length >= 1 && b.total_low === null && b.total_high === null;
+      - type: llm-rubric
+        value: >-
+          Passes only if the response asks what is needed (such as destination, dates, items and currency) and does
+          not invent a cost.

@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Two promptfoo cases were recalibrated after the first live run: the "clean code" security snippet is now a
+  self-contained function (the previous payment function legitimately drew a missing-authorization finding), and the
+  `market_shark` rubric allows arithmetic on the supplied figures and labelled scenario assumptions while still failing
+  on invented facts or outside targets.
 - Docs brought in line with the code: README and `.ai/guidance/architecture.md` describe the real model
   defaults, run limits, `AGENT_TRANSPORT_ATTEMPTS`, durable pipeline runs, `resume_pipeline_run`, the CTO gate
   and `approve_cto_gate`; the "known improvement areas" list marks the fixed items; the settings docstring and
@@ -42,6 +46,10 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Added
+- Promptfoo cases for `holiday_planner` (a complete request gives an `Itinerary` inside the dates with a derived budget
+  check; a vague one gets questions, not a plan) and `accountant` (a `CostBreakdown` whose totals are summed from lines
+  in one currency, with the supplied rate listed; a vague request gets questions). Figures are supplied in the request
+  and tools are ruled out, so they do not depend on live data.
 - `tests/unit/test_limits_under_load.py` drives the real provider with many concurrent callers and a fake model: the
   concurrency cap is never exceeded, permits are released after errors, timeouts and cancellations, retries stay inside
   the permit and cost at most `attempts` runs per call, and a delegation fan-out does not deadlock. It documents that
