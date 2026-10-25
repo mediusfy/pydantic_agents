@@ -75,6 +75,24 @@ async def _read_command_async() -> str | None:
 # ── Main Loop ────────────────────────────────────────────────────────
 
 
+def _emit(payload: dict) -> None:
+    """Write one NDJSON response line to stdout."""
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+async def _respond_to(command: str) -> None:
+    """Run one JSON command and print its response; invalid JSON is reported as an error line."""
+    try:
+        cmd_data = json.loads(command)
+        response = await _handle_command(cmd_data)
+        if "id" in cmd_data:
+            response["id"] = cmd_data["id"]
+        _emit(response)
+    except json.JSONDecodeError as e:
+        _emit({"error": f"invalid JSON: {e}"})
+
+
 async def run_server_loop() -> None:
     """Run the agentapi protocol server in a loop, reading from stdin asynchronously."""
     from pydantic_agents.agents.registration import register_all_agents
@@ -89,16 +107,7 @@ async def run_server_loop() -> None:
 
     if command:
         # Single command mode (pipe or argument)
-        try:
-            cmd_data = json.loads(command)
-            response = await _handle_command(cmd_data)
-            if "id" in cmd_data:
-                response["id"] = cmd_data["id"]
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
-        except json.JSONDecodeError as e:
-            sys.stdout.write(json.dumps({"error": f"invalid JSON: {e}"}) + "\n")
-            sys.stdout.flush()
+        await _respond_to(command)
         return
 
     # Interactive/daemon mode: continuous asynchronous read loop
@@ -118,21 +127,12 @@ async def run_server_loop() -> None:
             continue
 
         try:
-            cmd_data = json.loads(line)
             # You can wrap this in asyncio.create_task() if you want commands
             # to process entirely concurrently without waiting for the previous to finish.
-            response = await _handle_command(cmd_data)
-            if "id" in cmd_data:
-                response["id"] = cmd_data["id"]
-            sys.stdout.write(json.dumps(response) + "\n")
-            sys.stdout.flush()
-        except json.JSONDecodeError as e:
-            sys.stdout.write(json.dumps({"error": f"invalid JSON: {e}"}) + "\n")
-            sys.stdout.flush()
+            await _respond_to(line)
         except Exception as e:
             logger.exception("Unhandled error processing command")
-            sys.stdout.write(json.dumps({"error": f"internal error: {e}"}) + "\n")
-            sys.stdout.flush()
+            _emit({"error": f"internal error: {e}"})
 
 
 def main():
