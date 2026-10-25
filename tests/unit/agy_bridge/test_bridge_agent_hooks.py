@@ -169,3 +169,11 @@ def test_system_prompt_lookup(attrs, expected):
     agent = make(FakeAgent(**attrs))
 
     assert agent.get_system_prompt() == expected
+
+
+def test_an_unresolved_agent_has_an_empty_system_prompt(monkeypatch):
+    agent = make(FakeAgent(_system_prompt="never used"))
+    monkeypatch.setattr(agent, "_resolve", lambda: None)
+    agent._agent = None
+
+    assert agent.get_system_prompt() == ""
