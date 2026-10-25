@@ -58,6 +58,8 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- Sonar test smells cleared: composite assertions split (S9073), `pytest.raises` blocks hold a single call (S5778) and a
+  lambda patch became `AsyncMock(return_value=...)` (S9081). No behaviour change.
 - `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503
   (Service Unavailable)`) instead of an exception-group traceback, and still exits 1.
 - `make smoke-deploy` asks `crypto_oracle` for a forecast from supplied figures with tools ruled out, instead of an
