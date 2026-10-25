@@ -98,6 +98,9 @@ class Settings(BaseSettings):
 
     # Pipeline Configuration
     output_dir: Path = Path("./generated-app")
+    # Directories the MCP tool seed_project_context may read, separated by os.pathsep (":" on Linux/macOS). Empty means
+    # only output_dir. scripts/seed_projects.py is not restricted: it seeds clones it made itself.
+    seed_roots: str = ""
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     max_concurrent_llm_calls: int = 5
     # Per-agent-run limits (see core/limits.py). Timeouts are not retried; 429/5xx/connection errors are.

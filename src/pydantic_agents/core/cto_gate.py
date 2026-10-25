@@ -51,7 +51,9 @@ def read_marker(filepath: Path) -> bool | None:
         return True
     if content in ("false", "0", "no"):
         return False
-    logger.info("CTO approval marker has unrecognised content %r; still waiting.", content)
+    # The file is outside our control: show a short printable prefix so it cannot forge or flood log lines.
+    shown = "".join(ch if ch.isprintable() else "?" for ch in content[:40])
+    logger.info("CTO approval marker has unrecognised content %r; still waiting.", shown)
     return None
 
 
