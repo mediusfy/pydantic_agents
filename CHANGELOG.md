@@ -12,6 +12,9 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in `live_trace.show_status`, `Itinerary._consistent_plan` and
+  `mcp_server._chunk_text` by extracting helpers; no behaviour change. `show_status`'s output and the chunk edge cases are
+  now pinned by tests.
 - Cognitive complexity reduced (Sonar S3776) in the four largest functions, by splitting them into small helpers:
   `ImplementationStage.run` (73), `run_existing_code_pipeline` (52), `parse_code_blocks_to_files` (39) and
   `OrgitrationPipeline.execute` (37). Each now has tests that were written first and run against the old code

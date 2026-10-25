@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 import contextlib
 import glob
 import time
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -539,6 +540,19 @@ def _split_oversized(para: str, max_chars: int) -> tuple[list[str], str]:
     return pieces, para
 
 
+def _text_units(text: str, max_chars: int) -> Iterator[tuple[bool, str]]:
+    """The (standalone, text) units of a document. Pieces of an oversized paragraph stand alone; every other
+    paragraph can be packed together with its neighbours."""
+    for raw in text.split("\n\n"):
+        para = raw.strip()
+        if not para:
+            continue
+        pieces, para = _split_oversized(para, max_chars)
+        for piece in pieces:
+            yield True, piece
+        yield False, para
+
+
 def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
     """Split text into chunks of at most ``max_chars`` on paragraph boundaries.
 
@@ -547,21 +561,17 @@ def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
     """
     chunks: list[str] = []
     current = ""
-    for para in text.split("\n\n"):
-        para = para.strip()
-        if not para:
-            continue
-        pieces, para = _split_oversized(para, max_chars)
-        if pieces:  # an oversized paragraph closes the chunk in progress
+    for standalone, unit in _text_units(text, max_chars):
+        if standalone:  # an oversized paragraph's pieces close the chunk in progress
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.extend(pieces)
-        if current and len(current) + len(para) + 2 > max_chars:
+            chunks.append(unit)
+        elif current and len(current) + len(unit) + 2 > max_chars:
             chunks.append(current)
-            current = para
+            current = unit
         else:
-            current = f"{current}\n\n{para}" if current else para
+            current = f"{current}\n\n{unit}" if current else unit
     if current:
         chunks.append(current)
     return chunks
