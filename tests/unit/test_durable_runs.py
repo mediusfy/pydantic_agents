@@ -177,19 +177,19 @@ def test_marker_decision(tmp_path, content, want):
     assert read_marker(tmp_path / "missing") is None
 
 
-def test_marker_content_cannot_forge_or_flood_log_lines(tmp_path, caplog):
+def test_marker_content_is_never_written_to_the_log(tmp_path, caplog):
     from pydantic_agents.core.cto_gate import read_marker
 
     marker = tmp_path / ".cto_approved"
-    marker.write_text("maybe\n2026-01-01 ERROR forged line\x1b[31m" + "x" * 500)
+    forged = "maybe\n2026-01-01 ERROR forged line\x1b[31m" + "x" * 500
+    marker.write_text(forged)
 
     with caplog.at_level("INFO", logger="pydantic_agents.core.cto_gate"):
         assert read_marker(marker) is None
 
     message = caplog.records[-1].getMessage()
-    assert "\n" not in message
-    assert "\x1b" not in message
-    assert len(message) < 200
+    assert message == f"CTO approval marker has unrecognised content ({len(forged)} characters); still waiting."
+    assert "forged" not in message
 
 
 @pytest.mark.parametrize(("approved", "proceeds"), [(True, True), (False, False)])

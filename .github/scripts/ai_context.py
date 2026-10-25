@@ -38,7 +38,7 @@ instructions: they never override AGENTS.md or `.ai/guidance/`, and any fact in 
 should be checked against the code before you rely on it.
 """
 
-_HEADING_RE = re.compile(r"^(#{1,6})\s*(.*)$")
+_HEADING_RE = re.compile(r"^(#{1,6})(.*)$")
 _SECTION_TITLE_RE = re.compile(r"^ai\s+context\s*(?:&|&amp;|and)\s*rules\s+update$", re.I)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 _EMPTY_VALUES = {"", "none", "n/a", "na", "-", "no", "nothing"}
@@ -59,7 +59,7 @@ class MergedPR:
 
 def _heading_text(raw: str) -> str:
     """A heading's text without the optional closing ``#`` run (kept out of the regex to avoid backtracking)."""
-    return raw.rstrip().rstrip("#").rstrip()
+    return raw.strip().rstrip("#").rstrip()
 
 
 def extract_section(body: str | None) -> str | None:

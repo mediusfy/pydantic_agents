@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- CI installs with `uv sync --frozen --no-build --no-install-project` and runs tools with `uv run --no-sync` (Sonar
+  S8541): only prebuilt wheels are installed, so no dependency build script runs, and the project is used from `src`
+  (`PYTHONPATH=src` for the test and smoke jobs). The image's `useradd` shares a `RUN` with the project install (S7031).
+- `check_changelog.py` uses `\w` with `re.ASCII`, and the heading regex in `ai_context.py` no longer has overlapping
+  quantifiers (S6353, S8786); `cto_gate.read_marker` logs the length of an unrecognised marker, not its content (S5145).
 - Cognitive complexity reduced (Sonar S3776) in `live_trace.show_status`, `Itinerary._consistent_plan` and
   `mcp_server._chunk_text` by extracting helpers; no behaviour change. `show_status`'s output and the chunk edge cases are
   now pinned by tests.
@@ -96,7 +101,7 @@ fresh **Unreleased** section above it.
     (default `OUTPUT_DIR`) and skips symlinks that leave the project. `scripts/seed_projects.py` uses the new
     unrestricted `mcp_server.seed_project_files` for its own clones.
   - `live_trace` reads only `.jsonl` files inside the current directory; `check_changelog.py` refuses a base ref that
-    could be read as a git option; an unrecognised `.cto_approved` marker is logged as a short printable prefix.
+    could be read as a git option; an unrecognised `.cto_approved` marker is logged by length only (never its content).
   - The image runs as UID 10001 instead of root, `COPY` names `README.md` instead of a glob, and CI checks the image
     is unprivileged and its working directory is writable.
 - Sonar test smells cleared: composite assertions split (S9073), `pytest.raises` blocks hold a single call (S5778) and a

@@ -6,7 +6,9 @@ on:
     branches: [main]
 
 # Python jobs install from the committed uv.lock (`--frozen` never re-resolves), so CI runs the same versions as
-# `make` and a new upstream release cannot change a result. Third-party actions are pinned to a commit SHA.
+# `make` and a new upstream release cannot change a result. `--no-build` installs only prebuilt wheels, so no
+# dependency's build script runs, and `--no-install-project` leaves the project itself unbuilt: its code runs from
+# `src` (PYTHONPATH). Third-party actions are pinned to a commit SHA.
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -16,7 +18,8 @@ jobs:
         with:
           python-version: "3.12"
           enable-cache: true
-      - run: uv run --frozen --extra dev ruff check src tests scripts
+      - run: uv sync --frozen --no-build --no-install-project --extra dev
+      - run: uv run --frozen --no-sync ruff check src tests scripts
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -30,7 +33,8 @@ jobs:
           path: .mypy_cache
           key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: mypy-${{ runner.os }}-
-      - run: uv run --frozen --extra dev --extra vector --extra ingest mypy src
+      - run: uv sync --frozen --no-build --no-install-project --extra dev --extra vector --extra ingest
+      - run: uv run --frozen --no-sync mypy src
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -42,7 +46,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
-      - run: uv run --frozen --extra dev --extra vector pytest tests -q
+      - run: uv sync --frozen --no-build --no-install-project --extra dev --extra vector
+      - run: uv run --frozen --no-sync pytest tests -q
+        env:
+          PYTHONPATH: src
   smoke:
     runs-on: ubuntu-latest
     steps:
@@ -52,7 +59,10 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       # Base install only (no extras), so an import of an optional extra at module level fails this job.
-      - run: uv run --frozen python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
+      - run: uv sync --frozen --no-build --no-install-project
+      - run: uv run --frozen --no-sync python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
+        env:
+          PYTHONPATH: src
   lock:
     runs-on: ubuntu-latest
     timeout-minutes: 10
