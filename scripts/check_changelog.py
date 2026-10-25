@@ -30,7 +30,7 @@ def has_new_entry(base_text: str, head_text: str) -> bool:
 
 
 # A branch, tag or sha as git writes them: no leading "-" (it would be read as an option) and no whitespace.
-_SAFE_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./@^~+-]*")
+_SAFE_REF = re.compile(r"\w[\w./@^~+-]*", re.ASCII)
 
 
 def _base_changelog(base_ref: str) -> str:

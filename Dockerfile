@@ -44,12 +44,12 @@ RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requireme
 # (its build backend) is in the lock too, hence --no-build-isolation.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --no-cache-dir --no-deps --no-build-isolation .
-
 # Run unprivileged. The UID is numeric so Kubernetes can verify runAsNonRoot; the home directory is there for tools
 # that expect one (git, npm), and the working directory is writable because agents write relative paths under it
 # (generated-app/, telemetry.jsonl, session_trace.jsonl). Everything else is read-only to this user.
-RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/agent agent \
+# One RUN: install the project, then create the user that will run it.
+RUN pip install --no-cache-dir --no-deps --no-build-isolation . \
+    && useradd --system --uid 10001 --user-group --create-home --home-dir /home/agent agent \
     && chown agent:agent /opt/pydantic-agents
 USER 10001:10001
 
