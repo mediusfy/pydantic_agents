@@ -19,7 +19,7 @@ jobs:
           python-version: "3.12"
           enable-cache: true
       - run: uv sync --frozen --no-build --no-install-project --extra dev
-      - run: uv run --frozen --no-sync ruff check src tests scripts
+      - run: uv run --frozen --no-build --no-sync ruff check src tests scripts
   typecheck:
     runs-on: ubuntu-latest
     steps:
@@ -34,7 +34,7 @@ jobs:
           key: mypy-${{ runner.os }}-${{ hashFiles('pyproject.toml', 'uv.lock') }}
           restore-keys: mypy-${{ runner.os }}-
       - run: uv sync --frozen --no-build --no-install-project --extra dev --extra vector --extra ingest
-      - run: uv run --frozen --no-sync mypy src
+      - run: uv run --frozen --no-build --no-sync mypy src
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -47,7 +47,7 @@ jobs:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
       - run: uv sync --frozen --no-build --no-install-project --extra dev --extra vector
-      - run: uv run --frozen --no-sync pytest tests -q
+      - run: uv run --frozen --no-build --no-sync pytest tests -q
         env:
           PYTHONPATH: src
   smoke:
@@ -60,7 +60,7 @@ jobs:
           enable-cache: true
       # Base install only (no extras), so an import of an optional extra at module level fails this job.
       - run: uv sync --frozen --no-build --no-install-project
-      - run: uv run --frozen --no-sync python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
+      - run: uv run --frozen --no-build --no-sync python -c "import asyncio; from pydantic_agents.mcp_server import mcp; print(len(asyncio.run(mcp.list_tools())), 'tools')"
         env:
           PYTHONPATH: src
   lock:
