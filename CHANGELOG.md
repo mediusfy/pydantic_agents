@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- **CI:** every Python job installs from the committed `uv.lock` with `uv run --frozen` (via `astral-sh/setup-uv`)
+  instead of an unpinned `pip install`, so CI runs the same versions as `make` and a new upstream release cannot change
+  a result. The lint job now checks `scripts` as the Makefile does, and uses the locked ruff instead of the latest one.
+  Third-party actions (`docker/*`, `astral-sh/setup-uv`) are pinned to a commit SHA (Sonar S7637, S8541, S8544).
 - Docs brought in line with the code: README and `.ai/guidance/architecture.md` describe the real model
   defaults, run limits, `AGENT_TRANSPORT_ATTEMPTS`, durable pipeline runs, `resume_pipeline_run`, the CTO gate
   and `approve_cto_gate`; the "known improvement areas" list marks the fixed items; the settings docstring and
