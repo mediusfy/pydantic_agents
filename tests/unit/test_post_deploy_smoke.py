@@ -1,5 +1,7 @@
 import json
+from contextlib import asynccontextmanager
 
+import httpx
 import pytest
 
 from pydantic_agents.core.models.analysis import Forecast
@@ -8,7 +10,9 @@ from scripts.post_deploy_smoke import (
     check_forecast,
     check_review,
     check_security,
+    describe_error,
     find_tool,
+    main,
     run_checks,
 )
 
@@ -157,3 +161,46 @@ async def test_an_empty_tool_result_is_reported_as_such():
             failures = dict(await run_checks(await _tool_names(session), _caller(session), CHECKS[:1]))
 
     assert "no text content" in failures["run_review"]
+
+
+def _status_error(code: int, reason: str) -> httpx.HTTPStatusError:
+    request = httpx.Request("POST", "https://gateway.example/mcp")
+    return httpx.HTTPStatusError(
+        "boom",
+        request=request,
+        response=httpx.Response(code, request=request, extensions={"reason_phrase": reason.encode()}),
+    )
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (_status_error(503, "Service Unavailable"), "the endpoint answered HTTP 503 (Service Unavailable)"),
+        (
+            ExceptionGroup("outer", [ExceptionGroup("inner", [_status_error(502, "Bad Gateway")])]),
+            "the endpoint answered HTTP 502 (Bad Gateway)",
+        ),
+        (ConnectionError("refused"), "ConnectionError: refused"),
+        (ExceptionGroup("outer", [ValueError("x" * 400)]), "ValueError: " + "x" * 300),
+    ],
+    ids=["status", "nested-group", "plain", "long-message-truncated"],
+)
+def test_describe_error_gives_one_line_without_the_group_noise(exc, expected):
+    assert describe_error(exc) == expected
+
+
+async def test_main_reports_an_unreachable_endpoint_in_one_line(monkeypatch, capsys):
+    @asynccontextmanager
+    async def refuse(*args, **kwargs):
+        raise ExceptionGroup("unhandled errors in a TaskGroup", [_status_error(503, "Service Unavailable")])
+        yield
+
+    monkeypatch.setattr("mcp.client.streamable_http.streamablehttp_client", refuse)
+    monkeypatch.setenv("MCP_URL", "https://gateway.example/mcp")
+
+    assert await main() == 1
+    err = capsys.readouterr().err
+    assert (
+        err.strip()
+        == "FAIL could not use https://gateway.example/mcp: the endpoint answered HTTP 503 (Service Unavailable)"
+    )

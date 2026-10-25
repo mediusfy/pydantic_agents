@@ -50,6 +50,8 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503
+  (Service Unavailable)`) instead of an exception-group traceback, and still exits 1.
 - `make smoke-deploy` asks `crypto_oracle` for a forecast from supplied figures with tools ruled out, instead of an
   open-ended one. The open-ended request let the agent research freely and hit the pod key's tokens-per-minute limit
   (HTTP 429), so the check failed for a reason unrelated to the deploy.
