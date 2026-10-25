@@ -64,6 +64,8 @@ def test_extracts_section_until_next_heading_and_drops_comments():
         "## AI Context & Rules Update",
         "### ai context and rules update",
         "#### AI Context &amp; Rules Update",
+        "## AI Context & Rules Update ##",  # closing hashes
+        "##   AI Context & Rules Update   ###   ",  # closing hashes and stray spaces
     ],
 )
 def test_heading_variants(heading):

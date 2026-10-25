@@ -53,7 +53,7 @@ class CodeValidator:
         vue_files = []
         for art in artifacts:
             for path, content in art.files.items():
-                if path.endswith(".vue") or path.endswith(".tsx"):
+                if path.endswith((".vue", ".tsx")):
                     vue_files.append((path, content))
 
         if not vue_files:

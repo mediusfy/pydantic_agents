@@ -55,13 +55,13 @@ def read_marker(filepath: Path) -> bool | None:
     return None
 
 
-async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, timeout: float = 3600.0) -> bool:
+async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, timeout_seconds: float = 3600.0) -> bool:
     """Wait for a decision in the `.cto_approved` marker file.
 
     The file can be written by `approve_cto_gate` (MCP), by `touch .cto_approved`, or by a UI. Returns True on
     approval, False on an explicit rejection or on timeout.
     """
-    deadline = asyncio.get_event_loop().time() + timeout
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
     while asyncio.get_event_loop().time() < deadline:
         decision = read_marker(filepath)
         if decision is True:
@@ -71,11 +71,11 @@ async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, t
             logger.warning("CTO rejected the run via the marker file.")
             return False
         await asyncio.sleep(poll_interval)
-    logger.warning("CTO approval timed out after %.0fs.", timeout)
+    logger.warning("CTO approval timed out after %.0fs.", timeout_seconds)
     return False
 
 
-async def apply(state: PipelineState, project: str = "default", timeout: float = 3600.0) -> bool:
+async def apply(state: PipelineState, project: str = "default", timeout_seconds: float = 3600.0) -> bool:
     """CTO Approval Gate.
 
     Returns True if implementation should proceed, False if blocked.
@@ -112,9 +112,9 @@ async def apply(state: PipelineState, project: str = "default", timeout: float =
             "  2. Create file: %s\n"
             "  3. Wait for CTO re-evaluation (polling for %ds)",
             filepath,
-            timeout,
+            timeout_seconds,
         )
-        approved = await _poll_for_file_approval(filepath, timeout=timeout)
+        approved = await _poll_for_file_approval(filepath, timeout_seconds=timeout_seconds)
         if approved:
             return True
 

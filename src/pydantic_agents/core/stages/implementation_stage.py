@@ -290,7 +290,7 @@ class ImplementationStage(StageRunner):
                     and a.files
                 ):
                     for fname, fcontent in a.files.items():
-                        if fname.endswith(".go") or fname.endswith(".vue") or fname.endswith(".tsx"):
+                        if fname.endswith((".go", ".vue", ".tsx")):
                             target_code_file = fname
                             target_source_code = fcontent
                             break

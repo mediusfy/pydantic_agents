@@ -49,8 +49,6 @@ class Telemetry:
             result = await func(*args, **kwargs)
             success = True
             return result
-        except Exception:
-            raise
         finally:
             duration = time.time() - start
             try:

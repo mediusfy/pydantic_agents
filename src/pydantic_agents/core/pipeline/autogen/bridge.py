@@ -73,7 +73,7 @@ async def run_autogen_pipeline(
 
             state.stage = label
         except Exception as e:
-            logger.error("AutoGen pipeline failed: %s", e)
+            logger.exception("AutoGen pipeline failed: %s", e)
             state.errors.append(f"autogen: {e}")
             state.failure_report = FailureReport(source="autogen", error_type="runtime_error", trace=str(e))
 
