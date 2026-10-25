@@ -92,20 +92,13 @@ class Itinerary(BaseModel):
     )
     sources: list[Source] = Field(default_factory=list, description="Where weather, prices and hours came from")
 
-    @model_validator(mode="after")
-    def _consistent_plan(self) -> "Itinerary":
-        if not self.days:
-            if not self.open_questions:
-                raise ValueError("an itinerary needs days, or open_questions saying what is missing")
-            return self
-
-        if not self.sources:
-            raise ValueError("an itinerary with days must cite at least one source")
+    def _check_trip_dates(self) -> None:
         for field in ("start_date", "end_date"):
             _check_iso_date(getattr(self, field), field)
         if self.start_date > self.end_date:
             raise ValueError(f"start_date {self.start_date} is after end_date {self.end_date}")
 
+    def _check_day_sequence(self) -> None:
         numbers = [d.day for d in self.days]
         if numbers != list(range(1, len(self.days) + 1)):
             raise ValueError(f"days must be numbered 1..{len(self.days)} in order, got {numbers}")
@@ -115,6 +108,7 @@ class Itinerary(BaseModel):
         if dates[0] < self.start_date or dates[-1] > self.end_date:
             raise ValueError(f"day dates {dates[0]}..{dates[-1]} fall outside {self.start_date}..{self.end_date}")
 
+    def _derive_totals(self) -> None:
         costs = [i.cost for d in self.days for i in d.items if i.cost is not None]
         self.estimated_total = round(sum(costs), 2) if costs else None
         if self.estimated_total is not None and self.budget is not None:
@@ -122,6 +116,19 @@ class Itinerary(BaseModel):
             self.within_budget = self.estimated_total <= round(self.budget, 2)
         else:
             self.within_budget = None
+
+    @model_validator(mode="after")
+    def _consistent_plan(self) -> "Itinerary":
+        if not self.days:
+            if not self.open_questions:
+                raise ValueError("an itinerary needs days, or open_questions saying what is missing")
+            return self
+
+        if not self.sources:
+            raise ValueError("an itinerary with days must cite at least one source")
+        self._check_trip_dates()
+        self._check_day_sequence()
+        self._derive_totals()
         return self
 
 
