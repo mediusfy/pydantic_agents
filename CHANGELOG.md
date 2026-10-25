@@ -46,6 +46,9 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `make smoke-deploy` asks `crypto_oracle` for a forecast from supplied figures with tools ruled out, instead of an
+  open-ended one. The open-ended request let the agent research freely and hit the pod key's tokens-per-minute limit
+  (HTTP 429), so the check failed for a reason unrelated to the deploy.
 - `execute_test_suite` started `go mod init` and `go mod tidy` without waiting for them, so `go test` could run
   before the module existed. It now reuses the same awaited, time-limited setup as `run_go_build` / `run_go_vet`
   (`init_and_tidy`, now in `tools/go_common.py`, which also reaps a process it kills on timeout); a slow setup or a missing `go` toolchain returns a failure message instead of hanging or raising.
