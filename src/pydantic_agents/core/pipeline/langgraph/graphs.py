@@ -58,6 +58,33 @@ def build_implementation_subgraph(
     return workflow.compile(checkpointer=checkpointer)
 
 
+_STAGE_ORDER = ("ba", "advisory", "implementation", "quality_gate")
+
+
+def _add_stage_nodes(
+    workflow: Any,
+    config: PipelineConfig,
+    provider: AgentProviderPort,
+    stages: list[str],
+    is_single_step: bool,
+    checkpointer: MemorySaver | None,
+) -> None:
+    """Add the stage nodes to run: all of them for a full run, only the blueprint's for a single step."""
+
+    def wanted(stage: str) -> bool:
+        return not is_single_step or stage in stages
+
+    if wanted("ba"):
+        workflow.add_node("ba", lambda _s: ba_node(_s, config, provider))
+    if wanted("advisory"):
+        workflow.add_node("advisory", lambda _s: advisory_node(_s, config, provider))
+    if wanted("implementation"):
+        workflow.add_node("implementation", build_implementation_subgraph(config, provider, checkpointer))
+    if wanted("quality_gate"):
+        workflow.add_node("quality_gate", lambda _s: quality_gate_node(_s, config, provider))
+    workflow.add_node("merge", lambda _s: merge_node(_s, config))
+
+
 def build_full_graph(
     config: PipelineConfig,
     provider: AgentProviderPort,
@@ -69,28 +96,10 @@ def build_full_graph(
     use_checkpoint = checkpointer or (MemorySaver() if config.resume else None)
 
     workflow = StateGraph(PipelineState)
-
-    if not is_single_step or "ba" in stages:
-        workflow.add_node("ba", lambda _s: ba_node(_s, config, provider))
-
-    if not is_single_step or "advisory" in stages:
-        workflow.add_node("advisory", lambda _s: advisory_node(_s, config, provider))
-
-    if not is_single_step or "implementation" in stages:
-        impl_subgraph = build_implementation_subgraph(config, provider, use_checkpoint)
-        workflow.add_node("implementation", impl_subgraph)
-
-    if not is_single_step or "quality_gate" in stages:
-        workflow.add_node("quality_gate", lambda _s: quality_gate_node(_s, config, provider))
-
-    workflow.add_node("merge", lambda _s: merge_node(_s, config))
+    _add_stage_nodes(workflow, config, provider, stages, is_single_step, use_checkpoint)
 
     if is_single_step:
-        target = "ba"
-        for s in ("ba", "advisory", "implementation", "quality_gate"):
-            if s in stages:
-                target = s
-                break
+        target = next((s for s in _STAGE_ORDER if s in stages), "ba")
         workflow.add_edge(START, target)
         workflow.add_edge(target, END)
         return workflow.compile(checkpointer=use_checkpoint)

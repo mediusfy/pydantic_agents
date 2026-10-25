@@ -44,6 +44,38 @@ def claude_memory_count() -> dict[str, int]:
     return counts
 
 
+def _entry_signature(entry: str) -> str:
+    return hashlib.sha256(entry.encode()).hexdigest()[:8]
+
+
+def _write_entry(filepath: Path, entry: str) -> bool:
+    """Write an activity entry unless its file already exists; True when a file was written."""
+    if filepath.exists():
+        return False
+    filepath.write_text(f"# Orgitration Activity\n\n{entry}\n")
+    return True
+
+
+def _push_entries_to_agent(agent: str, entries: list[str]) -> int:
+    """Write the entries into one Claude Code agent's memory directory; returns how many were new."""
+    mem_dir = _claude_agent_memory_dir(agent)
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    return sum(
+        _write_entry(mem_dir / f"orchestration_{i:04d}_{_entry_signature(entry)}.md", entry)
+        for i, entry in enumerate(entries)
+    )
+
+
+def _push_entries_to_antigravity(entries: list[str]) -> int:
+    """Write the entries into Antigravity's implicit memory; skipped when Antigravity is not installed."""
+    if not ANTIGRAVITY_IMPLICIT_DIR.exists():
+        return 0
+    return sum(
+        _write_entry(ANTIGRAVITY_IMPLICIT_DIR / f"orchestration_activity_{_entry_signature(entry)}.md", entry)
+        for entry in entries
+    )
+
+
 def sync_memory_to_claude(max_entries: int = 50) -> int:
     """Push recent pgvector activity entries to Claude Code agent-memory dirs.
 
@@ -65,39 +97,42 @@ def sync_memory_to_claude(max_entries: int = 50) -> int:
 
     entries = [doc for doc in results if doc.strip()]
 
-    pushed = 0
-    for agent in agents:
-        mem_dir = _claude_agent_memory_dir(agent)
-        mem_dir.mkdir(parents=True, exist_ok=True)
-
-        for i, entry in enumerate(entries):
-            sig = hashlib.sha256(entry.encode()).hexdigest()[:8]
-            filepath = mem_dir / f"orchestration_{i:04d}_{sig}.md"
-            if filepath.exists():
-                continue
-            filepath.write_text(f"# Orgitration Activity\n\n{entry}\n")
-            pushed += 1
-
+    pushed = sum(_push_entries_to_agent(agent, entries) for agent in agents)
     if pushed:
         logger.info("Pushed %d memory entries to %d Claude Code agent(s)", pushed, len(agents))
     else:
         logger.info("No new memory entries to push to Claude Code agents")
 
-    # Also write to Antigravity implicit memory
-    if ANTIGRAVITY_IMPLICIT_DIR.exists():
-        ANTIGRAVITY_IMPLICIT_DIR.mkdir(parents=True, exist_ok=True)
-    ag_pushed = 0
-    for _, entry in enumerate(entries):
-        sig = hashlib.sha256(entry.encode()).hexdigest()[:8]
-        filepath = ANTIGRAVITY_IMPLICIT_DIR / f"orchestration_activity_{sig}.md"
-        if filepath.exists():
-            continue
-        filepath.write_text(f"# Orgitration Activity\n\n{entry}\n")
-        ag_pushed += 1
+    ag_pushed = _push_entries_to_antigravity(entries)
     if ag_pushed:
         logger.info("Pushed %d entries to Antigravity implicit memory", ag_pushed)
 
     return pushed
+
+
+def _memory_files(mem_dir: Path) -> list[Path]:
+    """The text memory files (.md, .txt) in an agent's memory directory, sorted; none if it does not exist."""
+    if not mem_dir.exists():
+        return []
+    return [f for f in sorted(mem_dir.iterdir()) if f.is_file() and f.suffix in (".md", ".txt")]
+
+
+def _add_memory_file(agent: str, fpath: Path) -> bool:
+    """Add one memory file to pgvector; False when it is empty or the insert fails."""
+    content = fpath.read_text(encoding="utf-8", errors="replace").strip()
+    if not content:
+        return False
+    try:
+        vector_db.add_documents(
+            "activity_logs",
+            [content],
+            ids=[f"claude_{agent}_{fpath.stem}"],
+            metadatas=[{"source": "claude_code", "agent": agent, "file": fpath.name}],
+        )
+    except Exception as e:
+        logger.warning("Failed to add %s to pgvector: %s", fpath, e)
+        return False
+    return True
 
 
 def sync_claude_to_pgvector(_max_entries: int = 50) -> int:
@@ -105,31 +140,11 @@ def sync_claude_to_pgvector(_max_entries: int = 50) -> int:
 
     Returns number of documents added.
     """
-    agents = _get_claude_agents()
-    if not agents:
-        return 0
-
-    added = 0
-    for agent in agents:
-        mem_dir = _claude_agent_memory_dir(agent)
-        if not mem_dir.exists():
-            continue
-        for fpath in sorted(mem_dir.iterdir()):
-            if not fpath.is_file() or fpath.suffix not in (".md", ".txt"):
-                continue
-            content = fpath.read_text(encoding="utf-8", errors="replace").strip()
-            if not content:
-                continue
-            try:
-                vector_db.add_documents(
-                    "activity_logs",
-                    [content],
-                    ids=[f"claude_{agent}_{fpath.stem}"],
-                    metadatas=[{"source": "claude_code", "agent": agent, "file": fpath.name}],
-                )
-                added += 1
-            except Exception as e:
-                logger.warning("Failed to add %s to pgvector: %s", fpath, e)
+    added = sum(
+        _add_memory_file(agent, fpath)
+        for agent in _get_claude_agents()
+        for fpath in _memory_files(_claude_agent_memory_dir(agent))
+    )
     if added:
         logger.info("Pulled %d entries from Claude Code agents into pgvector", added)
     return added

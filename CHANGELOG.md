@@ -15,6 +15,15 @@ fresh **Unreleased** section above it.
 - Cognitive complexity reduced (Sonar S3776) in `WorkspaceContext.get_repo_context` and `get_markdown_context`, the
   Go and Vue/TSX validators, the AutoGen bridge's `_apply_group_result` and `MergeStage.run`, by extracting helpers. New
   tests (written first and run against the old code) pin each one's output and messages.
+- Cognitive complexity reduced (Sonar S3776) in ten functions by extracting helpers, with no behaviour change: BridgeAgent
+  `get_system_prompt` and `_wrap_tools`, `run_server_loop`, `retrieve_context`, `cto_gate.apply`,
+  `sync_memory_to_claude`, `sync_claude_to_pgvector`, `build_full_graph`, `format_result_summary` and `format_artifacts`.
+  New tests pin the behaviour of the ones that had none (tool hooks, system-prompt lookup, the server loop, the memory
+  bridge, the summary format, the graph's nodes); they also pass against the pre-refactor code.
+- **CI:** every Python job installs from the committed `uv.lock` with `uv run --frozen` (via `astral-sh/setup-uv`)
+  instead of an unpinned `pip install`, so CI runs the same versions as `make` and a new upstream release cannot change
+  a result. The lint job now checks `scripts` as the Makefile does, and uses the locked ruff instead of the latest one.
+  Third-party actions (`docker/*`, `astral-sh/setup-uv`) are pinned to a commit SHA (Sonar S7637, S8541, S8544).
 - **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
   `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
   are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.
@@ -59,6 +68,7 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Added
+- `SEED_ROOTS` setting (directories the `seed_project_context` MCP tool may read; empty means `OUTPUT_DIR`).
 - Promptfoo cases for `holiday_planner` (a complete request gives an `Itinerary` inside the dates with a derived budget
   check; a vague one gets questions, not a plan) and `accountant` (a `CostBreakdown` whose totals are summed from lines
   in one currency, with the supplied rate listed; a vague request gets questions). Figures are supplied in the request
@@ -72,6 +82,15 @@ fresh **Unreleased** section above it.
 
 ### Fixed
 - `MergeStage` checked that a file stays inside the target project with a string-prefix test, so a path such as `../proj-evil/x` was accepted for a project at `.../proj`. It now uses `Path.is_relative_to`.
+- `sync_memory_to_claude` no longer raises `FileNotFoundError` after pushing the Claude entries when Antigravity's implicit-memory directory does not exist; that step is skipped.
+- **Security (Sonar findings):**
+  - The MCP tool `seed_project_context` indexed any directory a caller named. It now only reads inside `SEED_ROOTS`
+    (default `OUTPUT_DIR`) and skips symlinks that leave the project. `scripts/seed_projects.py` uses the new
+    unrestricted `mcp_server.seed_project_files` for its own clones.
+  - `live_trace` reads only `.jsonl` files inside the current directory; `check_changelog.py` refuses a base ref that
+    could be read as a git option; an unrecognised `.cto_approved` marker is logged as a short printable prefix.
+  - The image runs as UID 10001 instead of root, `COPY` names `README.md` instead of a glob, and CI checks the image
+    is unprivileged and its working directory is writable.
 - Sonar test smells cleared: composite assertions split (S9073), `pytest.raises` blocks hold a single call (S5778) and a
   lambda patch became `AsyncMock(return_value=...)` (S9081). No behaviour change.
 - `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503

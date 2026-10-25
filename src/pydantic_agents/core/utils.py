@@ -62,6 +62,24 @@ def serialize_output(result: Any) -> str:
     return to_json(output, fallback=str).decode()
 
 
+def _artifact_header(art: Any) -> str:
+    story_id = art.metadata.get("user_story_id", "N/A")
+    return f"=== Agent: {art.agent_name} | Story: {story_id} ==="
+
+
+def _append_artifact_files(parts: list[str], art: Any, total_len: int, max_chars: int) -> int:
+    """Append an artifact's files to ``parts`` until the character budget runs out; returns the new running length."""
+    for path, content in art.files.items():
+        snippet = f"--- {path} ---\n{content}"
+        if total_len + len(snippet) > max_chars:
+            snippet = snippet[: max_chars - total_len] + "\n... (truncated)"
+        parts.append(snippet)
+        total_len += len(snippet)
+        if total_len >= max_chars:
+            break
+    return total_len
+
+
 def format_artifacts(artifacts: list[Any], max_chars: int = 80_000, include_agent_header: bool = True) -> str:
     """Format a list of Artifacts into a single prompt-friendly string.
 
@@ -73,7 +91,7 @@ def format_artifacts(artifacts: list[Any], max_chars: int = 80_000, include_agen
     Returns:
         Formatted string suitable for downstream agent prompts.
     """
-    parts = []
+    parts: list[str] = []
     total_len = 0
     for art in artifacts:
         if isinstance(art, Exception):
@@ -83,23 +101,14 @@ def format_artifacts(artifacts: list[Any], max_chars: int = 80_000, include_agen
             continue
 
         if include_agent_header:
-            story_id = art.metadata.get("user_story_id", "N/A")
-            header = f"=== Agent: {art.agent_name} | Story: {story_id} ==="
+            header = _artifact_header(art)
             if total_len + len(header) > max_chars:
                 parts.append("... (truncated)")
                 break
             parts.append(header)
             total_len += len(header)
 
-        for path, content in art.files.items():
-            snippet = f"--- {path} ---\n{content}"
-            if total_len + len(snippet) > max_chars:
-                remaining = max_chars - total_len
-                snippet = snippet[:remaining] + "\n... (truncated)"
-            parts.append(snippet)
-            total_len += len(snippet)
-            if total_len >= max_chars:
-                break
+        total_len = _append_artifact_files(parts, art, total_len, max_chars)
         if total_len >= max_chars:
             parts.append("... (artifact output truncated, review continues on remaining items)")
             break

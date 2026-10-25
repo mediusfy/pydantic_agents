@@ -183,3 +183,43 @@ class TestLangGraphGraphBuilder:
         checkpointer = MemorySaver()
         graph = build_full_graph(config, mock_provider, checkpointer=checkpointer)
         assert graph is not None
+
+
+class TestBuildFullGraphNodes:
+    @staticmethod
+    def _nodes(config, provider):
+        from pydantic_agents.core.pipeline.langgraph.graphs import build_full_graph
+
+        return set(build_full_graph(config, provider).get_graph().nodes) - {"__start__", "__end__"}
+
+    def test_a_full_run_has_every_stage_node_and_merge(self, config, mock_provider):
+        assert self._nodes(config, mock_provider) == {"ba", "advisory", "implementation", "quality_gate", "merge"}
+
+    @pytest.mark.parametrize(
+        ("step", "stages", "expected"),
+        [
+            ("implementation", ["implementation"], {"implementation", "merge"}),
+            ("advisory", ["advisory", "implementation"], {"advisory", "implementation", "merge"}),
+            ("ba", ["ba"], {"ba", "merge"}),
+        ],
+    )
+    def test_a_single_step_run_has_only_the_blueprint_s_stages(
+        self, monkeypatch, config, mock_provider, step, stages, expected
+    ):
+        from pydantic_agents.core.pipeline.langgraph import graphs
+
+        monkeypatch.setattr(graphs, "BLUEPRINTS", {config.blueprint: {"stages": stages}})
+        config.step = step
+
+        assert self._nodes(config, mock_provider) == expected
+
+    def test_a_single_step_run_starts_at_the_first_stage_in_pipeline_order(self, monkeypatch, config, mock_provider):
+        from pydantic_agents.core.pipeline.langgraph import graphs
+
+        monkeypatch.setattr(graphs, "BLUEPRINTS", {config.blueprint: {"stages": ["implementation", "advisory"]}})
+        config.step = "advisory"
+
+        edges = {(e.source, e.target) for e in graphs.build_full_graph(config, mock_provider).get_graph().edges}
+
+        assert ("__start__", "advisory") in edges
+        assert ("advisory", "__end__") in edges

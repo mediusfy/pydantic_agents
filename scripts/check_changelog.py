@@ -4,6 +4,7 @@ Usage: ``check_changelog.py BASE_REF`` (e.g. ``origin/main``), run from the repo
 root with enough history to resolve ``BASE_REF``.
 """
 
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -28,7 +29,13 @@ def has_new_entry(base_text: str, head_text: str) -> bool:
     return bool(unreleased_bullets(head_text) - unreleased_bullets(base_text))
 
 
+# A branch, tag or sha as git writes them: no leading "-" (it would be read as an option) and no whitespace.
+_SAFE_REF = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_./@^~+-]*")
+
+
 def _base_changelog(base_ref: str) -> str:
+    if not _SAFE_REF.fullmatch(base_ref):
+        raise ValueError(f"not a usable git ref: {base_ref!r}")
     result = subprocess.run(
         ["git", "show", f"{base_ref}:{CHANGELOG}"],
         capture_output=True,
@@ -44,7 +51,12 @@ def main(argv: list[str]) -> int:
         return 2
     path = Path(CHANGELOG)
     head_text = path.read_text(encoding="utf-8") if path.exists() else ""
-    if has_new_entry(_base_changelog(argv[1]), head_text):
+    try:
+        base_text = _base_changelog(argv[1])
+    except ValueError as e:
+        print(f"::error::{e}", file=sys.stderr)
+        return 2
+    if has_new_entry(base_text, head_text):
         print("changelog: new entry found under [Unreleased]")
         return 0
     print(

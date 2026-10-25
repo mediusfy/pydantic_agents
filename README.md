@@ -270,3 +270,5 @@ DATABASE_URL=postgresql://<user>:<pw>@127.0.0.1:15432/agents python scripts/seed
 
 Chunks are upserted, then only ones whose source docs no longer exist are deleted; any error aborts before deleting. `chatbot` is excluded by
 default (`--exclude`). Use `query_context(..., project="<repo>")` to scope a search to one repo.
+
+The MCP tool `seed_project_context` only reads inside `SEED_ROOTS` (paths separated by `:`; default the output directory) and skips symlinks that leave the project. The script is not restricted: it seeds clones it made itself.
