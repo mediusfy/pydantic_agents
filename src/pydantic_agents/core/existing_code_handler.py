@@ -161,6 +161,216 @@ def _build_remediation_prompt(
     )
 
 
+# Returned by _run_engineer when the stage raised (the error is already recorded on the result).
+_STAGE_FAILED: Any = object()
+
+
+def _engineer_prompt(attempt: int, change_description: str, codebase_path: str, previous_errors: list[str]) -> str:
+    if attempt > 0:
+        return _build_remediation_prompt(change_description, codebase_path, previous_errors, attempt)
+    return (
+        f"Modify the codebase at {codebase_path} to implement this change:\n\n"
+        f"{change_description}\n\n"
+        f"Read the relevant existing files first using the read_file tool. "
+        f"Understand the patterns before modifying. Return ONLY the changed files."
+    )
+
+
+async def _run_engineer(
+    result: ExistingCodeResult,
+    recorder: StageEventRecorderPort,
+    attempt: int,
+    change_description: str,
+    codebase_path: str,
+) -> tuple[Any, float]:
+    """Run the service engineer: (its artifact or _STAGE_FAILED, the start time)."""
+    prompt = _engineer_prompt(attempt, change_description, codebase_path, result.errors)
+    start = time.time()
+    try:
+        eng_result, _ = await _run_stage(
+            f"service_engineer.attempt_{attempt}",
+            "service_engineer",
+            prompt,
+            {"codebase_path": codebase_path or "auto-detect", "attempt": attempt},
+        )
+    except Exception as e:
+        msg = f"Service Engineer failed on attempt {attempt}: {e}"
+        logger.error(msg)
+        result.errors.append(msg)
+        _record(recorder, result, "service_engineer", attempt, "error", start, str(e))
+        return _STAGE_FAILED, start
+    return eng_result.output, start
+
+
+async def _run_test_engineer(result: ExistingCodeResult, recorder: StageEventRecorderPort, attempt: int) -> list[str]:
+    """Generate or update tests for the changed files; returns the failure messages (empty on success)."""
+    logger.info("Attempt %d/%d — Test Engineer...", attempt + 1, MAX_RETRIES + 1)
+    start = time.time()
+    try:
+        test_preview = format_artifacts(result.artifacts, max_chars=15_000, include_agent_header=False)
+        test_prompt = (
+            f"Using the generate_go_table_driven_tests tool, write tests for "
+            f"the changed functions in these files:\n\n{test_preview}\n\n"
+            f"Read each changed source file to identify the function signatures, "
+            f"then generate table-driven tests."
+        )
+        test_result, _ = await _run_stage(
+            f"test_engineer.attempt_{attempt}",
+            "test_eng",
+            test_prompt,
+            {"changed_files_count": len(result.changed_files)},
+        )
+        if hasattr(test_result.output, "files"):
+            result.artifacts.append(test_result.output)
+            result.test_files = list(test_result.output.files.keys())
+            logger.info("Test files: %s", result.test_files)
+        _record(recorder, result, "test_engineer", attempt, "ok", start)
+    except Exception as e:
+        msg = f"Test Engineer failed on attempt {attempt}: {e}"
+        logger.warning(msg)
+        result.errors.append(msg)
+        _record(recorder, result, "test_engineer", attempt, "error", start, str(e))
+        return [msg]
+    return []
+
+
+def _apply_quality_gate_outcome(
+    result: ExistingCodeResult, recorder: StageEventRecorderPort, attempt: int, outcome: Any
+) -> tuple[bool, list[str]]:
+    """Fold the quality gate's outcome (a value with its duration, or the exception it raised) into the result."""
+    if isinstance(outcome, BaseException):
+        recorder.record(result.run_id, "quality_gate", attempt, "error", 0, str(outcome))
+        return False, [f"Quality Gate exception: {outcome}"]
+    (passed, score, feedback), duration_ms = outcome
+    result.quality_gate_score = score
+    result.quality_gate_feedback = feedback
+    recorder.record(
+        result.run_id, "quality_gate", attempt, "passed" if passed else "failed", duration_ms, "; ".join(feedback)
+    )
+    return passed, feedback
+
+
+def _apply_review_outcome(
+    result: ExistingCodeResult, recorder: StageEventRecorderPort, attempt: int, outcome: Any
+) -> tuple[bool, list[str]]:
+    """Fold the code review's outcome into the result; its feedback is kept as errors even when it approves."""
+    if isinstance(outcome, BaseException):
+        recorder.record(result.run_id, "review", attempt, "error", 0, str(outcome))
+        return False, [f"Code Review exception: {outcome}"]
+    (approved, risk, feedback), duration_ms = outcome
+    result.review_risk = risk
+    recorder.record(
+        result.run_id, "review", attempt, "approved" if approved else "rejected", duration_ms, f"risk={risk}"
+    )
+    result.errors.extend(feedback)
+    return approved, feedback
+
+
+async def _run_gates(
+    result: ExistingCodeResult,
+    recorder: StageEventRecorderPort,
+    attempt: int,
+    run_quality_gate: bool,
+    run_review: bool,
+) -> tuple[bool, bool, list[str], list[str]]:
+    """Run the quality gate and the code review concurrently (a disabled one counts as passed).
+
+    Returns (quality gate passed, review approved, quality gate feedback, review feedback).
+    """
+    with logfire.span(
+        "existing_code.parallel_gates",
+        attempt=attempt,
+        artifact_count=len(result.artifacts),
+        _level="info",
+    ):
+        quality = (
+            _timed(_run_quality_gate(result.artifacts))
+            if run_quality_gate
+            else _timed(asyncio.sleep(0, result=(True, 0, [])))
+        )
+        review = (
+            _timed(_run_code_review(result.artifacts))
+            if run_review
+            else _timed(asyncio.sleep(0, result=(True, "low", [])))
+        )
+        quality_outcome, review_outcome = await asyncio.gather(quality, review, return_exceptions=True)
+
+        qg_passed, qg_feedback = _apply_quality_gate_outcome(result, recorder, attempt, quality_outcome)
+        cv_passed, cv_feedback = _apply_review_outcome(result, recorder, attempt, review_outcome)
+    return qg_passed, cv_passed, qg_feedback, cv_feedback
+
+
+@dataclass(frozen=True)
+class _PipelineOptions:
+    change_description: str
+    codebase_path: str
+    run_tests: bool
+    run_quality_gate: bool
+    run_review: bool
+
+
+async def _run_attempt(
+    result: ExistingCodeResult, recorder: StageEventRecorderPort, attempt: int, options: _PipelineOptions
+) -> bool:
+    """One pass of engineer → tests → gates. True when the pipeline is finished and passed; False to try again."""
+    # ── Stage 1: Service Engineer ──────────────────────────────────
+    logger.info("Attempt %d/%d — Service Engineer...", attempt + 1, MAX_RETRIES + 1)
+    eng_artifact, eng_start = await _run_engineer(
+        result, recorder, attempt, options.change_description, options.codebase_path
+    )
+    if eng_artifact is _STAGE_FAILED:
+        return False
+
+    result.artifacts = [eng_artifact]
+    result.changed_files = list(eng_artifact.files.keys())
+    logger.info("Changed files: %s", result.changed_files)
+    _record(recorder, result, "service_engineer", attempt, "ok", eng_start, f"{len(result.changed_files)} files")
+
+    if not result.changed_files:
+        logger.warning("Service Engineer returned no changed files.")
+        result.passed = True
+        _record(recorder, result, "pipeline", attempt, "passed", eng_start, "no changes")
+        return True
+
+    # ── Stage 2: Test Engineer (if enabled) ────────────────────────
+    test_failures = await _run_test_engineer(result, recorder, attempt) if options.run_tests else []
+
+    # ── Stage 3: Parallel Verification Gates ───────────────────────
+    if not options.run_quality_gate and not options.run_review:
+        result.passed = True
+        _record(recorder, result, "pipeline", attempt, "passed", eng_start, "gates disabled")
+        return True
+
+    logger.info(
+        "Attempt %d/%d — Running parallel gates (quality_gate + code_review)...",
+        attempt + 1,
+        MAX_RETRIES + 1,
+    )
+    qg_passed, cv_passed, qg_feedback, cv_feedback = await _run_gates(
+        result, recorder, attempt, options.run_quality_gate, options.run_review
+    )
+
+    # ── Remediation Decision ────────────────────────────────────────
+    logger.info("Gates: quality_gate=%s, review=%s, test_errors=%s", qg_passed, cv_passed, bool(test_failures))
+
+    if qg_passed and cv_passed and not test_failures:
+        result.passed = True
+        result.retries_used = attempt
+        logger.info("All gates passed on attempt %d.", attempt + 1)
+        _record(recorder, result, "pipeline", attempt, "passed", eng_start)
+        _sync_memory_after_pipeline()
+        return True
+
+    # Append gate errors to result errors for next attempt context
+    result.errors.extend(err for err in dict.fromkeys(qg_feedback + cv_feedback) if err not in result.errors)
+
+    if attempt < MAX_RETRIES:
+        logger.info("Gates failed — auto-remediation attempt %d/%d", attempt + 1, MAX_RETRIES)
+    else:
+        logger.warning("Max retries (%d) reached. Escalating to Lead Orchestrator.", MAX_RETRIES)
+    return False
+
+
 async def run_existing_code_pipeline(
     change_description: str,
     codebase_path: str,
@@ -190,6 +400,7 @@ async def run_existing_code_pipeline(
     result = ExistingCodeResult(run_id=str(uuid.uuid4()))
     project = os.path.basename(os.path.realpath(codebase_path)) if codebase_path else ""
     recorder = build_stage_event_recorder(project or "existing-code")
+    options = _PipelineOptions(change_description, codebase_path, run_tests, run_quality_gate, run_review)
 
     logger.info("=== Existing Code Pipeline (Autonomous Remediation Loop) ===")
     logger.info("Change: %s", change_description)
@@ -200,175 +411,8 @@ async def run_existing_code_pipeline(
         os.environ.pop("ORCHESTRATION_CODEBASE_ROOT", None)
 
     for attempt in range(MAX_RETRIES + 1):
-        # ── Stage 1: Service Engineer ──────────────────────────────────
-        logger.info("Attempt %d/%d — Service Engineer...", attempt + 1, MAX_RETRIES + 1)
-
-        if attempt == 0:
-            eng_prompt = (
-                f"Modify the codebase at {codebase_path} to implement this change:\n\n"
-                f"{change_description}\n\n"
-                f"Read the relevant existing files first using the read_file tool. "
-                f"Understand the patterns before modifying. Return ONLY the changed files."
-            )
-        else:
-            eng_prompt = _build_remediation_prompt(change_description, codebase_path, result.errors, attempt)
-
-        eng_start = time.time()
-        try:
-            eng_result, _ = await _run_stage(
-                f"service_engineer.attempt_{attempt}",
-                "service_engineer",
-                eng_prompt,
-                {"codebase_path": codebase_path or "auto-detect", "attempt": attempt},
-            )
-        except Exception as e:
-            msg = f"Service Engineer failed on attempt {attempt}: {e}"
-            logger.error(msg)
-            result.errors.append(msg)
-            _record(recorder, result, "service_engineer", attempt, "error", eng_start, str(e))
-            continue  # Try again if retries remain
-
-        eng_artifact = eng_result.output
-        result.artifacts = [eng_artifact]
-        result.changed_files = list(eng_artifact.files.keys())
-        logger.info("Changed files: %s", result.changed_files)
-
-        _record(recorder, result, "service_engineer", attempt, "ok", eng_start, f"{len(result.changed_files)} files")
-
-        if not result.changed_files:
-            logger.warning("Service Engineer returned no changed files.")
-            result.passed = True
-            _record(recorder, result, "pipeline", attempt, "passed", eng_start, "no changes")
+        if await _run_attempt(result, recorder, attempt, options):
             return result
-
-        # ── Stage 2: Test Engineer (if enabled) ────────────────────────
-        test_failures: list[str] = []
-        if run_tests:
-            logger.info("Attempt %d/%d — Test Engineer...", attempt + 1, MAX_RETRIES + 1)
-            test_start = time.time()
-            try:
-                test_preview = format_artifacts(result.artifacts, max_chars=15_000, include_agent_header=False)
-                test_prompt = (
-                    f"Using the generate_go_table_driven_tests tool, write tests for "
-                    f"the changed functions in these files:\n\n{test_preview}\n\n"
-                    f"Read each changed source file to identify the function signatures, "
-                    f"then generate table-driven tests."
-                )
-                test_result, _ = await _run_stage(
-                    f"test_engineer.attempt_{attempt}",
-                    "test_eng",
-                    test_prompt,
-                    {"changed_files_count": len(result.changed_files)},
-                )
-                if hasattr(test_result.output, "files"):
-                    result.artifacts.append(test_result.output)
-                    result.test_files = list(test_result.output.files.keys())
-                    logger.info("Test files: %s", result.test_files)
-                _record(recorder, result, "test_engineer", attempt, "ok", test_start)
-            except Exception as e:
-                msg = f"Test Engineer failed on attempt {attempt}: {e}"
-                logger.warning(msg)
-                test_failures.append(msg)
-                result.errors.append(msg)
-                _record(recorder, result, "test_engineer", attempt, "error", test_start, str(e))
-
-        # ── Stage 3: Parallel Verification Gates ───────────────────────
-        if not run_quality_gate and not run_review:
-            result.passed = True
-            _record(recorder, result, "pipeline", attempt, "passed", eng_start, "gates disabled")
-            return result
-
-        logger.info(
-            "Attempt %d/%d — Running parallel gates (quality_gate + code_review)...",
-            attempt + 1,
-            MAX_RETRIES + 1,
-        )
-
-        qg_passed = True
-        cv_passed = True
-        qg_feedback: list[str] = []
-        cv_feedback: list[str] = []
-
-        with logfire.span(
-            "existing_code.parallel_gates",
-            attempt=attempt,
-            artifact_count=len(result.artifacts),
-            _level="info",
-        ):
-            tasks: list[Any] = []
-            if run_quality_gate:
-                tasks.append(_timed(_run_quality_gate(result.artifacts)))
-            else:
-                tasks.append(_timed(asyncio.sleep(0, result=(True, 0, []))))
-
-            if run_review:
-                tasks.append(_timed(_run_code_review(result.artifacts)))
-            else:
-                tasks.append(_timed(asyncio.sleep(0, result=(True, "low", []))))
-
-            gate_results = await asyncio.gather(*tasks, return_exceptions=True)
-
-            gate_idx = 0
-            qr = gate_results[gate_idx]
-            if isinstance(qr, BaseException):
-                qg_passed = False
-                qg_feedback = [f"Quality Gate exception: {qr}"]
-                recorder.record(result.run_id, "quality_gate", attempt, "error", 0, str(qr))
-            else:
-                (qg_passed, score, qg_feedback), qg_ms = qr
-                result.quality_gate_score = score
-                result.quality_gate_feedback = qg_feedback
-                recorder.record(
-                    result.run_id,
-                    "quality_gate",
-                    attempt,
-                    "passed" if qg_passed else "failed",
-                    qg_ms,
-                    "; ".join(qg_feedback),
-                )
-            gate_idx += 1
-
-            rr = gate_results[gate_idx]
-            if isinstance(rr, BaseException):
-                cv_passed = False
-                cv_feedback = [f"Code Review exception: {rr}"]
-                recorder.record(result.run_id, "review", attempt, "error", 0, str(rr))
-            else:
-                (cv_passed, risk, cv_feedback), cv_ms = rr
-                result.review_risk = risk
-                recorder.record(
-                    result.run_id, "review", attempt, "approved" if cv_passed else "rejected", cv_ms, f"risk={risk}"
-                )
-                # Collect code review feedback as errors too
-                result.errors.extend(cv_feedback)
-            gate_idx += 1
-
-        # ── Remediation Decision ────────────────────────────────────────
-        logger.info(
-            "Gates: quality_gate=%s, review=%s, test_errors=%s",
-            qg_passed,
-            cv_passed,
-            bool(test_failures),
-        )
-
-        if qg_passed and cv_passed and not test_failures:
-            # All gates passed!
-            result.passed = True
-            result.retries_used = attempt
-            logger.info("All gates passed on attempt %d.", attempt + 1)
-            _record(recorder, result, "pipeline", attempt, "passed", eng_start)
-            _sync_memory_after_pipeline()
-            return result
-
-        # Append gate errors to result errors for next attempt context
-        for err in qg_feedback + cv_feedback:
-            if err not in result.errors:
-                result.errors.append(err)
-
-        if attempt < MAX_RETRIES:
-            logger.info("Gates failed — auto-remediation attempt %d/%d", attempt + 1, MAX_RETRIES)
-        else:
-            logger.warning("Max retries (%d) reached. Escalating to Lead Orchestrator.", MAX_RETRIES)
 
     _sync_memory_after_pipeline()
 
