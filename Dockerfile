@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    curl ca-certificates git ripgrep \
+    ca-certificates curl git ripgrep \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=gotoolchain /usr/local/go /usr/local/go
@@ -42,9 +42,16 @@ RUN pip install --no-cache-dir --require-hashes --only-binary :all: -r requireme
 
 # Install the project itself without resolving anything: deps are already locked, and hatchling
 # (its build backend) is in the lock too, hence --no-build-isolation.
-COPY pyproject.toml README* ./
+COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --no-cache-dir --no-deps --no-build-isolation .
+
+# Run unprivileged. The UID is numeric so Kubernetes can verify runAsNonRoot; the home directory is there for tools
+# that expect one (git, npm), and the working directory is writable because agents write relative paths under it
+# (generated-app/, telemetry.jsonl, session_trace.jsonl). Everything else is read-only to this user.
+RUN useradd --system --uid 10001 --user-group --create-home --home-dir /home/agent agent \
+    && chown agent:agent /opt/pydantic-agents
+USER 10001:10001
 
 EXPOSE 8080
 

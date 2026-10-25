@@ -2,7 +2,7 @@
 
 ## Unit and integration tests (free, no real LLM calls)
 
-- `make test` runs `pytest tests -q`; `make test-unit` and `make test-integration` run one directory. CI's `test` job runs `pytest tests -q` on Python 3.11 and 3.12 after `pip install -e ".[dev,vector]"`.
+- `make test` runs `pytest tests -q`; `make test-unit` and `make test-integration` run one directory. CI's `test` job runs `pytest tests -q` on Python 3.11 and 3.12 with `uv run --frozen --extra dev --extra vector`: every Python job installs from the committed `uv.lock` (never re-resolving), so CI runs the versions `make` runs. Third-party actions are pinned to a commit SHA; update the SHA and its `# vX.Y.Z` comment together.
 - `tests/unit/` holds one file per module or feature (`test_<module>.py`, plus `agy_bridge/`). `tests/integration/` runs the pipeline end to end with mocked agent providers (`AsyncMock`), not a live model. `tests/evaluation/` holds shared fixtures and evaluators (`fixtures.py`, `decision_evaluator.py`, `hallucination_detector.py`) used by both.
 - `pytest` runs with `asyncio_mode = "auto"`, so async tests need no marker. Markers `unit` and `integration` exist; only a few tests use them.
 - `core/models/factory.py` returns a `"mock-key"` LiteLLM key when `pytest` is imported and no key is set. Tests must not rely on reaching a real proxy, provider, Postgres or the network; mock them.
