@@ -80,45 +80,51 @@ async def run_autogen_pipeline(
     return state
 
 
+# Which pipeline agent a chat speaker stands for: the first row whose keywords appear in the speaker's name.
+_SPEAKER_AGENTS: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("backend",), "backend"),
+    (("frontend",), "frontend"),
+    (("qa", "test"), "test_eng"),
+    (("docs",), "docs"),
+    (("devops",), "devops"),
+)
+
+
+def _agent_for_speaker(name: str) -> str | None:
+    lowered = name.lower()
+    return next((agent for keywords, agent in _SPEAKER_AGENTS if any(k in lowered for k in keywords)), None)
+
+
+def _artifacts_from_chat(chat_history: list[dict[str, Any]]) -> list[Any]:
+    """One Artifact per chat message whose speaker maps to an agent and whose text contains named code files."""
+    from pydantic_agents.core.models.core import Artifact
+    from pydantic_agents.core.utils import parse_code_blocks_to_files
+
+    artifacts = []
+    for msg in chat_history:
+        content = msg.get("content", "")
+        name = msg.get("name", "")
+        agent_name = _agent_for_speaker(name) if content and name else None
+        if not agent_name:
+            continue
+        files = parse_code_blocks_to_files(content)
+        if not files or (len(files) == 1 and "output.txt" in files):  # no named files: not worth an artifact
+            continue
+        artifacts.append(
+            Artifact(
+                agent_name=agent_name,
+                files=files,
+                metadata={"agent_name": agent_name, "user_story_id": "global"},
+            )
+        )
+    return artifacts
+
+
 def _apply_group_result(state: PipelineState, group_class_name: str, result: Any) -> None:
     summary = str(result.summary if hasattr(result, "summary") else result)
     if group_class_name == "SdlcGroupChat":
         state.advisory_results["conversation"] = summary
-
-        # Extract code block artifacts from chat history messages
-        from pydantic_agents.core.models.core import Artifact
-        from pydantic_agents.core.utils import parse_code_blocks_to_files
-
-        chat_history = getattr(result, "chat_history", [])
-        for msg in chat_history:
-            content = msg.get("content", "")
-            name = msg.get("name", "")
-            if not content or not name:
-                continue
-
-            name_lower = name.lower()
-            agent_name = None
-            if "backend" in name_lower:
-                agent_name = "backend"
-            elif "frontend" in name_lower:
-                agent_name = "frontend"
-            elif "qa" in name_lower or "test" in name_lower:
-                agent_name = "test_eng"
-            elif "docs" in name_lower:
-                agent_name = "docs"
-            elif "devops" in name_lower:
-                agent_name = "devops"
-
-            if agent_name:
-                files = parse_code_blocks_to_files(content)
-                if files and not (len(files) == 1 and "output.txt" in files):
-                    state.artifacts.append(
-                        Artifact(
-                            agent_name=agent_name,
-                            files=files,
-                            metadata={"agent_name": agent_name, "user_story_id": "global"},
-                        )
-                    )
+        state.artifacts.extend(_artifacts_from_chat(getattr(result, "chat_history", [])))
     elif group_class_name == "DesignGroupChat":
         state.advisory_results["design_discussion"] = summary
         state.cto_approved = True
