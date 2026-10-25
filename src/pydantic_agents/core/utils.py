@@ -1,4 +1,6 @@
 import os
+import re
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -106,54 +108,44 @@ def format_artifacts(artifacts: list[Any], max_chars: int = 80_000, include_agen
     return "\n\n".join(parts)
 
 
+_INLINE_PATH_COMMENT = re.compile(r"^(?://|#|/\*|<!--)\s*([a-zA-Z0-9_\-\./]+)\s*(?:\*/|-->)?$")
+
+
+def _filename_above(lines: list[str], fence_index: int) -> str | None:
+    """A file name written on one of the three lines above a code fence (the nearest wins), if any."""
+    for offset in range(1, 4):
+        if fence_index - offset < 0:
+            continue
+        candidate = lines[fence_index - offset].strip().strip("*`#:").strip()
+        if ("." in candidate or "/" in candidate) and " " not in candidate and len(candidate) < 100:
+            return candidate
+    return None
+
+
+def _fenced_blocks(lines: list[str]) -> Iterator[tuple[int, list[str]]]:
+    """The (index of the opening fence, body lines) of every closed fenced block; an unclosed one is dropped."""
+    start: int | None = None
+    body: list[str] = []
+    for i, raw in enumerate(lines):
+        if raw.strip().startswith("```"):
+            if start is None:
+                start, body = i, []
+            else:
+                yield start, body
+                start = None
+        elif start is not None:
+            body.append(raw)
+
+
 def parse_code_blocks_to_files(text: str) -> dict[str, str]:
     """Parse markdown code blocks and extract filenames from headers or inline path comments."""
-    import re
-
-    files = {}
     lines = text.split("\n")
-    i = 0
-    current_file = None
-    block_lines: list[str] = []
-    in_block = False
-
-    while i < len(lines):
-        line = lines[i].strip()
-        if line.startswith("```"):
-            if in_block:
-                if current_file:
-                    files[current_file] = "\n".join(block_lines)
-                in_block = False
-                current_file = None
-                block_lines = []
-            else:
-                in_block = True
-                found_file = None
-                for offset in range(1, 4):
-                    if i - offset >= 0:
-                        prev_line = lines[i - offset].strip()
-                        prev_line_clean = prev_line.strip("*`#:").strip()
-                        if (
-                            ("." in prev_line_clean or "/" in prev_line_clean)
-                            and " " not in prev_line_clean
-                            and len(prev_line_clean) < 100
-                        ):
-                            found_file = prev_line_clean
-                            break
-                current_file = found_file
-            i += 1
-            continue
-
-        if in_block:
-            if not block_lines:
-                m = re.match(r"^(?://|#|/\*|<!--)\s*([a-zA-Z0-9_\-\./]+)\s*(?:\*/|-->)?$", line)
-                if m and not current_file:
-                    current_file = m.group(1).strip()
-                    i += 1
-                    continue
-            block_lines.append(lines[i])
-        i += 1
-
-    if not files:
-        files["output.txt"] = text
-    return files
+    files: dict[str, str] = {}
+    for start, body in _fenced_blocks(lines):
+        name = _filename_above(lines, start)
+        if name is None and body and (match := _INLINE_PATH_COMMENT.match(body[0].strip())):
+            name = match.group(1).strip()  # the comment names the file and is not part of its content
+            body = body[1:]
+        if name:
+            files[name] = "\n".join(body)
+    return files or {"output.txt": text}
