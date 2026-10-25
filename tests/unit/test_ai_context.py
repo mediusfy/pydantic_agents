@@ -10,7 +10,8 @@ import pytest
 
 _SCRIPT = Path(__file__).resolve().parents[2] / ".github" / "scripts" / "ai_context.py"
 _spec = importlib.util.spec_from_file_location("ai_context", _SCRIPT)
-assert _spec is not None and _spec.loader is not None
+assert _spec is not None
+assert _spec.loader is not None
 ai_context = importlib.util.module_from_spec(_spec)
 sys.modules["ai_context"] = ai_context
 _spec.loader.exec_module(ai_context)
@@ -160,7 +161,9 @@ def _pull(**overrides):
 def test_find_merged_pr_returns_matching_same_repo_pr():
     captured = {}
     pr = find_merged_pr(REPO, SHA, "tok", opener=_opener([_pull()], captured))
-    assert pr is not None and pr.number == 9 and pr.author == "drewjocham"
+    assert pr is not None
+    assert pr.number == 9
+    assert pr.author == "drewjocham"
     assert captured["url"].endswith(f"/repos/{REPO}/commits/{SHA}/pulls")
     assert captured["timeout"] == 30
 
@@ -181,8 +184,9 @@ def test_find_merged_pr_ignores_forks_unmerged_and_other_commits(override):
 
 @pytest.mark.parametrize(("repo", "sha"), [("a/b/../c", SHA), (REPO, "HEAD"), (REPO, "a" * 39)])
 def test_find_merged_pr_rejects_bad_inputs(repo, sha):
+    opener = _opener([])
     with pytest.raises(ValueError):
-        find_merged_pr(repo, sha, "tok", opener=_opener([]))
+        find_merged_pr(repo, sha, "tok", opener=opener)
 
 
 # --- CLI ---------------------------------------------------------------------
