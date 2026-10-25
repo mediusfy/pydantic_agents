@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in ten functions by extracting helpers, with no behaviour change: BridgeAgent
+  `get_system_prompt` and `_wrap_tools`, `run_server_loop`, `retrieve_context`, `cto_gate.apply`,
+  `sync_memory_to_claude`, `sync_claude_to_pgvector`, `build_full_graph`, `format_result_summary` and `format_artifacts`.
+  New tests pin the behaviour of the ones that had none (tool hooks, system-prompt lookup, the server loop, the memory
+  bridge, the summary format, the graph's nodes); they also pass against the pre-refactor code.
 - **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
   `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
   are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.
@@ -68,6 +73,7 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `sync_memory_to_claude` no longer raises `FileNotFoundError` after pushing the Claude entries when Antigravity's implicit-memory directory does not exist; that step is skipped.
 - Sonar test smells cleared: composite assertions split (S9073), `pytest.raises` blocks hold a single call (S5778) and a
   lambda patch became `AsyncMock(return_value=...)` (S9081). No behaviour change.
 - `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503

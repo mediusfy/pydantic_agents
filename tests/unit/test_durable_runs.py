@@ -229,3 +229,48 @@ async def test_resume_refuses_a_run_with_a_live_task(pool, monkeypatch):
 async def test_caller_supplied_run_ids_are_validated(bad):
     with pytest.raises(ValueError):
         await pipeline_jobs.submit_pipeline_run("svc", "req", run_id=bad)
+
+
+async def test_the_gate_lists_the_cto_s_blockers(monkeypatch, caplog):
+    from pydantic_agents.core import cto_gate
+    from pydantic_agents.core.models.core import PipelineState
+
+    monkeypatch.setenv("ORCHESTRATION_CTO_OVERRIDE", "1")
+    state = PipelineState(run_id="r", stage="advisory", requirement="x", cto_approved=False)
+    state.advisory_results = {"cto_blockers": "first blocker\n\n  second blocker  \n"}
+
+    with caplog.at_level("WARNING", logger="pydantic_agents.core.cto_gate"):
+        assert await cto_gate.apply(state) is True
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert "CTO-identified bottlenecks:" in messages
+    assert "  • first blocker" in messages
+    assert "  • second blocker" in messages
+    assert "ORCHESTRATION_CTO_OVERRIDE set — bypassing gate." in messages
+
+
+async def test_the_gate_does_not_mention_bottlenecks_when_there_are_none(monkeypatch, caplog):
+    from pydantic_agents.core import cto_gate
+    from pydantic_agents.core.models.core import PipelineState
+
+    monkeypatch.setenv("ORCHESTRATION_CTO_OVERRIDE", "1")
+    state = PipelineState(run_id="r", stage="advisory", requirement="x", cto_approved=False)
+
+    with caplog.at_level("WARNING", logger="pydantic_agents.core.cto_gate"):
+        assert await cto_gate.apply(state) is True
+
+    messages = [r.getMessage() for r in caplog.records]
+    assert "CTO APPROVAL GATE — Implementation blocked" in messages
+    assert not any("bottlenecks" in m for m in messages)
+
+
+async def test_an_approved_state_passes_the_gate_without_logging_a_block(caplog):
+    from pydantic_agents.core import cto_gate
+    from pydantic_agents.core.models.core import PipelineState
+
+    state = PipelineState(run_id="r", stage="advisory", requirement="x", cto_approved=True)
+
+    with caplog.at_level("INFO", logger="pydantic_agents.core.cto_gate"):
+        assert await cto_gate.apply(state) is True
+
+    assert [r.getMessage() for r in caplog.records] == ["CTO approval gate passed (approved_to_proceed=True)."]
