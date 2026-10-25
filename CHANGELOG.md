@@ -50,10 +50,16 @@ fresh **Unreleased** section above it.
   check; a vague one gets questions, not a plan) and `accountant` (a `CostBreakdown` whose totals are summed from lines
   in one currency, with the supplied rate listed; a vague request gets questions). Figures are supplied in the request
   and tools are ruled out, so they do not depend on live data.
+- `tests/unit/test_limits_under_load.py` drives the real provider with many concurrent callers and a fake model: the
+  concurrency cap is never exceeded, permits are released after errors, timeouts and cancellations, retries stay inside
+  the permit and cost at most `attempts` runs per call, and a delegation fan-out does not deadlock. It documents that
+  children run under the parent's permit, so the cap bounds root runs, not the model calls a delegating run makes.
 - `tests/unit/test_agent_consistency.py` cross-checks every agent's registry entry, `*_model` settings field and
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503
+  (Service Unavailable)`) instead of an exception-group traceback, and still exits 1.
 - `make smoke-deploy` asks `crypto_oracle` for a forecast from supplied figures with tools ruled out, instead of an
   open-ended one. The open-ended request let the agent research freely and hit the pod key's tokens-per-minute limit
   (HTTP 429), so the check failed for a reason unrelated to the deploy.
