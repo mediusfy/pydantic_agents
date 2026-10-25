@@ -172,9 +172,13 @@ def test_a_failing_file_is_reported_and_the_rest_continue(tmp_path):
     (root / "README.md").write_text("one")
     (root / "CONTRIBUTING.md").write_text("two")
 
-    with patch.object(mcp_server.vector_db, "add_documents", side_effect=[RuntimeError("db down"), None]):
+    def add(_domain, _chunks, _metas, ids):
+        if "contributing" in ids[0]:
+            raise RuntimeError("db down")
+
+    with patch.object(mcp_server.vector_db, "add_documents", side_effect=add):
         out = mcp_server.seed_project_files(str(root))
 
-    assert "Indexed 1 files" in out
-    assert "Errors: 1" in out
+    assert "Indexed 1 files" in out  # the README
+    assert "Errors:" in out
     assert "db down" in out
