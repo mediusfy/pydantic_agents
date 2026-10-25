@@ -136,3 +136,45 @@ def test_a_symlink_leaving_the_project_is_not_indexed(tmp_path):
 
     assert "Indexed 1 files" in out  # only the README
     assert all("private notes" not in c.args[1][0] for c in add.call_args_list)
+
+
+@pytest.mark.parametrize(
+    ("rel", "filename", "domain"),
+    [
+        (".agents/rules/style.md", "style.md", "conventions"),
+        ("docs/conventions.md", "conventions.md", "conventions"),
+        ("docs/adr-001.md", "adr-001.md", "adrs"),
+        ("docs/architecture.md", "architecture.md", "adrs"),
+        (".agents/workflows/ship.md", "ship.md", "project"),
+        ("readme.md", "README.md", "project"),
+        ("notes.md", "notes.md", "architecture"),
+    ],
+)
+def test_domain_follows_the_path(rel, filename, domain):
+    assert mcp_server._seed_domain(rel, filename) == domain
+
+
+def test_empty_files_are_not_indexed(tmp_path):
+    root = tmp_path / "delta"
+    root.mkdir()
+    (root / "README.md").write_text("  \n")
+
+    with patch.object(mcp_server.vector_db, "add_documents") as add:
+        out = mcp_server.seed_project_files(str(root))
+
+    assert out == "Indexed 0 files into vector DB"
+    add.assert_not_called()
+
+
+def test_a_failing_file_is_reported_and_the_rest_continue(tmp_path):
+    root = tmp_path / "epsilon"
+    root.mkdir()
+    (root / "README.md").write_text("one")
+    (root / "CONTRIBUTING.md").write_text("two")
+
+    with patch.object(mcp_server.vector_db, "add_documents", side_effect=[RuntimeError("db down"), None]):
+        out = mcp_server.seed_project_files(str(root))
+
+    assert "Indexed 1 files" in out
+    assert "Errors: 1" in out
+    assert "db down" in out
