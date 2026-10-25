@@ -42,6 +42,10 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Added
+- Promptfoo cases for `holiday_planner` (a complete request gives an `Itinerary` inside the dates with a derived budget
+  check; a vague one gets questions, not a plan) and `accountant` (a `CostBreakdown` whose totals are summed from lines
+  in one currency, with the supplied rate listed; a vague request gets questions). Figures are supplied in the request
+  and tools are ruled out, so they do not depend on live data.
 - `tests/unit/test_agent_consistency.py` cross-checks every agent's registry entry, `*_model` settings field and
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
