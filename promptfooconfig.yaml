@@ -98,20 +98,15 @@ tests:
       request: |
         Audit this Go snippet:
 
-        func charge(ctx context.Context, db *sql.DB, userID string, amountCents int64) error {
-            if amountCents <= 0 {
-                return errors.New("amount must be positive")
+        func parsePort(s string) (int, error) {
+            n, err := strconv.Atoi(s)
+            if err != nil {
+                return 0, fmt.Errorf("port %q: %w", s, err)
             }
-            key := os.Getenv("STRIPE_API_KEY")
-            if key == "" {
-                return errors.New("STRIPE_API_KEY is not set")
+            if n < 1 || n > 65535 {
+                return 0, fmt.Errorf("port %d is out of range", n)
             }
-            row := db.QueryRowContext(ctx, "SELECT customer_id FROM users WHERE id = $1", userID)
-            var customerID string
-            if err := row.Scan(&customerID); err != nil {
-                return fmt.Errorf("lookup customer: %w", err)
-            }
-            return stripe.Charge(ctx, key, customerID, amountCents)
+            return n, nil
         }
     assert:
       - type: is-json
@@ -244,9 +239,10 @@ tests:
       - type: llm-rubric
         value: >-
           Passes only if the thesis is specific to the supplied figures (P/E, distance from the 52-week high,
-          services growth), gives both a bull and a bear case, and does not state any number that was not supplied
-          (no other price targets, ratios or growth rates) unless it is explicitly labelled as an estimate or an
-          assumption.
+          services growth), gives both a bull and a bear case, and does not present a fact it was not given
+          (no fundamentals, forecasts, analyst targets or growth rates beyond the supplied ones). Arithmetic on the
+          supplied figures and scenario assumptions that are shown as assumptions (for example "if the multiple
+          falls to 24x") are fine.
 
   - description: price_analyst - returns PurchaseAdvice covering buy now and wait
     providers: [price_analyst]

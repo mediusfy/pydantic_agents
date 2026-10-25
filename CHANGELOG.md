@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Two promptfoo cases were recalibrated after the first live run: the "clean code" security snippet is now a
+  self-contained function (the previous payment function legitimately drew a missing-authorization finding), and the
+  `market_shark` rubric allows arithmetic on the supplied figures and labelled scenario assumptions while still failing
+  on invented facts or outside targets.
 - Docs brought in line with the code: README and `.ai/guidance/architecture.md` describe the real model
   defaults, run limits, `AGENT_TRANSPORT_ATTEMPTS`, durable pipeline runs, `resume_pipeline_run`, the CTO gate
   and `approve_cto_gate`; the "known improvement areas" list marks the fixed items; the settings docstring and
