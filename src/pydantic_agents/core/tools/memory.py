@@ -140,7 +140,7 @@ async def read_and_memorize_url(ctx: RunContext[Any], url: str) -> str:
     Args:
         url: The HTTP or HTTPS URL to fetch. Do NOT pass local file paths or file:// URLs. Use read_file for local files.
     """
-    if url.startswith("file://") or not (url.startswith("http://") or url.startswith("https://")):
+    if not url.startswith(("http://", "https://")):  # also rejects file:// and local paths
         return f"Error: Invalid URL '{url}'. This tool requires an http:// or https:// URL. For local files, use the read_file tool instead."
 
     try:

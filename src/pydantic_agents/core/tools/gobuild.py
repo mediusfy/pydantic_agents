@@ -12,7 +12,7 @@ GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
 
 
-async def _write_files(temp_dir: str, files: dict[str, str]) -> None:
+def _write_files(temp_dir: str, files: dict[str, str]) -> None:
     """Write a dict of file paths to content into temp_dir; raises (see WRITE_NAME_ERRORS) if a name escapes it or is invalid."""
     for filename, content in files.items():
         safe_write(temp_dir, filename, content)
@@ -74,7 +74,7 @@ async def run_go_build(files: dict[str, str]) -> str:
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
-            await _write_files(temp_dir, files)
+            _write_files(temp_dir, files)
         except WRITE_NAME_ERRORS as e:
             return f"BUILD FAILED: cannot write the given files: {e}"
         err = await init_and_tidy(temp_dir)
@@ -95,7 +95,7 @@ async def run_go_vet(files: dict[str, str]) -> str:
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
-            await _write_files(temp_dir, files)
+            _write_files(temp_dir, files)
         except WRITE_NAME_ERRORS as e:
             return f"VET FAILED: cannot write the given files: {e}"
         err = await init_and_tidy(temp_dir)

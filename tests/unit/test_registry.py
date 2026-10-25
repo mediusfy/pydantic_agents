@@ -156,7 +156,7 @@ class TestQueryEdgeCases:
         registry.register("slow", agent, ["think"])
 
         with pytest.raises(AgentExecutionError) as excinfo:
-            await registry.query("think", "hard problem", timeout=0.001)
+            await registry.query("think", "hard problem", timeout_seconds=0.001)
         assert "timed out" in str(excinfo.value)
         assert excinfo.value.is_retryable is True
 

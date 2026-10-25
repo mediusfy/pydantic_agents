@@ -120,7 +120,7 @@ def _tool_takes_context(fn: Callable) -> bool:
     return ann is RunContext or getattr(ann, "__origin__", None) is RunContext
 
 
-def apply_tools(agent, agent_name: str, categories: list[str]):
+def apply_tools(agent, categories: list[str]):
     tools = get_tools_for_agent(categories)
     for name, fn in tools:
         if not hasattr(agent, "_function_toolset") or name not in agent._function_toolset.tools:

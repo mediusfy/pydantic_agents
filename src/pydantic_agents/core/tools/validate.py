@@ -12,6 +12,9 @@ except ImportError:
     yaml = None  # type: ignore[assignment]
 
 
+_PACKAGE_KEYWORD = "package "
+
+
 def validate_protobuf(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     errors = []
     if not content.strip():
@@ -19,7 +22,7 @@ def validate_protobuf(ctx: RunContext[Any], content: str) -> tuple[bool, list[st
         return False, errors
     if "syntax" not in content:
         errors.append("Missing syntax declaration (e.g., syntax='proto3')")
-    if "package " not in content:
+    if _PACKAGE_KEYWORD not in content:
         errors.append("Missing package declaration")
     msg_count = len(re.findall(r"\bmessage\s+\w+", content))
     if msg_count == 0:
@@ -53,14 +56,14 @@ def parse_go_ast(ctx: RunContext[Any], content: str) -> tuple[bool, list[str]]:
     if not content.strip():
         errors.append("Empty Go file")
         return False, errors
-    if "package " not in content:
+    if _PACKAGE_KEYWORD not in content:
         errors.append("Missing package declaration")
     imports = re.findall(r"import\s+\(", content)
     unclosed = re.findall(r"import\s+\([^)]*$", content, re.MULTILINE)
     if imports and unclosed:
         errors.append("Unclosed import block")
     func_count = len(re.findall(r"\bfunc\s+\w+", content))
-    if func_count == 0 and content.count("package ") > 0:
+    if func_count == 0 and content.count(_PACKAGE_KEYWORD) > 0:
         errors.append("No function definitions found (possibly empty scaffold)")
     brace_count = content.count("{") - content.count("}")
     if brace_count != 0:

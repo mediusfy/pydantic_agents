@@ -5,7 +5,6 @@ preserving its system prompt, model configuration, and tool set
 so it can participate in AutoGen group chats.
 """
 
-import asyncio
 from typing import Any
 
 from pydantic_ai import Agent as PydanticAgent
@@ -93,16 +92,6 @@ def as_autogen_assistant(
     )
 
     for tool_name, tool_fn in tools.items():
-
-        async def _make_async(fn):
-
-            async def _wrapper(*args, **kwargs):
-                if asyncio.iscoroutinefunction(fn):
-                    return await fn(*args, **kwargs)
-                return fn(*args, **kwargs)
-
-            return _wrapper
-
         agent.register_function(function_map={tool_name: lambda *a, fn=tool_fn, **kw: fn(*a, **kw)})
 
     return agent

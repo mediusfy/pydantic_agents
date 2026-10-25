@@ -109,7 +109,7 @@ class AgentRegistry:
 
         categories = get_tool_categories(name)
         if categories:
-            apply_tools(agent, name, categories)
+            apply_tools(agent, categories)
 
     def list_agents(self) -> list[str]:
         return list(self._agents.keys())
@@ -143,7 +143,7 @@ class AgentRegistry:
         self,
         capability: str,
         prompt: str,
-        timeout: float | None = None,
+        timeout_seconds: float | None = None,
         deps: dict | None = None,
         owner: str | None = None,
     ) -> str:
@@ -173,7 +173,7 @@ class AgentRegistry:
                     agent=agent,
                     prompt=prompt,
                     deps=resolved_deps,
-                    timeout_seconds=timeout or settings.agent_timeout_seconds,
+                    timeout_seconds=timeout_seconds or settings.agent_timeout_seconds,
                 )
             finally:
                 current_run_context.reset(token)
@@ -192,7 +192,7 @@ async def instrumented_query(
     prompt: str,
     span_name: str = "registry.query",
     attributes: dict[str, Any] | None = None,
-    timeout: float | None = None,
+    timeout_seconds: float | None = None,
     delegation_depth: int = 0,
     owner: str | None = None,
 ) -> str:
@@ -237,7 +237,7 @@ async def instrumented_query(
 
     try:
         with logfire.span(span_name, **span_attrs, _level="info"):
-            result = await registry.query(capability, prompt, timeout=timeout, owner=owner)
+            result = await registry.query(capability, prompt, timeout_seconds=timeout_seconds, owner=owner)
             success = True
             return result
     finally:

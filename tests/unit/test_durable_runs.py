@@ -187,7 +187,7 @@ async def test_gate_honours_an_existing_marker(monkeypatch, tmp_path, approved, 
     monkeypatch.delenv("ORCHESTRATION_CTO_OVERRIDE", raising=False)
     write_approval("svc", approved)
     state = PipelineState(run_id="r", stage="advisory", cto_approved=False)
-    assert await cto_gate.apply(state, project="svc", timeout=0.05) is proceeds
+    assert await cto_gate.apply(state, project="svc", timeout_seconds=0.05) is proceeds
 
 
 async def test_poll_stops_on_rejection(tmp_path):
@@ -195,7 +195,7 @@ async def test_poll_stops_on_rejection(tmp_path):
 
     marker = tmp_path / ".cto_approved"
     marker.write_text("false")
-    assert await cto_gate._poll_for_file_approval(marker, poll_interval=0.01, timeout=1.0) is False
+    assert await cto_gate._poll_for_file_approval(marker, poll_interval=0.01, timeout_seconds=1.0) is False
 
 
 async def test_cancelled_run_is_persisted_as_cancelled(pool, monkeypatch):
