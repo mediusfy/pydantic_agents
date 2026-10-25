@@ -1,3 +1,4 @@
+import asyncio
 import datetime
 import hashlib
 import logging
@@ -94,15 +95,27 @@ class RedisIrisMemory:
         self.store_id = store_id
         self.api_key = api_key
 
-    async def add_memory(self, content: str, metadata: dict[str, Any] | None = None) -> None:  # noqa: ARG002
-        """Add a memory to the Redis IRIS store."""
-        import redis_agent_memory  # noqa: F401 — lazy import; raises if not installed
-
-    async def get_relevant_memories(self, query: str, n_results: int = 5) -> list["Memory"]:  # noqa: ARG002
-        """Retrieve relevant memories from the Redis IRIS store."""
+    @staticmethod
+    def _require_package() -> None:
+        """Lazy import: raises ImportError if redis-agent-memory is not installed."""
         import redis_agent_memory  # noqa: F401
 
-        raise NotImplementedError("redis_agent_memory integration not yet implemented")
+    async def add_memory(self, content: str, metadata: dict[str, Any] | None = None) -> None:
+        """Add a memory to the Redis IRIS store."""
+        await asyncio.to_thread(self._require_package)  # the first import is blocking disk I/O
+        logger.warning(
+            "RedisIrisMemory.add_memory is not implemented; dropped %d characters (metadata keys: %s)",
+            len(content),
+            sorted(metadata or {}),
+        )
+
+    async def get_relevant_memories(self, query: str, n_results: int = 5) -> list["Memory"]:
+        """Retrieve relevant memories from the Redis IRIS store."""
+        await asyncio.to_thread(self._require_package)
+        raise NotImplementedError(
+            "redis_agent_memory integration not yet implemented "
+            f"(query of {len(query)} characters, n_results={n_results})"
+        )
 
 
 _memory_backend: VectorMemory | RedisIrisMemory | None = None

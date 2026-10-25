@@ -12,6 +12,7 @@ Usage:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -131,7 +132,6 @@ async def sync_agent_definitions(target_dir: str | Path | None = None) -> int:
         )
         return 0
 
-    written = 0
     agent_names = registry.list_agents()
     model_overrides: dict[str, str] = {}
 
@@ -143,6 +143,13 @@ async def sync_agent_definitions(target_dir: str | Path | None = None) -> int:
         else:
             model_overrides[name] = settings.resolve_model(settings.ba_model)
 
+    # The loop below only touches the filesystem, so keep it off the event loop.
+    return await asyncio.to_thread(_write_definitions, targets, agent_names, model_overrides)
+
+
+def _write_definitions(targets: list[Path], agent_names: list[str], model_overrides: dict[str, str]) -> int:
+    """Write one ``<agent>.agent.json`` per agent into each target plus an index; returns the files written."""
+    written = 0
     for target in targets:
         target = Path(target)
         target.mkdir(parents=True, exist_ok=True)

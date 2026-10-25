@@ -64,7 +64,7 @@ def validate_directories() -> list[str]:
                 parent = resolved.parent
                 if not parent.exists() or not os.access(str(parent), os.W_OK):
                     errors.append(f"{name} ({resolved}) parent directory does not exist or is not writable")
-        except (OSError, PermissionError) as e:
+        except OSError as e:  # PermissionError is a subclass
             errors.append(f"{name}={path}: {e}")
     return errors
 

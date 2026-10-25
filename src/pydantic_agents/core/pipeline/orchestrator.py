@@ -125,7 +125,7 @@ class OrgitrationPipeline:
                     self.state = await self.stages[stage_name].run(self.state, self.config)
 
             except Exception as e:
-                logger.error(f"Pipeline crashed during stage '{stage_name}': {e}")
+                logger.exception("Pipeline crashed during stage '%s': %s", stage_name, e)
                 raise
 
             # Checkpoint commit

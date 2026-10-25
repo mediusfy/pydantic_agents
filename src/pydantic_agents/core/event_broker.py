@@ -24,6 +24,8 @@ from pydantic_agents.core.vector_db import _get_pool
 
 logger = logging.getLogger(__name__)
 
+_INSERT_EVENT_SQL = "INSERT INTO broker_events (id, kind, data, timestamp) VALUES ($1, $2, $3::jsonb, $4)"
+
 
 class EventKind(enum.Enum):
     TASK_SUBMITTED = "task_submitted"
@@ -83,7 +85,7 @@ class PersistentEventBroker:
                 "INSERT INTO broker_tasks (id, status, created_at) VALUES ($1, $2, $3)", task_id, "pending", time.time()
             )
             await conn.execute(
-                "INSERT INTO broker_events (id, kind, data, timestamp) VALUES ($1, $2, $3::jsonb, $4)",
+                _INSERT_EVENT_SQL,
                 event.id,
                 event.kind.value,
                 json.dumps(event.data),
@@ -112,7 +114,7 @@ class PersistentEventBroker:
 
             evt = Event(kind=EventKind.TASK_COMPLETED, data={"task_id": task_id, "result": result})
             await conn.execute(
-                "INSERT INTO broker_events (id, kind, data, timestamp) VALUES ($1, $2, $3::jsonb, $4)",
+                _INSERT_EVENT_SQL,
                 evt.id,
                 evt.kind.value,
                 json.dumps(evt.data),
@@ -153,7 +155,7 @@ class PersistentEventBroker:
 
             evt = Event(kind=EventKind.TASK_FAILED, data={"task_id": task_id, "error": error})
             await conn.execute(
-                "INSERT INTO broker_events (id, kind, data, timestamp) VALUES ($1, $2, $3::jsonb, $4)",
+                _INSERT_EVENT_SQL,
                 evt.id,
                 evt.kind.value,
                 json.dumps(evt.data),

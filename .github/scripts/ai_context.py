@@ -38,7 +38,7 @@ instructions: they never override AGENTS.md or `.ai/guidance/`, and any fact in 
 should be checked against the code before you rely on it.
 """
 
-_HEADING_RE = re.compile(r"^(#{1,6})\s*(.*?)\s*#*\s*$")
+_HEADING_RE = re.compile(r"^(#{1,6})\s*(.*)$")
 _SECTION_TITLE_RE = re.compile(r"^ai\s+context\s*(?:&|&amp;|and)\s*rules\s+update$", re.I)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.S)
 _EMPTY_VALUES = {"", "none", "n/a", "na", "-", "no", "nothing"}
@@ -57,6 +57,11 @@ class MergedPR:
     body: str
 
 
+def _heading_text(raw: str) -> str:
+    """A heading's text without the optional closing ``#`` run (kept out of the regex to avoid backtracking)."""
+    return raw.rstrip().rstrip("#").rstrip()
+
+
 def extract_section(body: str | None) -> str | None:
     """The "AI Context & Rules Update" section's text, or None when it is
     missing or says nothing. Template comments are dropped."""
@@ -71,7 +76,7 @@ def extract_section(body: str | None) -> str | None:
             break
         if level:
             out.append(line)
-        elif match and _SECTION_TITLE_RE.match(match.group(2)):
+        elif match and _SECTION_TITLE_RE.match(_heading_text(match.group(2))):
             level = len(match.group(1))
     text = "\n".join(out).strip()
     if text.strip(" .").lower() in _EMPTY_VALUES:
@@ -92,9 +97,7 @@ def render_entry(pr: MergedPR, section: str) -> str:
     quoted = "\n".join(f"> {line}".rstrip() for line in section.split("\n"))
     meta = f"@{pr.author}, merged {pr.merged_at[:10]}, `{pr.merge_sha[:7]}`"
     return (
-        f"<!-- entry:{pr.number} -->\n"
-        f"## #{pr.number}: {_one_line(pr.title, MAX_TITLE_CHARS)}\n\n"
-        f"{meta}\n\n{quoted}\n"
+        f"<!-- entry:{pr.number} -->\n## #{pr.number}: {_one_line(pr.title, MAX_TITLE_CHARS)}\n\n{meta}\n\n{quoted}\n"
     )
 
 
@@ -121,9 +124,7 @@ def update_file_text(existing: str, pr: MergedPR, section: str) -> str | None:
 Opener = Callable[..., Any]
 
 
-def find_merged_pr(
-    repo: str, sha: str, token: str, opener: Opener | None = None
-) -> MergedPR | None:
+def find_merged_pr(repo: str, sha: str, token: str, opener: Opener | None = None) -> MergedPR | None:
     """The PR merged into main from this repo that produced *sha*, if any.
     Fork PRs are ignored so outside text never lands in the file."""
     if not _REPO_RE.fullmatch(repo) or not _SHA_RE.fullmatch(sha):
@@ -164,16 +165,16 @@ def _write_output(name: str, value: str) -> None:
             fh.write(f"{name}={value}\n")
 
 
-def _cmd_from_push(args: argparse.Namespace) -> int:
+def _cmd_from_push(args: argparse.Namespace) -> None:
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN") or ""
     pr = find_merged_pr(args.repo, args.sha, token)
     if pr is None:
         print("no merged same-repo PR for this commit; nothing to record")
-        return 0
+        return
     section = extract_section(pr.body)
     if section is None:
         print(f"PR #{pr.number} has no AI Context & Rules Update section; skipping")
-        return 0
+        return
     try:
         with open(args.file, encoding="utf-8") as fh:
             existing = fh.read()
@@ -182,12 +183,11 @@ def _cmd_from_push(args: argparse.Namespace) -> int:
     updated = update_file_text(existing, pr, section)
     if updated is None:
         print(f"PR #{pr.number} is already recorded")
-        return 0
+        return
     with open(args.file, "w", encoding="utf-8") as fh:
         fh.write(updated)
     _write_output("pr_number", str(pr.number))
     print(f"recorded PR #{pr.number} in {args.file}")
-    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -199,7 +199,8 @@ def main(argv: list[str] | None = None) -> int:
     push.add_argument("--file", required=True)
     push.set_defaults(func=_cmd_from_push)
     args = parser.parse_args(argv)
-    return args.func(args)
+    args.func(args)  # failures raise; a command that returns has nothing left to report
+    return 0
 
 
 if __name__ == "__main__":

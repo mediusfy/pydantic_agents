@@ -12,6 +12,16 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
+  `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
+  are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.
+- Sonar code smells cleared with no behaviour change: failures in pipeline stages and bridges are logged with
+  `logger.exception` (traceback included), chained `startswith`/`endswith` use a tuple, no-op `except: raise` clauses
+  and a redundant `PermissionError` handler are gone, duplicated literals are constants, a heading regex that could
+  backtrack in `.github/scripts/ai_context.py` is replaced by a plain match plus a strip, and `_write_files` and
+  `discover_agent_capabilities` are plain functions because they never awaited. `RedisIrisMemory` and
+  `sync_agent_definitions` now do their blocking work in a thread; `RedisIrisMemory.add_memory` logs that it dropped the
+  memory instead of silently doing nothing.
 - Docs brought in line with the code: README and `.ai/guidance/architecture.md` describe the real model
   defaults, run limits, `AGENT_TRANSPORT_ATTEMPTS`, durable pipeline runs, `resume_pipeline_run`, the CTO gate
   and `approve_cto_gate`; the "known improvement areas" list marks the fixed items; the settings docstring and
@@ -183,6 +193,7 @@ fresh **Unreleased** section above it.
   the image shrank from 10.8 GB to 3.6 GB (#16).
 
 ### Removed
+- `core/adapters/mcp_client.py` (`MCPClientPort`, `StandardMCPClient`): an unused stub whose methods were TODOs.
 - Placeholder tools that returned empty or comment-only files: `scaffold_go_service`, `provision_k8s_cluster`, and
   the BA agent's `define_user_stories`/`map_event_triggers` (nested LLM calls that duplicated the agent's own
   structured output). `apply_helm_chart` is now `generate_helm_chart` and returns a real chart; `generate_dockerfile`

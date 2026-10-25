@@ -15,7 +15,7 @@ from pydantic_agents.core.tools.registry import register_tool
 MAX_DELEGATION_DEPTH = 3
 
 
-async def discover_agent_capabilities(ctx: RunContext) -> str:
+def discover_agent_capabilities(ctx: RunContext) -> str:
     """Lists all available capabilities that other agents can perform.
     Use this to find out who to delegate to.
 

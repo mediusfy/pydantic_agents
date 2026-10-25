@@ -83,8 +83,6 @@ async def _run_stage(
             result = await agent.run(prompt, usage_limits=usage_limits(agent_name))
             success = True
             return result, success
-    except Exception:
-        raise
     finally:
         duration = time.time() - start
         with contextlib.suppress(Exception):
