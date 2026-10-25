@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in the four largest functions, by splitting them into small helpers:
+  `ImplementationStage.run` (73), `run_existing_code_pipeline` (52), `parse_code_blocks_to_files` (39) and
+  `OrgitrationPipeline.execute` (37). Each now has tests that were written first and run against the old code
+  (none had any for its main path). Prompts, recorded events and results are unchanged.
+- `OrgitrationPipeline` runs a stage normally when a checkpoint is listed but cannot be loaded, instead of carrying `None` forward as its state.
 - Cognitive complexity reduced (Sonar S3776) in `WorkspaceContext.get_repo_context` and `get_markdown_context`, the
   Go and Vue/TSX validators, the AutoGen bridge's `_apply_group_result` and `MergeStage.run`, by extracting helpers. New
   tests (written first and run against the old code) pin each one's output and messages.
