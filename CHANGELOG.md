@@ -42,6 +42,7 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Added
+- `SEED_ROOTS` setting (directories the `seed_project_context` MCP tool may read; empty means `OUTPUT_DIR`).
 - `tests/unit/test_limits_under_load.py` drives the real provider with many concurrent callers and a fake model: the
   concurrency cap is never exceeded, permits are released after errors, timeouts and cancellations, retries stay inside
   the permit and cost at most `attempts` runs per call, and a delegation fan-out does not deadlock. It documents that
@@ -50,6 +51,14 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- **Security (Sonar findings):**
+  - The MCP tool `seed_project_context` indexed any directory a caller named. It now only reads inside `SEED_ROOTS`
+    (default `OUTPUT_DIR`) and skips symlinks that leave the project. `scripts/seed_projects.py` uses the new
+    unrestricted `mcp_server.seed_project_files` for its own clones.
+  - `live_trace` reads only `.jsonl` files inside the current directory; `check_changelog.py` refuses a base ref that
+    could be read as a git option; an unrecognised `.cto_approved` marker is logged as a short printable prefix.
+  - The image runs as UID 10001 instead of root, `COPY` names `README.md` instead of a glob, and CI checks the image
+    is unprivileged and its working directory is writable.
 - `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503
   (Service Unavailable)`) instead of an exception-group traceback, and still exits 1.
 - `make smoke-deploy` asks `crypto_oracle` for a forecast from supplied figures with tools ruled out, instead of an

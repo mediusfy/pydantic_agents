@@ -6,7 +6,9 @@ import sys
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import contextlib
+import glob
 import time
+from pathlib import Path
 from typing import Any
 
 import logfire
@@ -16,11 +18,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core.context_engine import retrieve_context
 from pydantic_agents.core.event_broker import Event, EventKind, event_broker
-from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError
+from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
 from pydantic_agents.core.limits import usage_limits
 from pydantic_agents.core.memory_bridge import get_bridge_status, sync_claude_to_pgvector, sync_memory_to_claude
 from pydantic_agents.core.observability import configure_observability
 from pydantic_agents.core.registry import registry
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 from pydantic_agents.core.utils import serialize_output
 from pydantic_agents.core.vector_db import vector_db
@@ -525,6 +528,17 @@ async def wait_for_task(task_id: str, timeout_seconds: int = 300) -> str:
 # ── Vector DB Tools for Async Task Context ────────────────────────────────
 
 
+def _split_oversized(para: str, max_chars: int) -> tuple[list[str], str]:
+    """Hard-split a paragraph on whitespace: the full-size pieces and the remainder (at most ``max_chars``)."""
+    pieces: list[str] = []
+    while len(para) > max_chars:
+        cut = para.rfind(" ", 0, max_chars)
+        cut = cut if cut > 0 else max_chars
+        pieces.append(para[:cut].strip())
+        para = para[cut:].strip()
+    return pieces, para
+
+
 def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
     """Split text into chunks of at most ``max_chars`` on paragraph boundaries.
 
@@ -537,14 +551,12 @@ def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
         para = para.strip()
         if not para:
             continue
-        while len(para) > max_chars:  # oversized paragraph: hard-split on whitespace
-            cut = para.rfind(" ", 0, max_chars)
-            cut = cut if cut > 0 else max_chars
+        pieces, para = _split_oversized(para, max_chars)
+        if pieces:  # an oversized paragraph closes the chunk in progress
             if current:
                 chunks.append(current)
                 current = ""
-            chunks.append(para[:cut].strip())
-            para = para[cut:].strip()
+            chunks.extend(pieces)
         if current and len(current) + len(para) + 2 > max_chars:
             chunks.append(current)
             current = para
@@ -555,24 +567,9 @@ def _chunk_text(text: str, max_chars: int = 900) -> list[str]:
     return chunks
 
 
-@mcp.tool()
-def seed_project_context(project_path: str, project: str = "") -> str:
-    """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
-
-    Scans the given project path for relevant context files (.md, .adr, rules/) and
-    indexes them into the vector DB so agent context retrieval can find them.
-
-    Args:
-        project_path: Absolute path to the project root (e.g., /Users/jocham/programming/projects/mediusfy/platform)
-        project: Project name used to namespace document ids and tag metadata so several
-                 repos can share the store without overwriting each other's README.md etc.
-                 Defaults to the basename of project_path.
-    """
-    import glob
-    import os
-
-    project = project or os.path.basename(os.path.normpath(project_path))
-    skip_dirs = {
+_AGENTS_DIR = ".agents"
+_SEED_SKIP_DIRS = frozenset(
+    {
         ".git",
         "node_modules",
         ".venv",
@@ -586,62 +583,84 @@ def seed_project_context(project_path: str, project: str = "") -> str:
         ".terraform",
         ".worktrees",
     }
+)
 
-    files_indexed = 0
-    errors = []
 
-    # Patterns to scan
-    patterns = [
-        os.path.join(project_path, ".agents", "rules", "*.md"),
-        os.path.join(project_path, ".agents", "workflows", "*.md"),
-        os.path.join(project_path, ".agents", "rules", "**", "*.md"),
-        os.path.join(project_path, ".agents", "workflows", "**", "*.md"),
-        os.path.join(project_path, "**", "ARCHITECTURE*.md"),
-        os.path.join(project_path, "**", "CONVENTIONS*.md"),
-        os.path.join(project_path, "**", "CODING_STANDARDS*.md"),
-        os.path.join(project_path, "**", "CONTRIBUTING*.md"),
-        os.path.join(project_path, "**", "*.adr"),
-        os.path.join(project_path, "*.md"),
+def _seed_patterns(root: str) -> list[str]:
+    join = os.path.join
+    return [
+        join(root, _AGENTS_DIR, "rules", "*.md"),
+        join(root, _AGENTS_DIR, "workflows", "*.md"),
+        join(root, _AGENTS_DIR, "rules", "**", "*.md"),
+        join(root, _AGENTS_DIR, "workflows", "**", "*.md"),
+        join(root, "**", "ARCHITECTURE*.md"),
+        join(root, "**", "CONVENTIONS*.md"),
+        join(root, "**", "CODING_STANDARDS*.md"),
+        join(root, "**", "CONTRIBUTING*.md"),
+        join(root, "**", "*.adr"),
+        join(root, "*.md"),
     ]
 
-    for pattern in patterns:
-        matches = glob.glob(pattern, recursive=True)
-        for fp in matches:
-            if not os.path.isfile(fp):
-                continue
-            if skip_dirs.intersection(os.path.relpath(fp, project_path).split(os.sep)):
-                continue
-            try:
-                with open(fp, encoding="utf-8") as f:
-                    content = f.read()
-                if not content.strip():
-                    continue
 
-                # Determine domain from path
-                rel = os.path.relpath(fp, project_path).lower()
-                if "rule" in rel or "convention" in rel:
-                    domain = "conventions"
-                elif "adr" in rel or "architecture" in rel:
-                    domain = "adrs"
-                elif "workflow" in rel or "pipeline" in rel or "readme" in os.path.basename(fp).lower():
-                    domain = "project"
-                else:
-                    domain = "architecture"
+def _seed_domain(rel: str, filename: str) -> str:
+    """The knowledge domain a context file belongs to, from its lower-cased relative path."""
+    if "rule" in rel or "convention" in rel:
+        return "conventions"
+    if "adr" in rel or "architecture" in rel:
+        return "adrs"
+    if "workflow" in rel or "pipeline" in rel or "readme" in filename.lower():
+        return "project"
+    return "architecture"
 
-                sanitized = rel.replace("/", "::").replace(chr(92), "::")
-                chunks = _chunk_text(content)
-                vector_db.add_documents(
-                    domain,
-                    chunks,
-                    [
-                        {"source": fp, "domain": domain, "file": rel, "project": project, "chunk": i}
-                        for i in range(len(chunks))
-                    ],
-                    [f"{project}:file:{sanitized}#{i}" for i in range(len(chunks))],
-                )
-                files_indexed += 1
-            except Exception as e:
-                errors.append(f"{fp}: {e}")
+
+def _seed_files(root: str) -> list[tuple[str, str]]:
+    """The (path, relative path) of every context file under ``root``.
+
+    Vendored directories are skipped, and so is anything that resolves outside ``root`` (a symlink must not pull
+    in files from elsewhere on the machine).
+    """
+    real_root = Path(root).resolve()
+    found: list[tuple[str, str]] = []
+    for pattern in _seed_patterns(root):
+        for fp in glob.glob(pattern, recursive=True):
+            rel = os.path.relpath(fp, root)
+            if not os.path.isfile(fp) or _SEED_SKIP_DIRS.intersection(rel.split(os.sep)):
+                continue
+            if Path(fp).resolve().is_relative_to(real_root):
+                found.append((fp, rel))
+    return found
+
+
+def _index_seed_file(fp: str, rel: str, project: str) -> bool:
+    """Chunk one file into the vector DB; False when it is empty."""
+    with open(fp, encoding="utf-8") as f:
+        content = f.read()
+    if not content.strip():
+        return False
+    rel = rel.lower()
+    domain = _seed_domain(rel, os.path.basename(fp))
+    sanitized = rel.replace("/", "::").replace(chr(92), "::")
+    chunks = _chunk_text(content)
+    vector_db.add_documents(
+        domain,
+        chunks,
+        [{"source": fp, "domain": domain, "file": rel, "project": project, "chunk": i} for i in range(len(chunks))],
+        [f"{project}:file:{sanitized}#{i}" for i in range(len(chunks))],
+    )
+    return True
+
+
+def seed_project_files(project_path: str, project: str = "") -> str:
+    """Index a project's context files into the vector DB. No path restriction: for trusted callers such as
+    ``scripts/seed_projects.py``. The MCP tool ``seed_project_context`` checks the path first."""
+    project = project or os.path.basename(os.path.normpath(project_path))
+    files_indexed = 0
+    errors: list[str] = []
+    for fp, rel in _seed_files(project_path):
+        try:
+            files_indexed += _index_seed_file(fp, rel, project)
+        except Exception as e:
+            errors.append(f"{fp}: {e}")
 
     summary = f"Indexed {files_indexed} files into vector DB"
     if files_indexed > 0:
@@ -651,6 +670,41 @@ def seed_project_context(project_path: str, project: str = "") -> str:
         for err in errors[:5]:
             summary += f"\n  - {err}"
     return summary
+
+
+def _allowed_seed_roots() -> list[Path]:
+    """Directories the MCP seeding tool may read: ``SEED_ROOTS`` (os.pathsep-separated) or the output directory."""
+    configured = [r for r in settings.seed_roots.split(os.pathsep) if r.strip()]
+    return [Path(r).expanduser().resolve() for r in configured or [str(settings.output_dir)]]
+
+
+def _check_seed_root(project_path: str) -> Path:
+    """The resolved project path, if it sits inside an allowed root; raises PathTraversalError otherwise."""
+    candidate = Path(project_path).expanduser().resolve()
+    if not any(candidate.is_relative_to(root) for root in _allowed_seed_roots()):
+        raise PathTraversalError("project_path is outside the directories this server may read (set SEED_ROOTS)")
+    return candidate
+
+
+@mcp.tool()
+def seed_project_context(project_path: str, project: str = "") -> str:
+    """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
+
+    Scans the given project path for relevant context files (.md, .adr, rules/) and
+    indexes them into the vector DB so agent context retrieval can find them. The path must be
+    inside the server's allowed directories (``SEED_ROOTS``, default the output directory).
+
+    Args:
+        project_path: Absolute path to the project root (e.g., /Users/jocham/programming/projects/mediusfy/platform)
+        project: Project name used to namespace document ids and tag metadata so several
+                 repos can share the store without overwriting each other's README.md etc.
+                 Defaults to the basename of project_path.
+    """
+    try:
+        root = _check_seed_root(project_path)
+    except PathTraversalError as e:
+        return f"Error: {e}"
+    return seed_project_files(str(root), project or os.path.basename(os.path.normpath(project_path)))
 
 
 @mcp.tool()
