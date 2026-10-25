@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in ten functions by extracting helpers, with no behaviour change: BridgeAgent
+  `get_system_prompt` and `_wrap_tools`, `run_server_loop`, `retrieve_context`, `cto_gate.apply`,
+  `sync_memory_to_claude`, `sync_claude_to_pgvector`, `build_full_graph`, `format_result_summary` and `format_artifacts`.
+  New tests pin the behaviour of the ones that had none (tool hooks, system-prompt lookup, the server loop, the memory
+  bridge, the summary format, the graph's nodes); they also pass against the pre-refactor code.
 - **CI:** every Python job installs from the committed `uv.lock` with `uv run --frozen` (via `astral-sh/setup-uv`)
   instead of an unpinned `pip install`, so CI runs the same versions as `make` and a new upstream release cannot change
   a result. The lint job now checks `scripts` as the Makefile does, and uses the locked ruff instead of the latest one.
@@ -73,6 +78,7 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `sync_memory_to_claude` no longer raises `FileNotFoundError` after pushing the Claude entries when Antigravity's implicit-memory directory does not exist; that step is skipped.
 - **Security (Sonar findings):**
   - The MCP tool `seed_project_context` indexed any directory a caller named. It now only reads inside `SEED_ROOTS`
     (default `OUTPUT_DIR`) and skips symlinks that leave the project. `scripts/seed_projects.py` uses the new
