@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- **CI:** every Python job installs from the committed `uv.lock` with `uv run --frozen` (via `astral-sh/setup-uv`)
+  instead of an unpinned `pip install`, so CI runs the same versions as `make` and a new upstream release cannot change
+  a result. The lint job now checks `scripts` as the Makefile does, and uses the locked ruff instead of the latest one.
+  Third-party actions (`docker/*`, `astral-sh/setup-uv`) are pinned to a commit SHA (Sonar S7637, S8541, S8544).
 - **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
   `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
   are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.
