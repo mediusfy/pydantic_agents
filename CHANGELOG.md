@@ -12,6 +12,9 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in `WorkspaceContext.get_repo_context` and `get_markdown_context`, the
+  Go and Vue/TSX validators, the AutoGen bridge's `_apply_group_result` and `MergeStage.run`, by extracting helpers. New
+  tests (written first and run against the old code) pin each one's output and messages.
 - **Renamed parameters:** `AgentRegistry.query`, `instrumented_query`, `cto_gate.apply` and
   `cto_gate._poll_for_file_approval` take `timeout_seconds` instead of `timeout` (Sonar S7483); callers inside the repo
   are updated. `tools.registry.apply_tools` no longer takes the unused `agent_name`.
@@ -68,6 +71,7 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `MergeStage` checked that a file stays inside the target project with a string-prefix test, so a path such as `../proj-evil/x` was accepted for a project at `.../proj`. It now uses `Path.is_relative_to`.
 - Sonar test smells cleared: composite assertions split (S9073), `pytest.raises` blocks hold a single call (S5778) and a
   lambda patch became `AsyncMock(return_value=...)` (S9081). No behaviour change.
 - `make smoke-deploy` prints one line when the endpoint cannot be used (for example `the endpoint answered HTTP 503
