@@ -12,7 +12,7 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
-- CI installs with `uv sync --frozen --no-build --no-install-project` and runs tools with `uv run --no-sync` (Sonar
+- CI installs with `uv sync --frozen --no-build --no-install-project` and runs tools with `uv run --no-build --no-sync` (Sonar
   S8541): only prebuilt wheels are installed, so no dependency build script runs, and the project is used from `src`
   (`PYTHONPATH=src` for the test and smoke jobs). The image's `useradd` shares a `RUN` with the project install (S7031).
 - `check_changelog.py` uses `\w` with `re.ASCII`, and the heading regex in `ai_context.py` no longer has overlapping
