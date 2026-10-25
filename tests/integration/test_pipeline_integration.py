@@ -378,9 +378,12 @@ class TestPipelineStatePersistence:
         loaded_adv = manager.load("advisory")
         loaded_impl = manager.load("implementation")
 
-        assert loaded_ba is not None and loaded_ba.stage == "ba"
-        assert loaded_adv is not None and loaded_adv.stage == "advisory"
-        assert loaded_impl is not None and loaded_impl.stage == "implementation"
+        assert loaded_ba is not None
+        assert loaded_ba.stage == "ba"
+        assert loaded_adv is not None
+        assert loaded_adv.stage == "advisory"
+        assert loaded_impl is not None
+        assert loaded_impl.stage == "implementation"
 
         # Each stage has progressively more data
         assert len(loaded_ba.user_stories) == 1
@@ -789,6 +792,7 @@ class TestMemoryBackendSelection:
         """RedisIrisMemory methods raise ImportError when redis-agent-memory is not installed."""
         mem = RedisIrisMemory(server_url="x", store_id="x", api_key="x")
 
+        import asyncio
         import builtins
 
         real_import = builtins.__import__
@@ -798,13 +802,12 @@ class TestMemoryBackendSelection:
                 raise ModuleNotFoundError("No module named 'redis_agent_memory'")
             return real_import(name, *args, **kwargs)
 
+        add_memory = mem.add_memory("test")
         with (
             patch("builtins.__import__", side_effect=mock_import),
             pytest.raises(ModuleNotFoundError, match="redis.agent.memory"),
         ):
-            import asyncio
-
-            asyncio.run(mem.add_memory("test"))
+            asyncio.run(add_memory)
 
     def test_fallback_on_redis_iris_init_failure(self, monkeypatch):
         """When Redis IRIS init fails, create_memory_backend falls back to VectorMemory."""

@@ -133,8 +133,9 @@ def test_itinerary_rules(overrides, message):
 
 
 def test_an_unverified_item_must_say_where_to_confirm():
+    kwargs = _item(status="to_confirm")
     with pytest.raises(ValidationError, match="where to confirm"):
-        ItineraryItem(**_item(status="to_confirm"))
+        ItineraryItem(**kwargs)
     assert ItineraryItem(**_item(status="to_confirm", confirm_where="the museum's website"))
 
 
@@ -148,9 +149,9 @@ def test_item_numbers_must_be_sane(field, value):
 
 
 def test_a_day_needs_at_least_one_item():
-    kwargs = _day(items=[])
+    itinerary = _itinerary(days=[_day(items=[])])
     with pytest.raises(ValidationError):
-        Itinerary(**_itinerary(days=[kwargs]))
+        Itinerary(**itinerary)
 
 
 # ── CostBreakdown ─────────────────────────────────────────────────────────
@@ -196,8 +197,9 @@ def test_breakdown_rules(overrides, message):
 
 
 def test_a_fixed_cost_must_be_exact_to_the_cent():
+    kwargs = _line(low=100.0, high=100.01)
     with pytest.raises(ValidationError, match="fixed but has a range"):
-        CostLine(**_line(low=100.0, high=100.01))
+        CostLine(**kwargs)
 
 
 def test_an_estimate_may_have_equal_bounds():
