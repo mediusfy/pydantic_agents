@@ -84,7 +84,8 @@ async def test_run_survives_a_restart_and_is_marked_interrupted(pool):
     await run_store.save_run("pipe_1", _run("running"))
     # a new process: nothing in PIPELINE_RUNS, only the database
     got = await pipeline_jobs.get_run("pipe_1")
-    assert got["status"] == "interrupted" and "restarted" in got["error"]
+    assert got["status"] == "interrupted"
+    assert "restarted" in got["error"]
 
 
 @pytest.mark.parametrize("status", ["completed", "failed", "cancelled"])
@@ -129,7 +130,8 @@ async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resume
         assert out == "pipe_3"
         assert seen == {"project": "svc", "requirement": "build it", "run_id": "pipe_3", "resume": True}
     else:
-        assert out is None and not seen
+        assert out is None
+        assert not seen
 
 
 async def test_resume_unknown_run(pool):
@@ -145,7 +147,8 @@ async def test_submit_persists_each_transition(pool, monkeypatch):
     run_id = await pipeline_jobs.submit_pipeline_run("svc", "req")
     await pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]
     await asyncio.sleep(0)
-    assert pool.db[run_id]["status"] == "completed" and pool.db[run_id]["completed_at"] is not None
+    assert pool.db[run_id]["status"] == "completed"
+    assert pool.db[run_id]["completed_at"] is not None
 
 
 @pytest.mark.parametrize(
@@ -225,7 +228,8 @@ async def test_cancelled_run_is_persisted_as_cancelled(pool, monkeypatch):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert pool.db[run_id]["status"] == "cancelled" and pool.db[run_id]["completed_at"] is not None
+    assert pool.db[run_id]["status"] == "cancelled"
+    assert pool.db[run_id]["completed_at"] is not None
 
 
 async def test_resume_refuses_a_run_with_a_live_task(pool, monkeypatch):

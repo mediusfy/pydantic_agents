@@ -1,5 +1,5 @@
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -52,7 +52,7 @@ def test_search_filters_by_project(project, expect_filter, expect_args):
         patch.object(vdb, "_require_vector_deps"),
         patch.object(vdb, "_ensure_table", _noop),
         patch.object(vdb, "_to_embedding", return_value=[0.1, 0.2]),
-        patch.object(vdb, "_get_pool", lambda: _async_value(pool)),
+        patch.object(vdb, "_get_pool", AsyncMock(return_value=pool)),
     ):
         out = asyncio.run(vdb.vector_db._search("adrs", "q", 3, project))
 
@@ -62,7 +62,3 @@ def test_search_filters_by_project(project, expect_filter, expect_args):
     assert len(args) == expect_args
     if expect_filter:
         assert args[-1] == project
-
-
-async def _async_value(v):
-    return v
