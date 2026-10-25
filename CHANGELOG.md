@@ -42,6 +42,10 @@ fresh **Unreleased** section above it.
   `metadata.trace_name` so Langfuse groups a run's generations.
 
 ### Added
+- `tests/unit/test_limits_under_load.py` drives the real provider with many concurrent callers and a fake model: the
+  concurrency cap is never exceeded, permits are released after errors, timeouts and cancellations, retries stay inside
+  the permit and cost at most `attempts` runs per call, and a delegation fan-out does not deadlock. It documents that
+  children run under the parent's permit, so the cap bounds root runs, not the model calls a delegating run makes.
 - `tests/unit/test_agent_consistency.py` cross-checks every agent's registry entry, `*_model` settings field and
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
