@@ -98,3 +98,5 @@ jobs:
           assert n > 0, n
           print('torch', torch.__version__, '| tools', n)"
           docker run --rm --entrypoint sh pydantic-agents:ci -c 'go version && node --version && rg --version | head -1'
+          # Runs unprivileged (numeric UID so Kubernetes can verify runAsNonRoot) and can write where agents write.
+          docker run --rm --entrypoint sh pydantic-agents:ci -c 'test "$(id -u)" = 10001 && touch generated-app.probe && rm generated-app.probe && git --version'
