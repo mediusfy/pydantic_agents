@@ -51,6 +51,29 @@ AGENT_CONTEXT_DOMAINS: dict[str, list[str]] = {
 }
 
 
+def _search_domain(domain: str, agent_name: str, request: str, top_k: int) -> list[str]:
+    """The non-empty text snippets one knowledge domain returns for a request; a failing search yields none."""
+    with logfire.span("context_engine.retrieve", domain=domain, agent_name=agent_name, _level="debug"):
+        try:
+            results = vector_db.search(domain, request, n_results=top_k)
+        except Exception as e:
+            logger.debug("Context retrieval failed for domain '%s': %s", domain, e)
+            return []
+    return [snippet for snippet in results or [] if isinstance(snippet, str) and snippet.strip()]
+
+
+def _unique_snippets(snippets: list[str]) -> list[str]:
+    """Drop snippets whose first 100 characters were already seen, keeping the first of each."""
+    seen: set[str] = set()
+    unique: list[str] = []
+    for snippet in snippets:
+        key = snippet[:100]
+        if key not in seen:
+            seen.add(key)
+            unique.append(snippet)
+    return unique
+
+
 def retrieve_context(agent_name: str, request: str, top_k: int = 3) -> str:
     """Retrieve relevant context snippets from all knowledge domains for a given agent.
 
@@ -63,37 +86,12 @@ def retrieve_context(agent_name: str, request: str, top_k: int = 3) -> str:
         Formatted context string, or empty string if nothing relevant found.
     """
     domains = AGENT_CONTEXT_DOMAINS.get(agent_name, ["architecture", "project"])
-    all_snippets: list[str] = []
-
-    for domain in domains:
-        with logfire.span(
-            "context_engine.retrieve",
-            domain=domain,
-            agent_name=agent_name,
-            _level="debug",
-        ):
-            try:
-                results = vector_db.search(domain, request, n_results=top_k)
-                if results:
-                    for snippet in results:
-                        if isinstance(snippet, str) and snippet.strip():
-                            all_snippets.append(snippet)
-            except Exception as e:
-                logger.debug("Context retrieval failed for domain '%s': %s", domain, e)
+    all_snippets = [s for domain in domains for s in _search_domain(domain, agent_name, request, top_k)]
 
     if not all_snippets:
         return ""
 
-    # Deduplicate and format
-    seen: set[str] = set()
-    unique_snippets: list[str] = []
-    for s in all_snippets:
-        key = s[:100]
-        if key not in seen:
-            seen.add(key)
-            unique_snippets.append(s)
-
-    formatted = "\n\n---\n\n".join(unique_snippets[:top_k])
+    formatted = "\n\n---\n\n".join(_unique_snippets(all_snippets)[:top_k])
     return f"\n{formatted}\n"
 
 

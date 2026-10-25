@@ -9,6 +9,21 @@ import json
 import sys
 from collections import Counter, defaultdict
 from datetime import datetime
+from pathlib import Path
+
+from pydantic_agents.core.exceptions import PathTraversalError
+from pydantic_agents.core.utils import safe_path_join
+
+
+def resolve_trace_path(arg: str) -> Path:
+    """The telemetry file to read: a ``.jsonl`` file inside the current directory.
+
+    Raises PathTraversalError if ``arg`` points outside it and ValueError if it is not a ``.jsonl`` file.
+    """
+    path = safe_path_join(Path.cwd(), arg)
+    if path.suffix != ".jsonl":
+        raise ValueError(f"{arg!r} is not a .jsonl file")
+    return path
 
 
 def load_entries(filepath: str = "telemetry.jsonl") -> list[dict]:
@@ -88,8 +103,12 @@ def show_status(entries: list[dict]):  # noqa: T201 — CLI display tool
 
 
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else "telemetry.jsonl"
-    entries = load_entries(path)
+    try:
+        path = resolve_trace_path(sys.argv[1] if len(sys.argv) > 1 else "telemetry.jsonl")
+    except (PathTraversalError, ValueError) as e:
+        print(f"live_trace: {e}", file=sys.stderr)  # noqa: T201 — CLI display tool
+        sys.exit(2)
+    entries = load_entries(str(path))
     show_status(entries)
 
 

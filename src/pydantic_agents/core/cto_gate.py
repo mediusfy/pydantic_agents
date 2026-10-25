@@ -51,7 +51,9 @@ def read_marker(filepath: Path) -> bool | None:
         return True
     if content in ("false", "0", "no"):
         return False
-    logger.info("CTO approval marker has unrecognised content %r; still waiting.", content)
+    # The file is outside our control: show a short printable prefix so it cannot forge or flood log lines.
+    shown = "".join(ch if ch.isprintable() else "?" for ch in content[:40])
+    logger.info("CTO approval marker has unrecognised content %r; still waiting.", shown)
     return None
 
 
@@ -75,51 +77,53 @@ async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, t
     return False
 
 
+def _log_gate_blocked(state: PipelineState) -> None:
+    """Log that implementation is blocked and list the bottlenecks the CTO identified."""
+    logger.warning("=" * 60)
+    logger.warning("CTO APPROVAL GATE — Implementation blocked")
+    logger.warning("=" * 60)
+    blockers = [b.strip() for b in state.advisory_results.get("cto_blockers", "").split("\n") if b.strip()]
+    if blockers:
+        logger.warning("CTO-identified bottlenecks:")
+        for blocker in blockers:
+            logger.warning("  • %s", blocker)
+
+
 async def apply(state: PipelineState, project: str = "default", timeout_seconds: float = 3600.0) -> bool:
     """CTO Approval Gate.
 
     Returns True if implementation should proceed, False if blocked.
     """
-    if not state.cto_approved:
-        logger.warning("=" * 60)
-        logger.warning("CTO APPROVAL GATE — Implementation blocked")
-        logger.warning("=" * 60)
-        blockers_str = state.advisory_results.get("cto_blockers", "")
-        if blockers_str:
-            logger.warning("CTO-identified bottlenecks:")
-            for b in blockers_str.split("\n"):
-                if b.strip():
-                    logger.warning("  • %s", b.strip())
+    if state.cto_approved:
+        logger.info("CTO approval gate passed (approved_to_proceed=True).")
+        return True
 
-        if os.environ.get("ORCHESTRATION_CTO_OVERRIDE"):
-            logger.warning("ORCHESTRATION_CTO_OVERRIDE set — bypassing gate.")
-            return True
+    _log_gate_blocked(state)
 
-        # Check for a marker file left by an earlier decision (a rejection stops the run, it is not an approval)
-        filepath = _approval_file_path(project)
-        decision = read_marker(filepath)
-        if decision is True:
-            logger.info("Approval marker file found — proceeding.")
-            return True
-        if decision is False:
-            logger.error("CTO rejected the run via the marker file. Pipeline will stop.")
-            return False
+    if os.environ.get("ORCHESTRATION_CTO_OVERRIDE"):
+        logger.warning("ORCHESTRATION_CTO_OVERRIDE set — bypassing gate.")
+        return True
 
-        # Wait for external approval
-        logger.info(
-            "Pipeline paused. Approve by:\n"
-            "  1. Set env ORCHESTRATION_CTO_OVERRIDE=true and rerun\n"
-            "  2. Create file: %s\n"
-            "  3. Wait for CTO re-evaluation (polling for %ds)",
-            filepath,
-            timeout_seconds,
-        )
-        approved = await _poll_for_file_approval(filepath, timeout_seconds=timeout_seconds)
-        if approved:
-            return True
-
-        logger.error("CTO approval not received within timeout. Pipeline will stop.")
+    # Check for a marker file left by an earlier decision (a rejection stops the run, it is not an approval)
+    filepath = _approval_file_path(project)
+    decision = read_marker(filepath)
+    if decision is True:
+        logger.info("Approval marker file found — proceeding.")
+        return True
+    if decision is False:
+        logger.error("CTO rejected the run via the marker file. Pipeline will stop.")
         return False
 
-    logger.info("CTO approval gate passed (approved_to_proceed=True).")
-    return True
+    # Wait for external approval
+    logger.info(
+        "Pipeline paused. Approve by:\n"
+        "  1. Set env ORCHESTRATION_CTO_OVERRIDE=true and rerun\n"
+        "  2. Create file: %s\n"
+        "  3. Wait for CTO re-evaluation (polling for %ds)",
+        filepath,
+        timeout_seconds,
+    )
+    approved = await _poll_for_file_approval(filepath, timeout_seconds=timeout_seconds)
+    if not approved:
+        logger.error("CTO approval not received within timeout. Pipeline will stop.")
+    return approved

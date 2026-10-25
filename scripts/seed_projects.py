@@ -3,7 +3,7 @@
 
 For each non-archived repo in ``--org`` pushed within ``--days`` (minus
 ``--exclude``), shallow-clone or update it under ``--clones-dir``, refresh that
-project's chunks with ``seed_project_context`` (upsert), then delete only chunks whose
+project's chunks with ``seed_project_files`` (upsert), then delete only chunks whose
 ids no longer exist upstream. Any seeding error aborts before anything is deleted.
 
 Dry run by default (prints what would be indexed). Pass ``--apply`` to write; that
@@ -90,7 +90,7 @@ def refresh_project(mcp_server, name: str, path: Path) -> str:
         return real_add(collection, docs, metas, ids)
 
     with patch.object(vdb, "add_documents", side_effect=recording_add):
-        summary = mcp_server.seed_project_context(str(path), name)
+        summary = mcp_server.seed_project_files(str(path), name)
     if "Errors:" in summary:
         raise RuntimeError(f"{name}: seeding failed, nothing deleted\n{summary}")
     stale = before - written
@@ -122,7 +122,7 @@ def main() -> int:
             print(f"{name}: {refresh_project(mcp_server, name, path)}")
         else:
             with patch.object(mcp_server.vector_db, "add_documents") as add:
-                mcp_server.seed_project_context(str(path), name)
+                mcp_server.seed_project_files(str(path), name)
             chunks = sum(len(c.args[1]) for c in add.call_args_list)
             print(f"{name}: would index {chunks} chunks")
     return 0

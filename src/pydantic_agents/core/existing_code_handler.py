@@ -428,6 +428,11 @@ async def run_existing_code_pipeline(
     return result
 
 
+def _bullet_section(title: str, items: list[str]) -> list[str]:
+    """A title line followed by one bullet per item; nothing when there are no items."""
+    return [title, *(f"  - {item}" for item in items)] if items else []
+
+
 def format_result_summary(result: ExistingCodeResult) -> str:
     """Format the pipeline result into a human-readable summary."""
     lines = [
@@ -435,31 +440,15 @@ def format_result_summary(result: ExistingCodeResult) -> str:
         "",
         f"**Status**: {'PASSED ✅' if result.passed else 'FAILED 🛑'}",
         f"**Attempts**: {result.retries_used + 1} / {MAX_RETRIES + 1}",
+        *_bullet_section("\n**Changed files**:", result.changed_files),
+        *_bullet_section("\n**Test files**:", result.test_files),
+        *_bullet_section(f"\n**Quality Gate**: score={result.quality_gate_score}", result.quality_gate_feedback),
+        f"\n**Review**: {'approved ✅' if result.passed else 'rejected 🛑'} (risk: {result.review_risk})",
+        # Show only the last 5 errors to avoid noise
+        *_bullet_section("\n**Errors blocking completion**:", result.errors[-5:]),
     ]
-
-    if result.changed_files:
-        lines.append("\n**Changed files**:")
-        for f in result.changed_files:
-            lines.append(f"  - {f}")
-
-    if result.test_files:
-        lines.append("\n**Test files**:")
-        for f in result.test_files:
-            lines.append(f"  - {f}")
-
-    if result.quality_gate_feedback:
-        lines.append(f"\n**Quality Gate**: score={result.quality_gate_score}")
-        for fb in result.quality_gate_feedback:
-            lines.append(f"  - {fb}")
-
-    lines.append(f"\n**Review**: {'approved ✅' if result.passed else 'rejected 🛑'} (risk: {result.review_risk})")
-
-    if result.errors:
-        lines.append("\n**Errors blocking completion**:")
-        for e in result.errors[-5:]:  # Show last 5 to avoid noise
-            lines.append(f"  - {e}")
-        if len(result.errors) > 5:
-            lines.append(f"  - (... and {len(result.errors) - 5} more)")
+    if len(result.errors) > 5:
+        lines.append(f"  - (... and {len(result.errors) - 5} more)")
 
     return "\n".join(lines)
 

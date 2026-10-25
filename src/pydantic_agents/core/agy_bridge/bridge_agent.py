@@ -147,32 +147,41 @@ class BridgeAgent:
             return
 
         for tool in self._agent._function_tools:
-            original_func = tool.func
-
-            async def hooked_tool(run_context, *args, _tool=tool, _original_func=original_func, **kwargs):
-                payload = {"tool": _tool.name, "args": args, "kwargs": kwargs}
-
-                # ── Hook: pre-tool-call ──
-                for hook in self._hooks.pre_tool_call:
-                    result = await hook(payload)
-                    if result is not None and not result.allow:
-                        return f"System blocked tool execution: {result.message}"
-                try:
-                    tool_result = await _original_func(run_context, *args, **kwargs)
-                except TypeError:
-                    # Fallback if the tool doesn't expect run_context
-                    tool_result = await _original_func(*args, **kwargs)
-
-                # ── Hook: post-tool-call
-                payload["result"] = tool_result
-                for hook in self._hooks.post_tool_call:
-                    await hook(payload)
-
-                return tool_result
-
-            tool.func = hooked_tool
+            self._hook_tool(tool)
 
         self._tools_wrapped = True
+
+    async def _blocked_by_pre_tool_hook(self, payload: dict[str, Any]) -> str | None:
+        """The message to return instead of running the tool if a pre-tool-call hook denies it, else None."""
+        for hook in self._hooks.pre_tool_call:
+            result = await hook(payload)
+            if result is not None and not result.allow:
+                return f"System blocked tool execution: {result.message}"
+        return None
+
+    def _hook_tool(self, tool) -> None:
+        """Replace ``tool.func`` with a version that runs the pre- and post-tool-call hooks around the original."""
+        original_func = tool.func
+
+        async def hooked_tool(run_context, *args, **kwargs):
+            payload = {"tool": tool.name, "args": args, "kwargs": kwargs}
+
+            blocked = await self._blocked_by_pre_tool_hook(payload)
+            if blocked is not None:
+                return blocked
+            try:
+                tool_result = await original_func(run_context, *args, **kwargs)
+            except TypeError:
+                # Fallback if the tool doesn't expect run_context
+                tool_result = await original_func(*args, **kwargs)
+
+            payload["result"] = tool_result
+            for hook in self._hooks.post_tool_call:
+                await hook(payload)
+
+            return tool_result
+
+        tool.func = hooked_tool
 
     @property
     def hooks(self) -> Hooks:
@@ -186,19 +195,31 @@ class BridgeAgent:
     def model(self) -> str:
         return self._model
 
+    @staticmethod
+    def _joined_system_prompts(agent: Any) -> str:
+        """The agent's static system prompts joined, or "" when it has none."""
+        prompts = getattr(agent, "_system_prompts", None)
+        if isinstance(prompts, (list, tuple)) and any(prompts):
+            return "\n\n".join(str(p) for p in prompts if p)
+        return ""
+
+    @staticmethod
+    def _single_system_prompt(agent: Any) -> str | None:
+        """The agent's ``_system_prompt`` (called if it is a callable), or None when it has no such attribute."""
+        if not hasattr(agent, "_system_prompt"):
+            return None
+        prompt = agent._system_prompt
+        return prompt() if callable(prompt) else str(prompt)
+
     def get_system_prompt(self) -> str:
         self._resolve()
-        if self._agent:
-            if hasattr(self._agent, "_system_prompts"):
-                prompts = self._agent._system_prompts
-                if prompts and isinstance(prompts, (list, tuple)) and any(prompts):
-                    return "\n\n".join(str(p) for p in prompts if p)
-            if hasattr(self._agent, "_system_prompt"):
-                prompt = self._agent._system_prompt
-                if callable(prompt):
-                    return prompt() if callable(prompt) else str(prompt)
-                return str(prompt)
-        return ""
+        if not self._agent:
+            return ""
+        joined = self._joined_system_prompts(self._agent)
+        if joined:
+            return joined
+        single = self._single_system_prompt(self._agent)
+        return "" if single is None else single
 
     def get_tool_names(self) -> list[str]:
         self._resolve()

@@ -3,6 +3,45 @@ import asyncio
 from pydantic_agents.core.models.core import Artifact
 
 
+def _files_ending_with(artifacts: list[Artifact], suffixes: str | tuple[str, ...]) -> list[tuple[str, str]]:
+    """The (path, content) of every artifact file whose name ends with one of ``suffixes``."""
+    return [(path, content) for art in artifacts for path, content in art.files.items() if path.endswith(suffixes)]
+
+
+def _go_problem(content: str) -> str | None:
+    """Why a Go file fails the structural check, or None when it passes."""
+    if not content.strip():
+        return "empty file"
+    if not any(line.strip().startswith("package ") for line in content.splitlines()):
+        return "missing 'package' declaration"
+    open_braces = content.count("{")
+    close_braces = content.count("}")
+    if open_braces != close_braces:
+        return f"unbalanced braces ({open_braces} open vs {close_braces} close)"
+    return None
+
+
+def _has_component_export(path: str, content: str) -> bool:
+    if path.endswith(".vue"):  # Vue SFCs: a component export in the script block or <script setup>
+        return "export default" in content or "defineComponent" in content or "defineEmits" in content
+    return "export default" in content or "export const" in content
+
+
+def _vue_problems(path: str, content: str) -> list[tuple[str, bool]]:
+    """The (message, fails the file) problems found in a Vue SFC or TSX file."""
+    problems = []
+    if "<template>" in content and "</template>" not in content:
+        problems.append(("missing closing </template>", True))
+    if "<script" in content and "</script>" not in content:
+        problems.append(("missing closing </script>", True))
+    if not _has_component_export(path, content):
+        if path.endswith(".vue"):
+            problems.append(("SFC may be missing component definition", False))  # a warning for SFCs only
+        else:
+            problems.append(("missing component export", True))
+    return problems
+
+
 class CodeValidator:
     """Validates generated code for basic structural correctness."""
 
@@ -14,33 +53,15 @@ class CodeValidator:
         instead of running `go vet`, which requires a complete module graph
         that generated code fragments rarely have.
         """
-        go_files = []
-        for art in artifacts:
-            for path, content in art.files.items():
-                if path.endswith(".go"):
-                    go_files.append((path, content))
-
+        go_files = _files_ending_with(artifacts, ".go")
         if not go_files:
             return True
 
         all_ok = True
         for path, content in go_files:
-            if not content.strip():
-                print(f"[Validator] {path}: empty file")
-                all_ok = False
-                continue
-
-            lines = content.splitlines()
-            has_package = any(line.strip().startswith("package ") for line in lines)
-            if not has_package:
-                print(f"[Validator] {path}: missing 'package' declaration")
-                all_ok = False
-                continue
-
-            open_braces = content.count("{")
-            close_braces = content.count("}")
-            if open_braces != close_braces:
-                print(f"[Validator] {path}: unbalanced braces ({open_braces} open vs {close_braces} close)")
+            problem = _go_problem(content)
+            if problem:
+                print(f"[Validator] {path}: {problem}")
                 all_ok = False
 
         if all_ok:
@@ -50,34 +71,15 @@ class CodeValidator:
     @staticmethod
     async def validate_vue_async(artifacts: list[Artifact]) -> bool:
         """Validate Vue/TSX files for basic structural correctness."""
-        vue_files = []
-        for art in artifacts:
-            for path, content in art.files.items():
-                if path.endswith((".vue", ".tsx")):
-                    vue_files.append((path, content))
-
+        vue_files = _files_ending_with(artifacts, (".vue", ".tsx"))
         if not vue_files:
             return True
 
         all_ok = True
         for path, content in vue_files:
-            if "<template>" in content and "</template>" not in content:
-                print(f"[Validator] {path}: missing closing </template>")
-                all_ok = False
-            if "<script" in content and "</script>" not in content:
-                print(f"[Validator] {path}: missing closing </script>")
-                all_ok = False
-            # Vue SFCs: check for component export in script block or <script setup>
-            if path.endswith(".vue"):
-                has_export = "export default" in content or "defineComponent" in content or "defineEmits" in content
-            else:
-                has_export = "export default" in content or "export const" in content
-            if not has_export:
-                if path.endswith(".vue"):
-                    print(f"[Validator] {path}: SFC may be missing component definition")
-                else:
-                    print(f"[Validator] {path}: missing component export")
-                    all_ok = False
+            for message, fails in _vue_problems(path, content):
+                print(f"[Validator] {path}: {message}")
+                all_ok = all_ok and not fails
 
         if all_ok:
             print("[Validator] Vue/TSX structural validation passed")
