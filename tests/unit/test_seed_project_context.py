@@ -182,3 +182,37 @@ def test_a_failing_file_is_reported_and_the_rest_continue(tmp_path):
     assert "Indexed 1 files" in out  # the README
     assert "Errors:" in out
     assert "db down" in out
+
+
+def test_chunking_an_oversized_paragraph_closes_the_chunk_in_progress_first():
+    text = "intro\n\n" + ("word " * 400)  # a short paragraph, then one well over the limit
+
+    chunks = mcp_server._chunk_text(text, 900)
+
+    assert chunks[0] == "intro"
+    assert len(chunks) == 4  # intro + three pieces of the oversized paragraph
+    assert all(len(c) <= 900 for c in chunks)
+    assert " ".join(chunks[1:]).split() == ("word " * 400).split()
+
+
+def test_chunking_keeps_paragraphs_together_until_the_limit_then_starts_a_new_chunk():
+    paragraphs = ["a" * 400, "b" * 400, "c" * 100]
+
+    chunks = mcp_server._chunk_text("\n\n".join(paragraphs), 900)
+
+    assert chunks == [f"{'a' * 400}\n\n{'b' * 400}", "c" * 100]
+
+
+def test_chunking_an_unbreakable_oversized_paragraph_hard_splits_at_the_limit():
+    chunks = mcp_server._chunk_text("x" * 2000, 900)
+
+    assert [len(c) for c in chunks] == [900, 900, 200]
+
+
+def test_chunking_text_after_an_oversized_paragraph_starts_a_fresh_chunk():
+    text = ("w " * 600).strip() + "\n\nafter"
+
+    chunks = mcp_server._chunk_text(text, 900)
+
+    assert chunks[-1].endswith("after")
+    assert all(len(c) <= 900 for c in chunks)
