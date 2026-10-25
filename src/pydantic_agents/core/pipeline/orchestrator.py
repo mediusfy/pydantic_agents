@@ -32,6 +32,9 @@ _STEP_TO_STAGE = {
 }
 
 
+_ALL_STAGES = [STAGES.BA, STAGES.ADVISORY, STAGES.IMPLEMENTATION, STAGES.QUALITY_GATE]
+
+
 class OrgitrationPipeline:
     def __init__(self, config: PipelineConfig):
         self.config = config
@@ -63,7 +66,78 @@ class OrgitrationPipeline:
             stage.agent_provider = self.agent_provider
         self.stages[name] = stage
 
-    async def execute(self):
+    async def _run_implementation_loop(self) -> None:
+        """Run implementation, retrying on test failures, with the quality gate after each clean attempt."""
+        from pydantic_agents.core.settings import settings
+
+        max_retries = settings.max_retries if self.config.step == "all" else 1
+
+        for attempt in range(max_retries):
+            logger.info(f"--- Implementation Loop Attempt {attempt + 1}/{max_retries} ---")
+            self.state = await self.stages[STAGES.IMPLEMENTATION].run(self.state, self.config)
+
+            # Test suite failed — retry implementation
+            failure = getattr(self.state, "failure_report", None)
+            if failure and failure.source == "test_suite":
+                logger.info("Test failure detected — retrying implementation with feedback.")
+                continue
+
+            # Proceed to quality gate
+            if STAGES.QUALITY_GATE in self.stages:
+                self.state = await self.stages[STAGES.QUALITY_GATE].run(self.state, self.config)
+
+            if getattr(self.state, "approved", False):
+                logger.info("Quality gate passed — breaking retry loop.")
+                break
+
+    async def _run_stage(self, stage_name: str) -> bool:
+        """Run one stage; False when it is handled elsewhere and so needs no checkpoint of its own."""
+        if stage_name == STAGES.IMPLEMENTATION:
+            await self._run_implementation_loop()
+        elif stage_name == STAGES.QUALITY_GATE and self.config.step == "all":
+            return False  # Handled inside the implementation retry loop
+        else:
+            self.state = await self.stages[stage_name].run(self.state, self.config)
+        return True
+
+    def _resume_from_checkpoint(self, stage_name: str) -> bool:
+        """Load the stage's checkpoint instead of running it, when resuming and one exists."""
+        if not (self.config.resume and self.checkpoint_mgr.stage_exists(stage_name)):
+            return False
+        loaded = self.checkpoint_mgr.load(stage_name)
+        if loaded is None:
+            logger.warning(f"Checkpoint for stage {stage_name} could not be loaded; running the stage instead.")
+            return False
+        logger.info(f"Resuming stage {stage_name} from checkpoint...")
+        self.state = loaded
+        return True
+
+    async def _merge_artifacts(self) -> None:
+        """Apply the approved artifacts into the real project tree."""
+        from pydantic_agents.core.stages.merge_stage import MergeStage
+
+        merge = MergeStage()
+        merge.agent_provider = self.agent_provider
+        logger.info("Pipeline approved — running merge stage to apply artifacts into target project.")
+        self.state = await merge.run(self.state, self.config)
+
+    async def _run_registered_stage(self, stage_name: str) -> None:
+        """Resume the stage from its checkpoint or run it, then checkpoint the result."""
+        if self._resume_from_checkpoint(stage_name):
+            return
+
+        logger.info(f"Executing stage: {stage_name}")
+
+        try:
+            ran = await self._run_stage(stage_name)
+        except Exception as e:
+            logger.exception("Pipeline crashed during stage '%s': %s", stage_name, e)
+            raise
+
+        if ran:
+            self.checkpoint_mgr.save(stage_name, self.state)
+
+    def _log_start(self) -> None:
         if run_id_var.get() is None:
             run_id_var.set(self.state.run_id)
         logger.info(f"Starting Orgitration Pipeline for project: {self.config.project}")
@@ -71,74 +145,25 @@ class OrgitrationPipeline:
         logger.info(f"Output dir: {self.config.output_dir()}")
         logger.info(f"Registered stages: {list(self.stages.keys())}")
 
+    async def execute(self):
+        self._log_start()
+
         # Resolve step name → pipeline stage name
         stage = _STEP_TO_STAGE.get(self.config.step)
         if stage is None:
             logger.error(f"Unknown step: {self.config.step}. Valid steps: {list(_STEP_TO_STAGE.keys())}")
             return
 
-        ordered_stage_names = [STAGES.BA, STAGES.ADVISORY, STAGES.IMPLEMENTATION, STAGES.QUALITY_GATE]
-        if stage != "all":
-            ordered_stage_names = [stage]
-
-        for stage_name in ordered_stage_names:
+        for stage_name in _ALL_STAGES if stage == "all" else [stage]:
             if stage_name not in self.stages:
                 logger.warning(f"Stage {stage_name} not registered. Skipping.")
                 continue
 
-            # Resume Checkpoint Logic
-            if self.config.resume and self.checkpoint_mgr.stage_exists(stage_name):
-                logger.info(f"Resuming stage {stage_name} from checkpoint...")
-                self.state = self.checkpoint_mgr.load(stage_name)
-                continue
-
-            logger.info(f"Executing stage: {stage_name}")
-
-            try:
-                if stage_name == STAGES.IMPLEMENTATION:
-                    from pydantic_agents.core.settings import settings
-
-                    max_retries = settings.max_retries if self.config.step == "all" else 1
-
-                    for attempt in range(max_retries):
-                        logger.info(f"--- Implementation Loop Attempt {attempt + 1}/{max_retries} ---")
-                        self.state = await self.stages[STAGES.IMPLEMENTATION].run(self.state, self.config)
-
-                        # Test suite failed — retry implementation
-                        failure = getattr(self.state, "failure_report", None)
-                        if failure and failure.source == "test_suite":
-                            logger.info("Test failure detected — retrying implementation with feedback.")
-                            continue
-
-                        # Proceed to quality gate
-                        if STAGES.QUALITY_GATE in self.stages:
-                            self.state = await self.stages[STAGES.QUALITY_GATE].run(self.state, self.config)
-
-                        if getattr(self.state, "approved", False):
-                            logger.info("Quality gate passed — breaking retry loop.")
-                            break
-
-                elif stage_name == STAGES.QUALITY_GATE and self.config.step == "all":
-                    # Handled inside the implementation retry loop
-                    continue
-                else:
-                    self.state = await self.stages[stage_name].run(self.state, self.config)
-
-            except Exception as e:
-                logger.exception("Pipeline crashed during stage '%s': %s", stage_name, e)
-                raise
-
-            # Checkpoint commit
-            self.checkpoint_mgr.save(stage_name, self.state)
+            await self._run_registered_stage(stage_name)
 
         # Final artifact flush
         self.artifact_writer.write_artifacts(self.state.artifacts)
 
         # Run merge stage: apply artifacts into the real project tree
         if stage == "all" and self.state.approved:
-            from pydantic_agents.core.stages.merge_stage import MergeStage
-
-            merge = MergeStage()
-            merge.agent_provider = self.agent_provider
-            logger.info("Pipeline approved — running merge stage to apply artifacts into target project.")
-            self.state = await merge.run(self.state, self.config)
+            await self._merge_artifacts()

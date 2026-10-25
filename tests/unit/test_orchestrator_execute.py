@@ -314,3 +314,17 @@ def test_registering_a_stage_gives_it_the_pipeline_provider_unless_it_has_one(ma
 
     assert bare.agent_provider is pipe.agent_provider
     assert own.agent_provider == "its own"
+
+
+async def test_a_checkpoint_that_cannot_be_loaded_is_run_instead(make, caplog):
+    calls: list[str] = []
+    pipe = make(_config(resume=True), _all_stages(calls, quality_gate=_approve))
+    pipe.checkpoint_mgr.stage_exists.side_effect = lambda name: name == STAGES.BA
+    pipe.checkpoint_mgr.load.return_value = None
+
+    with caplog.at_level(logging.WARNING, logger=orchestrator.logger.name):
+        await pipe.execute()
+
+    assert calls[0] == "ba"
+    assert any("could not be loaded; running the stage instead" in r.getMessage() for r in caplog.records)
+    assert pipe.state is not None
