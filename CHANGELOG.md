@@ -12,6 +12,9 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Changed
+- Cognitive complexity reduced (Sonar S3776) in `WorkspaceContext.get_repo_context` and `get_markdown_context`, the
+  Go and Vue/TSX validators, the AutoGen bridge's `_apply_group_result` and `MergeStage.run`, by extracting helpers. New
+  tests (written first and run against the old code) pin each one's output and messages.
 - Cognitive complexity reduced (Sonar S3776) in ten functions by extracting helpers, with no behaviour change: BridgeAgent
   `get_system_prompt` and `_wrap_tools`, `run_server_loop`, `retrieve_context`, `cto_gate.apply`,
   `sync_memory_to_claude`, `sync_claude_to_pgvector`, `build_full_graph`, `format_result_summary` and `format_artifacts`.
@@ -78,6 +81,7 @@ fresh **Unreleased** section above it.
   tool categories (no unassigned or orphaned agents, no categories without a tool, no unread model fields).
 
 ### Fixed
+- `MergeStage` checked that a file stays inside the target project with a string-prefix test, so a path such as `../proj-evil/x` was accepted for a project at `.../proj`. It now uses `Path.is_relative_to`.
 - `sync_memory_to_claude` no longer raises `FileNotFoundError` after pushing the Claude entries when Antigravity's implicit-memory directory does not exist; that step is skipped.
 - **Security (Sonar findings):**
   - The MCP tool `seed_project_context` indexed any directory a caller named. It now only reads inside `SEED_ROOTS`
