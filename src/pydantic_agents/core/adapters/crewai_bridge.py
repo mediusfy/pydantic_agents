@@ -58,8 +58,6 @@ def _pydantic_tool_to_crewai(pydantic_tool: Any) -> Any:
     except ImportError:
         return None
 
-    name = getattr(pydantic_tool, "name", "unknown_tool")
-    description = getattr(pydantic_tool, "description", "") or ""
     fn = getattr(pydantic_tool, "run", None) or getattr(pydantic_tool, "fn", None)
 
     if fn is None:
@@ -68,8 +66,8 @@ def _pydantic_tool_to_crewai(pydantic_tool: Any) -> Any:
     _callable = fn
 
     class _WrappedTool(BaseTool):
-        name: str = name
-        description: str = description
+        name: str = getattr(pydantic_tool, "name", "unknown_tool")
+        description: str = getattr(pydantic_tool, "description", "") or ""
 
         def _run(self, *args: Any, **kwargs: Any) -> Any:
             return _callable(*args, **kwargs)

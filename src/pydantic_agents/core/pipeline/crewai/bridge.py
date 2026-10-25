@@ -64,7 +64,7 @@ async def run_crewai_pipeline(
 
             state.stage = "implementation"
         except Exception as e:
-            logger.error("CrewAI pipeline failed: %s", e)
+            logger.exception("CrewAI pipeline failed: %s", e)
             state.errors.append(f"crewai: {e}")
             state.failure_report = FailureReport(source="crewai", error_type="runtime_error", trace=str(e))
             state.approved = False

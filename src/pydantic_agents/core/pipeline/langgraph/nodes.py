@@ -60,7 +60,7 @@ async def ba_node(
                 "context_history": history,
             }
         except Exception as e:
-            logger.error(f"BA stage failed: {e}")
+            logger.exception("BA stage failed: %s", e)
             return _make_error(state, "ba", str(e))
 
 
@@ -97,7 +97,7 @@ async def advisory_node(
                 "context_history": history,
             }
         except Exception as e:
-            logger.error(f"Advisory stage failed: {e}")
+            logger.exception("Advisory stage failed: %s", e)
             return _make_error(state, "advisory", str(e))
 
 
@@ -137,7 +137,7 @@ async def implementation_node(
                 "context_history": history,
             }
         except Exception as e:
-            logger.error(f"Implementation stage failed: {e}")
+            logger.exception("Implementation stage failed: %s", e)
             return _make_error(state, "implementation", str(e))
 
 
@@ -172,7 +172,7 @@ async def quality_gate_node(
                 "context_history": history,
             }
         except Exception as e:
-            logger.error(f"Quality gate failed: {e}")
+            logger.exception("Quality gate failed: %s", e)
             return _make_error(state, "quality_gate", str(e))
 
 
@@ -202,5 +202,5 @@ async def merge_node(
                 "context_history": history,
             }
         except Exception as e:
-            logger.error(f"Merge failed: {e}")
+            logger.exception("Merge failed: %s", e)
             return _make_error(state, "merge", str(e))

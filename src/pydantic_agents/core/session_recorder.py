@@ -36,6 +36,9 @@ class ToolCallRecord:
     duration_sec: float
 
 
+DEFAULT_TRACE_FILE = "session_trace.jsonl"
+
+
 @dataclass
 class AgentRunRecord:
     run_id: str
@@ -64,7 +67,7 @@ class AgentRunRecord:
 class SessionRecorder:
     """Thread-safe session recorder that writes structured trace records."""
 
-    def __init__(self, filepath: str = "session_trace.jsonl", max_bytes: int = 50 * 1024 * 1024):
+    def __init__(self, filepath: str = DEFAULT_TRACE_FILE, max_bytes: int = 50 * 1024 * 1024):
         self.filepath = filepath
         self.max_bytes = max_bytes
         self._current: AgentRunRecord | None = None
@@ -248,7 +251,7 @@ class SessionRecorder:
 recorder = SessionRecorder()
 
 
-def extract_traces(filepath: str = "session_trace.jsonl", last_n: int = 0) -> list[dict]:
+def extract_traces(filepath: str = DEFAULT_TRACE_FILE, last_n: int = 0) -> list[dict]:
     """Extract session trace records as a list of dicts."""
     records = []
     try:
@@ -265,7 +268,7 @@ def extract_traces(filepath: str = "session_trace.jsonl", last_n: int = 0) -> li
     return records
 
 
-def summarize_traces(filepath: str = "session_trace.jsonl") -> str:
+def summarize_traces(filepath: str = DEFAULT_TRACE_FILE) -> str:
     """Text summary of all trace records for real-time monitoring."""
     records = extract_traces(filepath, last_n=50)
     output = []
