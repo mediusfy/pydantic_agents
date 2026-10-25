@@ -125,6 +125,17 @@ def _caller(session: "ClientSession") -> CallTool:
     return call
 
 
+def describe_error(exc: BaseException) -> str:
+    """One line for a failure to reach the endpoint: the MCP client wraps the real cause in exception groups."""
+    import httpx
+
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    if isinstance(exc, httpx.HTTPStatusError):
+        return f"the endpoint answered HTTP {exc.response.status_code} ({exc.response.reason_phrase})"
+    return f"{type(exc).__name__}: {str(exc)[:300]}"
+
+
 async def main() -> int:
     base = os.environ.get("LITELLM_BASE_URL", "").rstrip("/")
     url = os.environ.get("MCP_URL") or (f"{base}/mcp" if base else "")
@@ -138,13 +149,17 @@ async def main() -> int:
 
     # LiteLLM and the pod's own MCP server accept a bearer token; set MCP_URL for a gateway that wants another scheme.
     headers = {"Authorization": f"Bearer {key}"} if key else None
-    async with AsyncExitStack() as stack:
-        read, write, _ = await stack.enter_async_context(
-            streamablehttp_client(url, headers=headers, sse_read_timeout=TOOL_TIMEOUT_SECONDS)
-        )
-        session = await stack.enter_async_context(ClientSession(read, write))
-        await session.initialize()
-        failures = await run_checks(await _tool_names(session), _caller(session))
+    try:
+        async with AsyncExitStack() as stack:
+            read, write, _ = await stack.enter_async_context(
+                streamablehttp_client(url, headers=headers, sse_read_timeout=TOOL_TIMEOUT_SECONDS)
+            )
+            session = await stack.enter_async_context(ClientSession(read, write))
+            await session.initialize()
+            failures = await run_checks(await _tool_names(session), _caller(session))
+    except (Exception, BaseExceptionGroup) as e:
+        print(f"FAIL could not use {url}: {describe_error(e)}", file=sys.stderr)
+        return 1
 
     for name, error in failures:
         print(f"FAIL {name}: {error}", file=sys.stderr)
