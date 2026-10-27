@@ -112,18 +112,29 @@ def _provider_connection(provider: str, model_spec: str) -> tuple[str, str] | No
     return base_url, api_key
 
 
+def _http_client():
+    """An httpx client with the configured per-request timeout, or None to use pydantic_ai's default client."""
+    if settings.agent_http_timeout_seconds <= 0:
+        return None
+    import httpx
+
+    return httpx.AsyncClient(timeout=httpx.Timeout(settings.agent_http_timeout_seconds, connect=10.0))
+
+
 def _make_chat_model(provider: str, model_name: str, base_url: str, api_key: str) -> Model:
     from pydantic_ai.models.openai import OpenAIChatModel
 
     logger.info("Creating %s model '%s' via %s", provider, model_name, base_url)
+    client = _http_client()
+    extra = {"http_client": client} if client is not None else {}
     if provider == "deepseek":
         from pydantic_ai.providers.deepseek import DeepSeekProvider
 
-        return OpenAIChatModel(model_name, provider=DeepSeekProvider(api_key=api_key))
+        return OpenAIChatModel(model_name, provider=DeepSeekProvider(api_key=api_key, **extra))
 
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    return OpenAIChatModel(model_name, provider=OpenAIProvider(base_url=base_url, api_key=api_key))
+    return OpenAIChatModel(model_name, provider=OpenAIProvider(base_url=base_url, api_key=api_key, **extra))
 
 
 def _build_model(model_spec: str) -> Model:

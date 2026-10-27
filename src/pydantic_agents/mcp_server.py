@@ -1,13 +1,13 @@
 import asyncio
 import logging
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-import contextlib
 import glob
-import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -18,14 +18,12 @@ from mcp.server.transport_security import TransportSecuritySettings
 
 from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core.context_engine import retrieve_context
-from pydantic_agents.core.event_broker import Event, EventKind, event_broker
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
-from pydantic_agents.core.limits import usage_limits
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.memory_bridge import get_bridge_status, sync_claude_to_pgvector, sync_memory_to_claude
 from pydantic_agents.core.observability import configure_observability
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.settings import settings
-from pydantic_agents.core.telemetry import telemetry
 from pydantic_agents.core.utils import serialize_output
 from pydantic_agents.core.vector_db import vector_db
 
@@ -48,59 +46,62 @@ mcp = FastMCP(
 register_all_agents()
 
 
-async def run_agent_by_name(agent_name: str, request: str) -> str:
+# Project names reach the file system (output, checkpoint and approval-marker directories), so they are plain names.
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
+def _check_project_name(project_name: str) -> str | None:
+    """An error message when a project name is not a plain name, else None."""
+    if _PROJECT_NAME.fullmatch(project_name) and ".." not in project_name:
+        return None
+    return f"Invalid project_name {project_name!r}: use letters, digits, '_', '.' and '-' only (at most 64 characters)."
+
+
+async def run_agent_by_name(agent_name: str, request: str, project: str = "") -> str:
     """Run a registered agent by its name, resolving dependencies and tracking telemetry.
 
     FORTIFIED CONTEXT MANAGEMENT:
     Before running the agent, this function retrieves relevant snippets from the
     vector-indexed context store (ADRs, architecture rules, past decisions) and
     prepends them to the request. This ensures agents are fed exactly the relevant
-    context without needing to manually hunt through the file system.
+    context without needing to manually hunt through the file system. ``project`` scopes
+    the retrieval to one seeded project; empty searches every project.
+
+    The call goes through ``registry.run`` (permit, timeout, retry, usage caps) and gets its own run id, so its
+    model calls are grouped as one session in Langfuse.
 
     Returns the agent's answer: plain text for text agents, otherwise JSON
     (``BaseModel.model_dump_json()`` for structured results, a JSON array for lists).
     """
-    try:
-        agent = registry.get(agent_name)
-    except ValueError as e:
-        raise AgentNotFoundError(f"Agent '{agent_name}' not registered") from e
-
-    agent_tuple = registry._agents.get(agent_name)
-    if not agent_tuple:
+    if not registry.is_registered(agent_name):
         raise AgentNotFoundError(f"Agent '{agent_name}' not registered")
 
-    _, _, deps_factory, _ = agent_tuple
-
-    # ── Context Enrichment ────────────────────────────────────────────────
-    # Pull relevant snippets from the vector-indexed knowledge base
-    enriched_request = request
-    with logfire.span("mcp.retrieve_context", agent_name=agent_name, _level="info"):
-        context = retrieve_context(agent_name, request, top_k=3)
-        if context:
-            enriched_request = f"Relevant Architecture Context from Knowledge Base:\n{context}\n\n---\n\n{request}"
-    # ──────────────────────────────────────────────────────────────────────
-
-    span_attrs: dict[str, Any] = {
-        "agent_name": agent_name,
-        "request_length": len(request),
-        "context_retrieved": bool(context),
-    }
-
-    start = time.time()
-    success = False
+    run_token = run_id_var.set(run_id_var.get() or f"call_{uuid.uuid4().hex[:12]}")
     try:
-        with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
-            resolved_deps = deps_factory() if callable(deps_factory) else {}
-            result = await agent.run(enriched_request, deps=resolved_deps, usage_limits=usage_limits(agent_name))
-            success = True
-            return serialize_output(result)
-    except Exception as e:
-        logger.warning("Agent '%s' failed: %s", agent_name, e)
-        raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
+        # ── Context Enrichment ────────────────────────────────────────────────
+        # Pull relevant snippets from the vector-indexed knowledge base
+        enriched_request = request
+        with logfire.span("mcp.retrieve_context", agent_name=agent_name, _level="info"):
+            context = await retrieve_context(agent_name, request, top_k=3, project=project or None)
+            if context:
+                enriched_request = f"Relevant Architecture Context from Knowledge Base:\n{context}\n\n---\n\n{request}"
+        # ──────────────────────────────────────────────────────────────────────
+
+        span_attrs: dict[str, Any] = {
+            "agent_name": agent_name,
+            "request_length": len(request),
+            "context_retrieved": bool(context),
+            "langfuse.session.id": run_id_var.get() or "",
+        }
+        try:
+            with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
+                result = await registry.run(agent_name, enriched_request)
+                return serialize_output(result)
+        except Exception as e:
+            logger.warning("Agent '%s' failed: %s", agent_name, e)
+            raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
     finally:
-        duration = time.time() - start
-        with contextlib.suppress(Exception):
-            await telemetry.log_call(agent_name, duration, success, metadata=span_attrs)
+        run_id_var.reset(run_token)
 
 
 AGENT_DOCSTRINGS = {
@@ -133,6 +134,26 @@ AGENT_DOCSTRINGS = {
     "quality_gate": "Invokes the Quality Gate agent to check for over-engineering and complexity.",
     "service_engineer": "Invokes the Service Engineer agent to modify existing Go codebases.",
     "planner": "Invokes the Planner agent to create execution plans.",
+    "critic": (
+        "Invokes the Critic agent to check another agent's claims against the evidence from its run. "
+        "Returns a JSON CriticReport (claims with evidence, unsupported_count, passed, feedback)."
+    ),
+    "api_contract": (
+        "Invokes the API Contract agent to find drift between OpenAPI/proto specs, Go handlers and TypeScript types. "
+        "Returns a JSON ContractReport (drifts with file:line, passed, feedback)."
+    ),
+    "observability_engineer": (
+        "Invokes the Observability Engineer agent to review Go services for OTel spans, RED metrics, slog logging "
+        "and health probes. Returns an Artifact with Prometheus rule files and docs/observability-review.md."
+    ),
+    "finops": (
+        "Invokes the FinOps agent to account for LLM and cloud spend. "
+        "Returns a JSON CostReport (cost lines, total_usd, budget_usd, over_budget, recommendations)."
+    ),
+    "release_manager": (
+        "Invokes the Release Manager agent to write the CHANGELOG fragment, version-bump note and PR body "
+        "for a finished change. Returns an Artifact with those three files."
+    ),
     "crypto_oracle": (
         "Invokes the Crypto Oracle Agent to analyze crypto markets and trends. "
         "Returns a JSON Forecast (scenarios, sources, previous-forecast accountability)."
@@ -150,6 +171,8 @@ AGENT_DOCSTRINGS = {
 
 # Appended to every run_<agent> tool description so MCP clients know how to parse the result.
 RESULT_FORMAT_NOTE = (
+    "\n\nArgs: request (the task); project (optional: the seeded project name whose ADRs, conventions and "
+    "architecture notes should be retrieved as context; empty searches every project)."
     "\n\nReturns: plain text for agents that answer in text; otherwise JSON (a structured result such as an "
     "Artifact is a JSON object, a list of results is a JSON array)."
 )
@@ -157,8 +180,8 @@ RESULT_FORMAT_NOTE = (
 
 def _register_agent_mcp_tools():
     def make_runner(agent_name: str):
-        async def agent_runner(request: str) -> str:
-            return await run_agent_by_name(agent_name, request)
+        async def agent_runner(request: str, project: str = "") -> str:
+            return await run_agent_by_name(agent_name, request, project=project)
 
         return agent_runner
 
@@ -266,16 +289,27 @@ def list_orchestration_capabilities() -> str:
 
 
 @mcp.tool()
-async def run_orchestration_pipeline(project_name: str, requirement: str) -> str:
+async def run_orchestration_pipeline(
+    project_name: str, requirement: str, blueprint: str = "new_feature", framework: str = ""
+) -> str:
     """Run the entire multi-agent Orgitration pipeline end-to-end for a given project requirement.
 
     Because the pipeline can take 10+ minutes, this tool submits the pipeline
     as a background task and returns immediately with a run_id. Poll for
     completion using check_pipeline_status.
+
+    blueprint: one of the catalogue in core/pipeline/config.py (new_feature, quick_backend, langgraph_full,
+    crew_sdlc, crew_qa, crew_architecture_review, crew_audit, ...). framework: legacy, langgraph, crewai, autogen
+    or composite; empty uses the blueprint's own framework.
     """
+    from pydantic_agents.core.pipeline.config import BLUEPRINTS
     from pydantic_agents.core.pipeline_jobs import submit_pipeline_run
 
-    run_id = await submit_pipeline_run(project_name, requirement)
+    if error := _check_project_name(project_name):
+        return f"ERROR: {error}"
+    if blueprint not in BLUEPRINTS:
+        return f"ERROR: Unknown blueprint {blueprint!r}. Available: {', '.join(BLUEPRINTS)}"
+    run_id = await submit_pipeline_run(project_name, requirement, blueprint=blueprint, framework=framework or None)
     return (
         f"Pipeline run '{run_id}' submitted for project '{project_name}' in the background.\n"
         f"Poll for completion with: check_pipeline_status(run_id='{run_id}')"
@@ -330,6 +364,8 @@ async def approve_cto_gate(project_name: str, approved: bool = True) -> str:
     """
     from pydantic_agents.core.cto_gate import write_approval
 
+    if error := _check_project_name(project_name):
+        return f"ERROR: {error}"
     path = write_approval(project_name, approved)
     return f"CTO gate for '{project_name}' set to {'approved' if approved else 'rejected'} ({path.name})."
 
@@ -357,45 +393,59 @@ async def cancel_pipeline_run(run_id: str) -> str:
 
 @mcp.tool()
 async def plan_and_execute(goal: str) -> str:
-    """Creates a plan to achieve a high-level goal and executes all tasks in dependency order."""
+    """Creates a plan to achieve a high-level goal and executes all tasks in dependency order.
+
+    A task's prompt is extended with the results of the tasks it depends on, so dependencies carry data and not
+    only order. A task whose dependency failed is skipped and reported as such.
+    """
     with logfire.span("mcp.plan_and_execute", goal_length=len(goal), _level="info"):
-        from pydantic_agents.agents.planner_agent import planner_agent
         from pydantic_agents.core.registry import instrumented_query
 
-        plan_response = await planner_agent.run(
-            f"Create a plan to achieve this goal: {goal}",
-            usage_limits=usage_limits("planner"),
-        )
-        plan = plan_response.output
+        run_token = run_id_var.set(run_id_var.get() or f"plan_{uuid.uuid4().hex[:12]}")
+        try:
+            plan_response = await registry.run("planner", f"Create a plan to achieve this goal: {goal}")
+            plan = plan_response.output
 
-        completed: set[str] = set()
-        results: dict[str, str] = {}
+            completed: set[str] = set()
+            results: dict[str, str] = {}
 
-        while len(completed) < len(plan.tasks):
-            batch = [t for t in plan.tasks if t.id not in completed and all(dep in completed for dep in t.dependencies)]
-            if not batch:
-                return f"Plan execution stuck — possible circular dependency.\nPlan: {plan.model_dump_json(indent=2)}"
+            while len(completed) < len(plan.tasks):
+                batch = [
+                    t for t in plan.tasks if t.id not in completed and all(dep in completed for dep in t.dependencies)
+                ]
+                if not batch:
+                    plan_json = plan.model_dump_json(indent=2)
+                    return f"Plan execution stuck — possible circular dependency.\nPlan: {plan_json}"
 
-            async def _run_task(t):
-                try:
-                    result = await instrumented_query(
-                        capability=t.capability,
-                        prompt=t.prompt,
-                        span_name="mcp.plan_task",
-                        attributes={"task_id": t.id, "capability": t.capability},
-                    )
-                    results[t.id] = result
-                except Exception as e:
-                    results[t.id] = f"ERROR: {e}"
+                async def _run_task(t):
+                    failed_deps = [d for d in t.dependencies if results.get(d, "").startswith("ERROR")]
+                    if failed_deps:
+                        results[t.id] = f"ERROR: skipped, dependency failed: {', '.join(failed_deps)}"
+                        return
+                    prompt = t.prompt
+                    if t.dependencies:
+                        upstream = "\n\n".join(f"[{d}]\n{results.get(d, '')}" for d in t.dependencies)
+                        prompt = f"{t.prompt}\n\nResults of the tasks this depends on:\n{upstream}"
+                    try:
+                        results[t.id] = await instrumented_query(
+                            capability=t.capability,
+                            prompt=prompt,
+                            span_name="mcp.plan_task",
+                            attributes={"task_id": t.id, "capability": t.capability},
+                        )
+                    except Exception as e:
+                        results[t.id] = f"ERROR: {e}"
 
-            await asyncio.gather(*[_run_task(t) for t in batch])
+                await asyncio.gather(*[_run_task(t) for t in batch])
 
-            for t in batch:
-                completed.add(t.id)
+                for t in batch:
+                    completed.add(t.id)
+        finally:
+            run_id_var.reset(run_token)
 
         summary_lines = [f"## Plan Execution: {goal}", ""]
         for t in plan.tasks:
-            status = "✓" if "ERROR" not in results.get(t.id, "") else "✗"
+            status = "✓" if not results.get(t.id, "").startswith("ERROR") else "✗"
             summary_lines.append(f"  {status} {t.id} ({t.capability}): {t.prompt[:80]}...")
             summary_lines.append(f"     → {results.get(t.id, 'no result')[:200]}")
 
@@ -409,8 +459,11 @@ async def modify_existing_code(change_description: str, codebase_path: str = "")
     Use this when you have an existing Go service that needs changes — adding handlers,
     wiring dependencies, refactoring, fixing bugs, adding tracing, or extending features.
 
-    This runs: service_engineer → test_engineer → quality_gate → review
-    Each agent validates the previous one's output.
+    This runs: service_engineer → test_engineer → deterministic verification (go build/vet/test on the changed
+    tree) → quality_gate + review in parallel. Each gate reads the verification report.
+
+    The changed files are written under generated-app/<codebase name>/ (they are not applied to the codebase);
+    the result lists where.
 
     Args:
         change_description: What to change and why (e.g., "Add OpenTelemetry tracing
@@ -467,66 +520,7 @@ async def scaffold_and_build_service(service_name: str, bounded_context: str, re
         return f"Service '{service_name}' scaffolding pipeline completed. Artifacts in generated-app/{service_name}/."
 
 
-# ── Event-Driven Async Handoff Tools ──────────────────────────────────────
-
-
-@mcp.tool()
-async def submit_async_task(
-    task_type: str,
-    payload: str,
-    callback_tool: str | None = None,
-) -> str:
-    """Submit a long-running task to the background queue.
-
-    task_type: One of "build", "test_suite", "deploy", "pipeline"
-    payload: JSON payload with task parameters
-    callback_tool: Optional tool name to call on completion
-
-    Returns:
-        task_id — use with check_task_status to poll for results.
-    """
-    with logfire.span(
-        "mcp.submit_async_task",
-        task_type=task_type,
-        payload_length=len(payload),
-        _level="info",
-    ):
-        task_id = await event_broker.submit(
-            Event(
-                kind=EventKind.TASK_SUBMITTED,
-                data={
-                    "type": task_type,
-                    "payload": payload,
-                    "callback_tool": callback_tool,
-                },
-            )
-        )
-        return f"Task '{task_id}' submitted. Use check_task_status('{task_id}') to poll for results."
-
-
-@mcp.tool()
-async def check_task_status(task_id: str) -> str:
-    """Check the status of an async task submitted via submit_async_task."""
-    with logfire.span("mcp.check_task_status", task_id=task_id, _level="info"):
-        status = await event_broker.get_status(task_id)
-        if not status:
-            return f"Task '{task_id}' not found."
-        return f"Task: {task_id}\nStatus: {status.get('status', 'unknown')}\nResult: {status.get('result', 'pending')}"
-
-
-@mcp.tool()
-async def wait_for_task(task_id: str, timeout_seconds: int = 300) -> str:
-    """Wait synchronously for an async task to complete (up to timeout_seconds)."""
-    with logfire.span("mcp.wait_for_task", task_id=task_id, timeout=timeout_seconds, _level="info"):
-        import asyncio
-
-        result = await asyncio.wait_for(event_broker.wait_for(task_id, timeout_seconds), timeout_seconds + 10)
-        if result is None:
-            return f"Task '{task_id}' timed out after {timeout_seconds}s."
-        return f"Task: {task_id}\nStatus: {result.get('status', 'completed')}\nResult: {result.get('result', '')}"
-
-
-# ── Vector DB Tools for Async Task Context ────────────────────────────────
+# ── Vector DB Tools ────────────────────────────────
 
 
 def _split_oversized(para: str, max_chars: int) -> tuple[list[str], str]:
@@ -751,21 +745,6 @@ def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "
         return f"No context found for: {query}"
 
     return "\n".join(all_results)
-
-
-@mcp.tool()
-def task_context(task_id: str) -> str:
-    """Get full context from the vector DB about a specific completed async task.
-
-    Searches the project domain for context related to a given task_id.
-
-    Args:
-        task_id: The task ID to look up context for
-    """
-    results = vector_db.search("project", task_id, n_results=3)
-    if not results:
-        return f"No context found for task: {task_id}"
-    return "\n---\n".join(results[:3])
 
 
 # ── Cross-Runtime Memory Bridge Tools ─────────────────────────────────────

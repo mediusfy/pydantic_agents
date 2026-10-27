@@ -58,10 +58,6 @@ class Settings(BaseSettings):
     # Supported providers: deepseek, gemini, vertexai, openai, litellm
     model_provider: str | None = "litellm"
 
-    redis_iris_url: str | None = None
-    redis_iris_store_id: str | None = None
-    redis_iris_token: str | None = None
-
     # Agent Model Overrides
     # NOTE: these are real LiteLLM model groups, not Claude aliases. The proxy
     # has no Anthropic credential (Claude is reachable only through Claude Code's
@@ -85,6 +81,11 @@ class Settings(BaseSettings):
     planner_model: str = "deepseek-v4-pro"
     quality_gate_model: str = "deepseek-v4-pro"
     service_engineer_model: str = "deepseek-v4-pro"
+    critic_model: str = "deepseek-v4-pro"
+    api_contract_model: str = "deepseek-v4-pro"
+    observability_engineer_model: str = "deepseek-v4-pro"
+    finops_model: str = "subagent"
+    release_manager_model: str = "subagent"
 
     holiday_planner_model: str = "subagent"
     region_analyzer_model: str = "subagent"
@@ -113,10 +114,28 @@ class Settings(BaseSettings):
     # once and walks its fallback chain: stacking more here multiplied one call into ~12 upstream attempts.
     agent_transport_attempts: int = 1
     agent_timeout_seconds: float = 600.0
+    # Per-request HTTP timeout on the model client (read/write/pool); a hung upstream must not hold a concurrency
+    # permit for the whole agent_timeout_seconds. 0 disables it.
+    agent_http_timeout_seconds: float = 300.0
+    # Output cap sent with every model call (max_tokens). 0 sends none.
+    agent_max_output_tokens: int = 16384
+    # Push activity logs into the local Claude Code / Antigravity memory directories after a pipeline run. Off by
+    # default: in the pod there are no such directories, and on a workstation it writes into every agent's memory.
+    memory_bridge_sync: bool = False
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
     state_backend: Literal["disk", "turso"] = "disk"
     vector_db_dir: Path = Path("./.claw-vectordb")
+    # Embeddings for vector_db: "local" runs sentence-transformers in-process, "litellm" calls the proxy's
+    # OpenAI-compatible /embeddings endpoint. The pgvector column is vector(embedding_dim), so changing the provider,
+    # model or dimension changes the vector space: every collection must be re-seeded afterwards.
+    embedding_provider: Literal["local", "litellm"] = "local"
+    embedding_model: str = "all-MiniLM-L6-v2"
+    embedding_dim: int = 384
+    # Rerank the fused candidates through the proxy's /rerank endpoint (litellm provider only); empty disables it.
+    rerank_model: str = ""
+    # Fuse pgvector cosine search with Postgres full-text search (reciprocal rank fusion); False keeps vector-only.
+    retrieval_hybrid: bool = True
 
     go_version: str = "1.26"
     # One convention for the Go service entry point, shared by the backend prompt, the implementation stage and

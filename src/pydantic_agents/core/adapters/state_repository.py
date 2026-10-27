@@ -49,7 +49,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
 
     def _get_filepath(self, run_id: str, stage: str) -> str:
         safe_stage = stage.replace("/", "_").replace(" ", "_")
-        return os.path.join(self.checkpoint_dir, f"{run_id}_{safe_stage}.json")
+        return os.path.join(self.checkpoint_dir, f"{run_id}__{safe_stage}.json")
 
     def save(self, run_id: str, stage: str, state: PipelineState) -> None:
         filepath = self._get_filepath(run_id, stage)
@@ -104,6 +104,9 @@ class LocalDiskStateRepository(StateRepositoryPort):
                 return None
             files.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)
             latest = files[0]
+            if "__" in latest:
+                return latest.split("__")[0]
+            # Checkpoints written before the double-underscore separator: a UUID run id before the first "_".
             run_id = latest.split("_")[0]
             try:
                 uuid.UUID(run_id)

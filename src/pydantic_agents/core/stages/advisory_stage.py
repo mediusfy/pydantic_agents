@@ -40,7 +40,7 @@ class AdvisoryStage(StageRunner):
             tech_stack=["Go", "Vue", "PostgreSQL", "Redis"], compliance_tier="Standard", monthly_cloud_budget=1000.0
         )
 
-        cto_prompt, ux_prompt = self._build_prompts(story_context, md_context)
+        cto_prompt, ux_prompt = await self._build_prompts(story_context, md_context, config.project)
 
         async def _run_cto():
             async with recorder.record_span(
@@ -81,16 +81,16 @@ class AdvisoryStage(StageRunner):
         return state
 
     @staticmethod
-    def _build_prompts(story_context: str, md_context: str) -> tuple[str, str]:
+    async def _build_prompts(story_context: str, md_context: str, project: str | None = None) -> tuple[str, str]:
         from pydantic_agents.core.context_engine import retrieve_context
 
         cto_prompt = f"Review these user stories and provide architectural advice:\n{story_context}"
-        cto_ctx = retrieve_context("cto", story_context)
+        cto_ctx = await retrieve_context("cto", story_context, project=project)
         if cto_ctx:
             cto_prompt += f"\n\nRetrieved Architectural Context/ADRs/Rules:\n{cto_ctx}"
 
         ux_prompt = f"Review these user stories and provide UX/UI advice:\n{story_context}"
-        ux_ctx = retrieve_context("ux", story_context)
+        ux_ctx = await retrieve_context("ux", story_context, project=project)
         if ux_ctx:
             ux_prompt += f"\n\nRetrieved UX Context/Rules:\n{ux_ctx}"
 

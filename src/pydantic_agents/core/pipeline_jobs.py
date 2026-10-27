@@ -8,6 +8,10 @@ caller poll for completion. No Redis/DB dependency — simple asyncio task + dic
 to the ``pipeline_runs`` table (``core/run_store.py``, best-effort), so after a restart ``get_run`` still finds
 a run and reports one that was in flight as ``interrupted``; ``resume_pipeline_run`` restarts it from its
 checkpoints.
+
+A run's final status comes from the pipeline's final state, not from "execute() returned": ``completed`` only
+when the gates approved, ``failed`` with the failure report otherwise (no stories, CTO rejection, retries
+exhausted, or an exception).
 """
 
 import asyncio
@@ -22,8 +26,9 @@ import logfire
 
 from pydantic_agents.core import run_store
 from pydantic_agents.core.limits import run_id_var
-from pydantic_agents.core.pipeline.config import PipelineConfig
-from pydantic_agents.core.pipeline.factory import build_default_pipeline
+from pydantic_agents.core.models.core import PipelineState
+from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
+from pydantic_agents.core.pipeline.factory import build_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -35,23 +40,39 @@ PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
 
 _RUN_ID = re.compile(r"pipe_[0-9a-f]{12}")
 
+STATUS_WAITING_CTO = "waiting_cto_approval"
+
+
+async def set_run_status(run_id: str, status: str, **fields: Any) -> None:
+    """Update a live run's status (and any other fields) in memory and in the store; unknown runs are ignored."""
+    run = PIPELINE_RUNS.get(run_id)
+    if run is None:
+        return
+    run["status"] = status
+    run.update(fields)
+    await run_store.save_run(run_id, run)
+
 
 async def submit_pipeline_run(
-    project_name: str, requirement: str, *, run_id: str | None = None, resume: bool = False
+    project_name: str,
+    requirement: str,
+    *,
+    run_id: str | None = None,
+    resume: bool = False,
+    blueprint: str = "new_feature",
+    framework: str | None = None,
 ) -> str:
     """Submit a pipeline run as a background asyncio task.
 
-    Creates a new asyncio task running ``OrgitrationPipeline`` (assembled via
-    ``build_default_pipeline``), records its status in ``PIPELINE_RUNS``,
-    and returns the run_id immediately.
-
-    The caller should poll with ``PIPELINE_RUNS[run_id]["status"]`` to check
-    completion.
+    Creates a new asyncio task running the pipeline the blueprint names (assembled via ``build_pipeline``),
+    records its status in ``PIPELINE_RUNS``, and returns the run_id immediately. The caller polls ``get_run``.
     """
     if run_id is None:
         run_id = f"pipe_{uuid.uuid4().hex[:12]}"
     elif not _RUN_ID.fullmatch(run_id):
         raise ValueError(f"Invalid run id {run_id!r}: expected pipe_ followed by 12 hex characters")
+    if blueprint not in BLUEPRINTS:
+        raise ValueError(f"Unknown blueprint {blueprint!r}. Available: {', '.join(BLUEPRINTS)}")
     live = PIPELINE_RUNS.get(run_id, {}).get("_task")
     if live is not None and not live.done():
         raise RuntimeError(f"Run {run_id} still has a live task; cancel it before resubmitting")
@@ -60,6 +81,8 @@ async def submit_pipeline_run(
         "status": "pending",
         "project": project_name,
         "requirement": requirement,
+        "blueprint": blueprint,
+        "framework": framework or BLUEPRINTS[blueprint].get("framework", "legacy"),
         "result": None,
         "error": None,
         "started_at": datetime.now(UTC).isoformat(),
@@ -76,50 +99,61 @@ async def submit_pipeline_run(
     return run_id
 
 
-async def _run_pipeline_in_background(run_id: str, project_name: str, requirement: str, resume: bool = False) -> None:
-    """Run the ``OrgitrationPipeline`` in a background task, updating ``PIPELINE_RUNS``.
+def _outcome(project_name: str, state: Any) -> tuple[str, str | None, str | None]:
+    """(status, result, error) from a pipeline's final state. ``None`` (a pipeline that returns nothing) counts as
+    completed for backwards compatibility with wrappers that do not report a state."""
+    if not isinstance(state, PipelineState):
+        return "completed", f"Pipeline completed for project '{project_name}'.", None
+    if state.approved:
+        return (
+            "completed",
+            f"Pipeline completed for project '{project_name}'. Artifacts written to generated-app/{project_name}/.",
+            None,
+        )
+    if state.failure_report is not None:
+        return "failed", None, f"{state.failure_report.source}: {state.failure_report.trace}"
+    return "failed", None, "The pipeline finished without approval (gate retries exhausted)."
 
-    Constructs a fully-staged pipeline via ``build_default_pipeline`` — the
-    same factory used by the CLI in ``main.py`` — so both code paths share
-    one definition of "the standard four-stage pipeline".
-    """
+
+async def _run_pipeline_in_background(run_id: str, project_name: str, requirement: str, resume: bool = False) -> None:
+    """Run the pipeline in a background task, updating ``PIPELINE_RUNS`` and the run store."""
     start_time = time.time()
+    run = PIPELINE_RUNS[run_id]
 
     with logfire.span("pipeline.background_run", run_id=run_id, project=project_name):
-        PIPELINE_RUNS[run_id]["status"] = "running"
-        await run_store.save_run(run_id, PIPELINE_RUNS[run_id])
+        run["status"] = "running"
+        await run_store.save_run(run_id, run)
         run_id_var.set(run_id)  # this task's own context: sent to LiteLLM as the Langfuse session id
         try:
             config = PipelineConfig(
                 project=project_name,
                 step="all",
-                blueprint="new_feature",
+                blueprint=run.get("blueprint", "new_feature"),
+                framework=run.get("framework") or "legacy",
                 resume=resume,
                 auto_yes=True,
                 requirement=requirement,
+                run_id=run_id,
             )
-            pipeline = build_default_pipeline(config)
-            await pipeline.execute()
+            pipeline = build_pipeline(config)
+            final_state = await pipeline.execute()
         except asyncio.CancelledError:
-            PIPELINE_RUNS[run_id]["status"] = "cancelled"
-            PIPELINE_RUNS[run_id]["error"] = "Task was cancelled"
+            run["status"] = "cancelled"
+            run["error"] = "Task was cancelled"
             # Re-raise so the asyncio task is marked cancelled, not completed.
             raise
         except Exception as e:
             logger.exception("Pipeline run %s failed: %s", run_id, e)
-            PIPELINE_RUNS[run_id]["status"] = "failed"
-            PIPELINE_RUNS[run_id]["error"] = f"{type(e).__name__}: {e}"
+            run["status"] = "failed"
+            run["error"] = f"{type(e).__name__}: {e}"
         else:
-            PIPELINE_RUNS[run_id]["status"] = "completed"
-            PIPELINE_RUNS[run_id]["result"] = (
-                f"Pipeline completed for project '{project_name}'. Artifacts written to generated-app/{project_name}/."
-            )
+            run["status"], run["result"], run["error"] = _outcome(project_name, final_state)
         finally:
             elapsed = time.time() - start_time
-            PIPELINE_RUNS[run_id]["completed_at"] = datetime.now(UTC).isoformat()
-            PIPELINE_RUNS[run_id]["elapsed_seconds"] = elapsed
+            run["completed_at"] = datetime.now(UTC).isoformat()
+            run["elapsed_seconds"] = elapsed
             # Shielded: a cancelled task must still record that it was cancelled.
-            await asyncio.shield(run_store.save_run(run_id, PIPELINE_RUNS[run_id]))
+            await asyncio.shield(run_store.save_run(run_id, run))
 
 
 async def get_run(run_id: str) -> dict[str, Any] | None:
@@ -130,7 +164,7 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     if run is not None:
         return run
     stored = await run_store.load_run(run_id)
-    if stored is not None and stored["status"] in ("pending", "running"):
+    if stored is not None and stored["status"] in ("pending", "running", STATUS_WAITING_CTO):
         stored["status"] = "interrupted"
         stored["error"] = "The server restarted while this run was in flight. Use resume_pipeline_run to continue it."
     return stored
@@ -147,4 +181,11 @@ async def resume_pipeline_run(run_id: str) -> str | None:
     run = await get_run(run_id)
     if run is None or run["status"] not in ("interrupted", "failed", "cancelled"):
         return None
-    return await submit_pipeline_run(run["project"], run.get("requirement") or "", run_id=run_id, resume=True)
+    return await submit_pipeline_run(
+        run["project"],
+        run.get("requirement") or "",
+        run_id=run_id,
+        resume=True,
+        blueprint=run.get("blueprint") or "new_feature",
+        framework=run.get("framework"),
+    )

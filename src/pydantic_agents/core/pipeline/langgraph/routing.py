@@ -11,7 +11,8 @@ def route_after_ba(state: PipelineState) -> Literal["advisory", "end"]:
 
 
 def route_after_advisory(state: PipelineState) -> Literal["implementation", "end"]:
-    if not state.cto_approved:
+    """Implementation runs only after an explicit CTO approval; a crashed advisory stage (errors set) never does."""
+    if state.errors or not state.cto_approved:
         return "end"
     return "implementation"
 

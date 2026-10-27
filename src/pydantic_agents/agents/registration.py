@@ -38,15 +38,20 @@ def register_all_agents() -> None:
 
 def _register_sdlc_agents() -> None:
     """Register all technical SDLC pipeline agents."""
+    from pydantic_agents.agents.api_contract import api_contract_agent
     from pydantic_agents.agents.ba import ba_agent
     from pydantic_agents.agents.backend import backend_agent
+    from pydantic_agents.agents.critic import critic_agent
     from pydantic_agents.agents.cto import cto_agent
     from pydantic_agents.agents.database import database_agent
     from pydantic_agents.agents.devops import devops_agent
     from pydantic_agents.agents.docs import docs_agent
+    from pydantic_agents.agents.finops import finops_agent
     from pydantic_agents.agents.frontend import component_gen, frontend_agent
+    from pydantic_agents.agents.observability_engineer import observability_engineer_agent
     from pydantic_agents.agents.planner_agent import planner_agent
     from pydantic_agents.agents.quality_gate import quality_gate_agent
+    from pydantic_agents.agents.release_manager import release_manager_agent
     from pydantic_agents.agents.review import review_agent
     from pydantic_agents.agents.security import security_agent
     from pydantic_agents.agents.service_engineer import service_engineer_agent
@@ -74,6 +79,11 @@ def _register_sdlc_agents() -> None:
         "service_engineer", service_engineer_agent, ["service_engineer", "existing_code", "implementation.modification"]
     )
     registry.register("planner", planner_agent, ["plan", "planning"])
+    registry.register("critic", critic_agent, ["critic", "verification"])
+    registry.register("api_contract", api_contract_agent, ["api_contract", "contract_drift"])
+    registry.register("observability_engineer", observability_engineer_agent, ["observability", "alerting"])
+    registry.register("finops", finops_agent, ["finops", "cost"])
+    registry.register("release_manager", release_manager_agent, ["release", "changelog"])
 
 
 def _register_utility_agents() -> None:

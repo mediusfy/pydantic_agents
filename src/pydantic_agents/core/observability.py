@@ -1,13 +1,22 @@
-"""Centralised Logfire / observability setup.
+"""Centralised Logfire / OpenTelemetry setup.
 
-Both `main.py` and `mcp_server.py` previously contained near-identical
-configure-Logfire blocks. They are unified here so that fixes (e.g. enabling
-pydantic-ai instrumentation, tightening httpx body capture) only need to be
-made once, and so that a second call from a child entrypoint is a no-op.
+One ``configure_observability()`` call per process. Spans go to whichever backends are configured:
+
+- **Langfuse** (recommended in the cluster): set ``LANGFUSE_HOST``, ``LANGFUSE_PUBLIC_KEY`` and
+  ``LANGFUSE_SECRET_KEY``; the whole in-process tree (``mcp.*``, ``pipeline.*``, ``agent.run``, ``tool.*``,
+  ``a2a.delegate`` and pydantic-ai's GenAI spans with token counts) is exported over OTLP/HTTP to
+  ``{LANGFUSE_HOST}/api/public/otel``. ``instrument_httpx`` injects ``traceparent`` into the requests to LiteLLM,
+  so LiteLLM's ``langfuse_otel`` generations attach under the ``agent.run`` span of the agent that made them.
+- **Logfire cloud**: set ``LOGFIRE_TOKEN`` (or run ``logfire auth``).
+
+Both can be on at once. With neither, spans are no-ops and the pipeline still runs. Before this module exported
+to Langfuse, the agents pod (which has no Logfire token) dropped every in-process span, leaving only LiteLLM's
+per-generation observations without parents.
 """
 
 from __future__ import annotations
 
+import base64
 import contextlib
 import logging
 import os
@@ -21,22 +30,56 @@ logger = logging.getLogger(__name__)
 _initialized = False
 
 LOGFIRE_ENABLED = False
+LANGFUSE_ENABLED = False
 LOGFIRE_CONFIGURE_ERROR: str | None = None
+
+SERVICE_NAME = "pydantic-agents"
+
+
+def _langfuse_otlp() -> tuple[str, dict[str, str]] | None:
+    """The OTLP traces endpoint and auth header for Langfuse, when its three environment variables are set."""
+    host = os.environ.get("LANGFUSE_HOST", "").rstrip("/")
+    public = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    secret = os.environ.get("LANGFUSE_SECRET_KEY", "")
+    if not (host and public and secret):
+        return None
+    auth = base64.b64encode(f"{public}:{secret}".encode()).decode()
+    return f"{host}/api/public/otel/v1/traces", {"Authorization": f"Basic {auth}"}
+
+
+def _langfuse_processor():
+    """A batch span processor exporting to Langfuse, or None when Langfuse is not configured."""
+    target = _langfuse_otlp()
+    if target is None:
+        return None
+    from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor
+
+    endpoint, headers = target
+    return BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers))
+
+
+def _instrument() -> None:
+    """Instrument pydantic, httpx (bodies suppressed so generated code never leaves the host) and pydantic-ai."""
+    logfire.instrument_pydantic()
+    try:
+        logfire.instrument_httpx(
+            capture_request_headers=False,
+            capture_response_headers=False,
+            capture_request_body=False,
+            capture_response_body=False,
+        )
+    except TypeError:  # older Logfire signatures lack the capture_*_body kwargs
+        logfire.instrument_httpx(capture_request_headers=False, capture_response_headers=False)
+    # The instrumentation that matters most: per-model-call spans (with token usage), per-tool-call spans, and
+    # parent/child structure under the manually opened mcp.* / pipeline.* / agent.run spans.
+    with contextlib.suppress(AttributeError, ModuleNotFoundError):
+        logfire.instrument_pydantic_ai()
 
 
 def configure_observability() -> None:
-    """Configure Logfire once per process.
-
-    - Reads LOGFIRE_TOKEN from pydantic-settings (which loads .env at import
-      time via SettingsConfigDict). Falls back to os.environ for direct usage.
-    - Skips silently when no credentials are present (Logfire token or cached
-      credentials file). The pipeline still runs; spans become no-ops.
-    - Instruments pydantic-ai (per-model-call spans, token counts, tool calls),
-      pydantic validators, and httpx — with request/response bodies suppressed
-      so generated source code (read via tools) does not leave the host.
-    - Idempotent: subsequent calls return immediately.
-    """
-    global _initialized, LOGFIRE_ENABLED, LOGFIRE_CONFIGURE_ERROR
+    """Configure Logfire / OTel once per process (see the module docstring). Idempotent."""
+    global _initialized, LOGFIRE_ENABLED, LANGFUSE_ENABLED, LOGFIRE_CONFIGURE_ERROR
     if _initialized:
         return
     _initialized = True
@@ -48,51 +91,36 @@ def configure_observability() -> None:
 
     logfire_token = os.environ.get("LOGFIRE_TOKEN", "") or getattr(settings, "logfire_token", "") or ""
     logfire_credentials = os.path.expanduser("~/.logfire/credentials.json")
-    has_credentials = bool(logfire_token) or os.path.exists(logfire_credentials)
+    send_to_logfire = bool(logfire_token) or os.path.exists(logfire_credentials)
+    try:
+        langfuse_processor = _langfuse_processor()
+    except Exception as e:  # the exporter package is missing or the endpoint is malformed
+        logger.warning("Langfuse OTLP export unavailable: %s", e)
+        langfuse_processor = None
 
-    if not has_credentials:
+    if not send_to_logfire and langfuse_processor is None:
         LOGFIRE_CONFIGURE_ERROR = (
-            "No Logfire token or credentials found — telemetry disabled (set LOGFIRE_TOKEN or run 'logfire auth')"
+            "No Logfire token or Langfuse keys found — telemetry disabled "
+            "(set LANGFUSE_HOST/LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY, or LOGFIRE_TOKEN, or run 'logfire auth')"
         )
         logger.info(LOGFIRE_CONFIGURE_ERROR)
         return
 
     try:
-        logfire.configure(service_name="orchestration", inspect_arguments=False)
-        logfire.instrument_pydantic()
-        logfire.instrument_httpx(
-            capture_request_headers=False,
-            capture_response_headers=False,
-            capture_request_body=False,
-            capture_response_body=False,
+        logfire.configure(
+            service_name=SERVICE_NAME,
+            inspect_arguments=False,
+            send_to_logfire=send_to_logfire,
+            additional_span_processors=[langfuse_processor] if langfuse_processor else None,
         )
-        # The instrumentation that actually matters for this codebase: emit
-        # per-model-call spans (with token usage), per-tool-call spans, and
-        # parent/child structure under the manually-opened mcp.* spans.
-        try:
-            logfire.instrument_pydantic_ai()
-        except (AttributeError, ModuleNotFoundError):
-            # Older Logfire (< ~3.x) lacks this helper; the env still benefits
-            # from the other instrumentation. Skip silently.
-            logger.debug("logfire.instrument_pydantic_ai() unavailable on this Logfire version")
-        LOGFIRE_ENABLED = True
-        logger.info("Logfire configured — pydantic-ai + pydantic + httpx instrumented")
-    except TypeError:
-        # Older Logfire signatures lack capture_*_body kwargs; retry without them.
-        try:
-            logfire.configure(service_name="orchestration", inspect_arguments=False)
-            logfire.instrument_pydantic()
-            logfire.instrument_httpx(capture_request_headers=False, capture_response_headers=False)
-            with contextlib.suppress(AttributeError, ModuleNotFoundError):
-                logfire.instrument_pydantic_ai()
-            LOGFIRE_ENABLED = True
-            logger.info(
-                "Logfire configured (legacy mode — body capture flags unavailable; "
-                "verify scrubbing is on for prompts that may contain secrets)"
-            )
-        except Exception as inner:
-            LOGFIRE_CONFIGURE_ERROR = f"Logfire configuration failed (legacy retry): {inner}"
-            logger.warning(LOGFIRE_CONFIGURE_ERROR)
+        _instrument()
+        LOGFIRE_ENABLED = send_to_logfire
+        LANGFUSE_ENABLED = langfuse_processor is not None
+        logger.info(
+            "Observability configured (logfire=%s, langfuse=%s) — pydantic-ai + pydantic + httpx instrumented",
+            LOGFIRE_ENABLED,
+            LANGFUSE_ENABLED,
+        )
     except Exception as e:
         LOGFIRE_CONFIGURE_ERROR = f"Logfire configuration failed: {e}"
         logger.warning(LOGFIRE_CONFIGURE_ERROR)
