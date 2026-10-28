@@ -131,8 +131,9 @@ def test_cost_report_derives_total_and_budget_verdict(payload, total_usd, over_b
 
 
 def test_cost_line_rejects_negative_amount():
+    payload = {"lines": _lines(-1.0)}
     with pytest.raises(ValueError):
-        CostReport.model_validate({"lines": _lines(-1.0)})
+        CostReport.model_validate(payload)
 
 
 # ── litellm_spend_report ──────────────────────────────────────────────────────

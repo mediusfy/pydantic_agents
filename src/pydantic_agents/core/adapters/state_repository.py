@@ -2,7 +2,6 @@ import abc
 import json
 import logging
 import os
-import uuid
 
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.settings import settings
@@ -102,17 +101,17 @@ class LocalDiskStateRepository(StateRepositoryPort):
             files = [f for f in os.listdir(self.checkpoint_dir) if f.endswith(".json")]
             if not files:
                 return None
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)
-            latest = files[0]
-            if "__" in latest:
-                return latest.split("__")[0]
-            # Checkpoints written before the double-underscore separator: a UUID run id before the first "_".
-            run_id = latest.split("_")[0]
-            try:
-                uuid.UUID(run_id)
-                return run_id
-            except ValueError:
+            # Only "{run_id}__{stage}.json" files are candidates. Checkpoints written before the double-underscore
+            # separator ("{uuid}_{stage}.json") cannot be loaded by ``load`` (it builds the new name), so they are
+            # not resumed; they are left in place and deleted by ``clear`` of their run id.
+            current = [f for f in files if "__" in f]
+            legacy = len(files) - len(current)
+            if legacy:
+                logger.info("Ignoring %d legacy checkpoint file(s) in %s", legacy, self.checkpoint_dir)
+            if not current:
                 return None
+            current.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)
+            return current[0].split("__")[0]
         except Exception as e:
             logger.warning(f"Error finding latest run: {e}")
             return None

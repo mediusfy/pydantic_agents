@@ -391,6 +391,60 @@ async def cancel_pipeline_run(run_id: str) -> str:
     return f"Run '{run_id}' is already {run['status']}. No cancellation needed."
 
 
+def _failed_dependencies(task: Any, results: dict[str, str]) -> list[str]:
+    return [d for d in task.dependencies if results.get(d, "").startswith("ERROR")]
+
+
+def _task_prompt(task: Any, results: dict[str, str]) -> str:
+    """The task's prompt, extended with the results of the tasks it depends on."""
+    if not task.dependencies:
+        return task.prompt
+    upstream = "\n\n".join(f"[{d}]\n{results.get(d, '')}" for d in task.dependencies)
+    return f"{task.prompt}\n\nResults of the tasks this depends on:\n{upstream}"
+
+
+async def _run_plan_task(task: Any, results: dict[str, str]) -> None:
+    """Run one plan task into ``results``; a failure is recorded as an ``ERROR:`` result, never raised."""
+    from pydantic_agents.core.registry import instrumented_query
+
+    failed_deps = _failed_dependencies(task, results)
+    if failed_deps:
+        results[task.id] = f"ERROR: skipped, dependency failed: {', '.join(failed_deps)}"
+        return
+    try:
+        results[task.id] = await instrumented_query(
+            capability=task.capability,
+            prompt=_task_prompt(task, results),
+            span_name="mcp.plan_task",
+            attributes={"task_id": task.id, "capability": task.capability},
+        )
+    except Exception as e:
+        results[task.id] = f"ERROR: {e}"
+
+
+async def _execute_plan(plan: Any) -> dict[str, str] | str:
+    """Run the plan's tasks in dependency order; returns the results, or a message when the plan cannot progress."""
+    completed: set[str] = set()
+    results: dict[str, str] = {}
+    while len(completed) < len(plan.tasks):
+        batch = [t for t in plan.tasks if t.id not in completed and all(dep in completed for dep in t.dependencies)]
+        if not batch:
+            plan_json = plan.model_dump_json(indent=2)
+            return f"Plan execution stuck — possible circular dependency.\nPlan: {plan_json}"
+        await asyncio.gather(*[_run_plan_task(t, results) for t in batch])
+        completed.update(t.id for t in batch)
+    return results
+
+
+def _plan_summary(goal: str, plan: Any, results: dict[str, str]) -> str:
+    lines = [f"## Plan Execution: {goal}", ""]
+    for t in plan.tasks:
+        status = "✗" if results.get(t.id, "").startswith("ERROR") else "✓"
+        lines.append(f"  {status} {t.id} ({t.capability}): {t.prompt[:80]}...")
+        lines.append(f"     → {results.get(t.id, 'no result')[:200]}")
+    return "\n".join(lines)
+
+
 @mcp.tool()
 async def plan_and_execute(goal: str) -> str:
     """Creates a plan to achieve a high-level goal and executes all tasks in dependency order.
@@ -399,57 +453,16 @@ async def plan_and_execute(goal: str) -> str:
     only order. A task whose dependency failed is skipped and reported as such.
     """
     with logfire.span("mcp.plan_and_execute", goal_length=len(goal), _level="info"):
-        from pydantic_agents.core.registry import instrumented_query
-
         run_token = run_id_var.set(run_id_var.get() or f"plan_{uuid.uuid4().hex[:12]}")
         try:
             plan_response = await registry.run("planner", f"Create a plan to achieve this goal: {goal}")
             plan = plan_response.output
-
-            completed: set[str] = set()
-            results: dict[str, str] = {}
-
-            while len(completed) < len(plan.tasks):
-                batch = [
-                    t for t in plan.tasks if t.id not in completed and all(dep in completed for dep in t.dependencies)
-                ]
-                if not batch:
-                    plan_json = plan.model_dump_json(indent=2)
-                    return f"Plan execution stuck — possible circular dependency.\nPlan: {plan_json}"
-
-                async def _run_task(t):
-                    failed_deps = [d for d in t.dependencies if results.get(d, "").startswith("ERROR")]
-                    if failed_deps:
-                        results[t.id] = f"ERROR: skipped, dependency failed: {', '.join(failed_deps)}"
-                        return
-                    prompt = t.prompt
-                    if t.dependencies:
-                        upstream = "\n\n".join(f"[{d}]\n{results.get(d, '')}" for d in t.dependencies)
-                        prompt = f"{t.prompt}\n\nResults of the tasks this depends on:\n{upstream}"
-                    try:
-                        results[t.id] = await instrumented_query(
-                            capability=t.capability,
-                            prompt=prompt,
-                            span_name="mcp.plan_task",
-                            attributes={"task_id": t.id, "capability": t.capability},
-                        )
-                    except Exception as e:
-                        results[t.id] = f"ERROR: {e}"
-
-                await asyncio.gather(*[_run_task(t) for t in batch])
-
-                for t in batch:
-                    completed.add(t.id)
+            results = await _execute_plan(plan)
         finally:
             run_id_var.reset(run_token)
-
-        summary_lines = [f"## Plan Execution: {goal}", ""]
-        for t in plan.tasks:
-            status = "✓" if not results.get(t.id, "").startswith("ERROR") else "✗"
-            summary_lines.append(f"  {status} {t.id} ({t.capability}): {t.prompt[:80]}...")
-            summary_lines.append(f"     → {results.get(t.id, 'no result')[:200]}")
-
-        return "\n".join(summary_lines)
+        if isinstance(results, str):
+            return results
+        return _plan_summary(goal, plan, results)
 
 
 @mcp.tool()

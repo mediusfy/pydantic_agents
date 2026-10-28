@@ -189,8 +189,9 @@ class TestLlmResolution:
     def test_agent_without_model_is_rejected(self, fake_crewai):
         from pydantic_agents.core.adapters import crewai_bridge
 
+        agent = SimpleNamespace(_model=None)
         with pytest.raises(ValueError, match="no model"):
-            crewai_bridge.build_crewai_llm(SimpleNamespace(_model=None))
+            crewai_bridge.build_crewai_llm(agent)
 
 
 def _state(**overrides: Any) -> PipelineState:
@@ -361,22 +362,27 @@ class TestApplyResult:
         assert state.cto_approved is cto_approved
         assert len(state.errors) == error_count
 
-    def test_qa_test_outputs_become_test_eng_artifacts(self, fake_crewai):
+    def test_qa_test_outputs_merge_into_one_test_eng_artifact(self, fake_crewai):
+        """The fix task re-emits the files it changed: per path the later task wins, the rest is kept."""
         bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
         state = _state()
+        fixed = "fixed ORDERS-01-AC-1\n\n`billing_test.go`\n```go\npackage billing // fixed\n```\n"
         result = SimpleNamespace(
             tasks_output=[
                 _task_output("ba/note", "ORDERS-01-AC-1: Given ... When ... Then ..."),
-                _task_output("test_eng/artifact", _GO_TEST),
-                _task_output("test_eng/artifact", _GO_TEST),
+                _task_output("test_eng/artifact", _GO_TEST + "`e2e.spec.ts`\n```ts\ntest('ORDERS-01-AC-1')\n```\n"),
+                _task_output("test_eng/artifact", fixed),
             ]
         )
 
         bridge._apply_result(state, result)
 
         assert state.advisory_results["ba"].startswith("ORDERS-01-AC-1")
-        assert [art.agent_name for art in state.artifacts] == ["test_eng", "test_eng"]
-        assert state.artifacts[0].files == {"billing_test.go": "package billing"}
+        assert [art.agent_name for art in state.artifacts] == ["test_eng"]
+        assert state.artifacts[0].files == {
+            "billing_test.go": "package billing // fixed",
+            "e2e.spec.ts": "test('ORDERS-01-AC-1')",
+        }
 
     def test_audit_findings_become_feedback(self, fake_crewai):
         bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")

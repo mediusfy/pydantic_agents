@@ -45,6 +45,10 @@ def _json_contract(model: type[Any], preamble: str) -> str:
     )
 
 
+_ROLE_BA = "Senior Business Analyst"
+_ROLE_SECURITY = "Principal Security Engineer"
+_ROLE_SRE = "Site Reliability Engineer"
+
 REVIEW_VERDICT_OUTPUT = _json_contract(
     ReviewResult,
     "A review verdict. Set approved to false whenever anything must be fixed before merge.",
@@ -93,7 +97,7 @@ class SdlcCrew:
     def build(self, state: PipelineState) -> Crew:
         ba = _agent(
             "ba",
-            "Senior Business Analyst",
+            _ROLE_BA,
             "Refine raw requirements into structured user stories with Gherkin acceptance criteria",
         )
         cto = _agent("cto", "CTO", "Review architecture for scalability, security, and compliance")
@@ -197,9 +201,9 @@ class ResearchCrew:
 class SecurityReviewCrew:
     def build(self, state: PipelineState) -> Crew:
         code_context = _code_context(state)
-        security = _agent("security", "Principal Security Engineer", "Audit code for OWASP Top 10 vulnerabilities")
+        security = _agent("security", _ROLE_SECURITY, "Audit code for OWASP Top 10 vulnerabilities")
         reviewer = _agent("review", "Code Review Engineer", "Review code for quality and security compliance")
-        sre = _agent("sre", "Site Reliability Engineer", "Review infrastructure and deployment configuration")
+        sre = _agent("sre", _ROLE_SRE, "Review infrastructure and deployment configuration")
 
         sec_task = _make_task(
             f"Audit this code for security vulnerabilities:\n{code_context}",
@@ -243,7 +247,7 @@ class QaCrew:
     def build(self, state: PipelineState) -> Crew:
         ba = _agent(
             "ba",
-            "Senior Business Analyst",
+            _ROLE_BA,
             "Turn requirements into user stories with ids and numbered Gherkin acceptance criteria",
         )
         test_gen = _agent(
@@ -307,10 +311,10 @@ class ArchitectureReviewCrew:
 
     def build(self, state: PipelineState) -> Crew:
         context = _code_context(state)
-        ba = _agent("ba", "Senior Business Analyst", "Map bounded contexts and the domain events between them")
-        security = _agent("security", "Principal Security Engineer", "Produce a threat model for the design")
+        ba = _agent("ba", _ROLE_BA, "Map bounded contexts and the domain events between them")
+        security = _agent("security", _ROLE_SECURITY, "Produce a threat model for the design")
         database = _agent("database", "Database Engineer", "Assess schema design and migration risk")
-        sre = _agent("sre", "Site Reliability Engineer", "Assess deployment topology and capacity")
+        sre = _agent("sre", _ROLE_SRE, "Assess deployment topology and capacity")
         cto = _agent("cto", "CTO", "Merge the specialist reviews into one architecture decision")
 
         contexts_task = _make_task(
@@ -376,9 +380,9 @@ class AuditCrew:
 
     def build(self, state: PipelineState) -> Crew:
         context = _code_context(state)
-        security = _agent("security", "Principal Security Engineer", "Find leaked secrets and OWASP Top 10 issues")
+        security = _agent("security", _ROLE_SECURITY, "Find leaked secrets and OWASP Top 10 issues")
         devops = _agent("devops", "DevOps Engineer", "Harden CI pipelines and container images")
-        sre = _agent("sre", "Site Reliability Engineer", "Audit network policies, resource limits and alerting")
+        sre = _agent("sre", _ROLE_SRE, "Audit network policies, resource limits and alerting")
         reviewer = _agent("review", "Audit Lead", "Consolidate audit findings into an owned, dated action table")
 
         secrets_task = _make_task(

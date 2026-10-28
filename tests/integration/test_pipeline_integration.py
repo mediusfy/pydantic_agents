@@ -728,10 +728,14 @@ class TestExistingCodePipelineIntegration:
     """Verifies the existing-code modification pipeline chains correctly."""
 
     @pytest.mark.asyncio
-    async def test_pipeline_returns_result_without_errors(self):
+    async def test_pipeline_returns_result_without_errors(self, tmp_path, monkeypatch):
         """run_existing_code_pipeline with mocked agents must return a valid ExistingCodeResult."""
         from pydantic_agents.core.existing_code_handler import run_existing_code_pipeline
 
+        # The result is written under settings.output_dir; keep it out of the repository's generated-app/.
+        from pydantic_agents.core.settings import settings
+
+        monkeypatch.setattr(settings, "output_dir", tmp_path / "out")
         eng_result = MagicMock()
         eng_result.output = Artifact(
             agent_name="service_engineer",
@@ -755,6 +759,9 @@ class TestExistingCodePipelineIntegration:
         assert result.changed_files == ["internal/handler.go"]
         assert len(result.artifacts) == 1
         assert result.errors == []
+        assert result.output_dir is not None
+        assert Path(result.output_dir).is_relative_to(tmp_path / "out")
+        assert (Path(result.output_dir) / "service_engineer" / "internal" / "handler.go").exists()
 
     @pytest.mark.asyncio
     async def test_pipeline_propagates_engineer_error(self):

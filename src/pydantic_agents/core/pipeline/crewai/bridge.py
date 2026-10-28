@@ -140,7 +140,7 @@ def _apply_result(state: PipelineState, result: Any) -> None:
         owner, kind = target
         output = _output_text(task_out)
         if kind == "artifact":
-            state.artifacts.append(_artifact_from_output(owner, output))
+            _merge_artifact(state, _artifact_from_output(owner, output))
         elif kind == "verdict":
             _apply_verdict(state, output)
         elif kind == "advice":
@@ -198,6 +198,16 @@ def _apply_advice(state: PipelineState, owner: str, output: str) -> None:
         logger.warning("CrewAI %s advice rejected: %s", owner, reason)
         return
     state.cto_approved = advice.approved_to_proceed
+
+
+def _merge_artifact(state: PipelineState, artifact: Artifact) -> None:
+    """Keep one artifact per owner: a later task of the same owner (QaCrew's fix task after its test task) updates
+    the files it re-emits and adds the rest, instead of leaving two artifacts for consumers keyed by owner."""
+    for existing in state.artifacts:
+        if existing.agent_name == artifact.agent_name:
+            existing.files.update(artifact.files)
+            return
+    state.artifacts.append(artifact)
 
 
 def _artifact_from_output(agent_name: str, output: str) -> Artifact:

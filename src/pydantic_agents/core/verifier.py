@@ -28,6 +28,8 @@ from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
 logger = logging.getLogger(__name__)
 
+_ALL_PACKAGES = "./..."
+_GO_MOD = "go.mod"
 COMMAND_TIMEOUT = 120.0
 _OUTPUT_MAX_CHARS = 4_000
 _COPY_IGNORE = shutil.ignore_patterns(".git", "node_modules", ".venv", "venv", "vendor", "dist", "build", ".worktrees")
@@ -85,12 +87,12 @@ async def _run(name: str, args: list[str], cwd: str) -> CheckResult:
 
 
 async def _go_checks(cwd: str, has_tests: bool) -> list[CheckResult]:
-    checks = [await _run("go build", ["go", "build", "./..."], cwd)]
+    checks = [await _run("go build", ["go", "build", _ALL_PACKAGES], cwd)]
     if not checks[0].passed:
         return checks  # vet and test would only repeat the compiler errors
-    checks.append(await _run("go vet", ["go", "vet", "./..."], cwd))
+    checks.append(await _run("go vet", ["go", "vet", _ALL_PACKAGES], cwd))
     if has_tests:
-        checks.append(await _run("go test", ["go", "test", "./..."], cwd))
+        checks.append(await _run("go test", ["go", "test", _ALL_PACKAGES], cwd))
     return checks
 
 
@@ -115,7 +117,7 @@ async def verify_artifacts(artifacts: list[Any]) -> VerificationReport:
         except WRITE_NAME_ERRORS as e:
             report.checks.append(CheckResult("write files", False, str(e)))
             return report
-        if not any(name == "go.mod" or name.endswith("/go.mod") for name in go_files):
+        if not any(name == _GO_MOD or name.endswith(f"/{_GO_MOD}") for name in go_files):
             err = await init_and_tidy(temp_dir)
             if err:
                 report.checks.append(CheckResult("go mod", False, err))
@@ -129,7 +131,7 @@ async def verify_tree(root: str, changed_files: dict[str, str]) -> VerificationR
     source = Path(root)
     if not source.is_dir():
         return VerificationReport(skipped=f"codebase root {root!r} is not a directory")
-    if not _go_files(changed_files) and not (source / "go.mod").exists():
+    if not _go_files(changed_files) and not (source / _GO_MOD).exists():
         return VerificationReport(skipped="no Go module and no Go files to verify")
 
     report = VerificationReport()
@@ -142,7 +144,7 @@ async def verify_tree(root: str, changed_files: dict[str, str]) -> VerificationR
         except WRITE_NAME_ERRORS as e:  # OSError is among them
             report.checks.append(CheckResult("prepare tree", False, str(e)))
             return report
-        if not (target / "go.mod").exists():
+        if not (target / _GO_MOD).exists():
             err = await init_and_tidy(str(target))
             if err:
                 report.checks.append(CheckResult("go mod", False, err))

@@ -9,7 +9,8 @@ One ``configure_observability()`` call per process. Spans go to whichever backen
   so LiteLLM's ``langfuse_otel`` generations attach under the ``agent.run`` span of the agent that made them.
 - **Logfire cloud**: set ``LOGFIRE_TOKEN`` (or run ``logfire auth``).
 
-Both can be on at once. With neither, spans are no-ops and the pipeline still runs. Before this module exported
+Both can be on at once. With neither, spans are still created (one per agent run is cheap) but exported nowhere;
+the pipeline still runs. Before this module exported
 to Langfuse, the agents pod (which has no Logfire token) dropped every in-process span, leaving only LiteLLM's
 per-generation observations without parents.
 """

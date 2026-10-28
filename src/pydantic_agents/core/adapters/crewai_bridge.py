@@ -106,6 +106,11 @@ async def _await(awaitable: Awaitable[Any]) -> Any:
     return await awaitable
 
 
+# One bounded pool for every bridged tool call, so a crew making many parallel calls does not start a thread per
+# call. Each call still runs its coroutine on its own short-lived event loop inside the worker.
+_TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="crewai-tool")
+
+
 def _run_awaitable(awaitable: Awaitable[Any]) -> Any:
     """Resolve an awaitable from synchronous code.
 
@@ -117,8 +122,7 @@ def _run_awaitable(awaitable: Awaitable[Any]) -> Any:
         asyncio.get_running_loop()
     except RuntimeError:
         return asyncio.run(_await(awaitable))
-    with ThreadPoolExecutor(max_workers=1) as pool:
-        return pool.submit(asyncio.run, _await(awaitable)).result()
+    return _TOOL_EXECUTOR.submit(asyncio.run, _await(awaitable)).result()
 
 
 def _call_tool_function(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:

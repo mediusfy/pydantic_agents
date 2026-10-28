@@ -59,8 +59,10 @@ class TestSessionRecorderConcurrency:
         assert isinstance(results[1], RuntimeError)
 
         by_agent = {r["agent_name"]: r for r in session_recorder.extract_traces(str(tmp_path / "trace.jsonl"))}
-        assert by_agent["good"]["success"] is True and by_agent["good"]["output"] == "fine"
-        assert by_agent["bad"]["success"] is False and by_agent["bad"]["error"] == "model down"
+        assert by_agent["good"]["success"] is True
+        assert by_agent["good"]["output"] == "fine"
+        assert by_agent["bad"]["success"] is False
+        assert by_agent["bad"]["error"] == "model down"
 
     async def test_tool_calls_are_recorded_on_the_innermost_span_of_the_task(self, recorder, tmp_path):
         async with recorder.record_span(run_id="r", agent_name="backend", pipeline_stage="s", prompt="p"):
@@ -104,8 +106,9 @@ class TestRegistryRun:
         assert agent.run.await_args.kwargs["deps"] == {"city": "Bergen"}
 
     async def test_an_unknown_agent_raises_before_any_call(self):
+        empty = AgentRegistry()
         with pytest.raises(AgentNotFoundError):
-            await AgentRegistry().run("nope", "x")
+            await empty.run("nope", "x")
 
     async def test_run_honours_the_timeout(self, monkeypatch):
         registry = AgentRegistry()
@@ -212,7 +215,8 @@ class TestRetrieveContext:
         text = await context_engine.retrieve_context("database", "x" * 5_000, top_k=2, project="rufkis")
 
         assert calls == [("adrs", 1_000, 2, "rufkis"), ("architecture", 1_000, 2, "rufkis")]
-        assert "adrs snippet" in text and "architecture snippet" in text
+        assert "adrs snippet" in text
+        assert "architecture snippet" in text
 
     async def test_the_store_s_unavailability_notice_never_becomes_context(self, monkeypatch):
         async def search(*_a, **_k):
@@ -285,7 +289,9 @@ async def test_plan_tasks_receive_their_dependencies_results_and_failed_dependen
 
     assert "Results of the tasks this depends on:\n[t1]\nba result" in prompts["backend"]
     assert "review" not in prompts  # its dependency failed, so it never ran
-    assert "✗ t2" in summary and "✗ t3" in summary and "✓ t1" in summary
+    assert "✗ t2" in summary
+    assert "✗ t3" in summary
+    assert "✓ t1" in summary
     assert "skipped, dependency failed: t2" in summary
 
 
@@ -313,6 +319,27 @@ async def test_run_orchestration_pipeline_rejects_a_bad_project_name():
 
     assert (await run_orchestration_pipeline("../escape", "req")).startswith("ERROR: Invalid project_name")
     assert (await run_orchestration_pipeline("svc", "req", blueprint="nope")).startswith("ERROR: Unknown blueprint")
+
+
+# --- Checkpoint files ------------------------------------------------------------------------------------------
+
+
+class TestCheckpointFiles:
+    def test_legacy_single_underscore_checkpoints_are_not_resumed(self, tmp_path, monkeypatch):
+        """``load`` builds the "{run_id}__{stage}.json" name, so a legacy file could be found but never loaded."""
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = LocalDiskStateRepository("proj")
+        legacy = tmp_path / "proj" / "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70_ba.json"
+        legacy.write_text(PipelineState(run_id="legacy", stage="ba").model_dump_json())
+        assert repo.find_latest_run_id() is None
+
+        repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
+        legacy.touch()  # newer mtime than the current-format file, still ignored
+        assert repo.find_latest_run_id() == "run-new"
+        assert repo.load("run-new", "ba") is not None
 
 
 # --- Langfuse OTLP export -------------------------------------------------------------------------------------
@@ -430,7 +457,8 @@ class TestVerifier:
         )
         report = await verify_artifacts([art])
         assert report.passed is False
-        assert report.checks[0].name == "go build" and not report.checks[0].passed
+        assert report.checks[0].name == "go build"
+        assert not report.checks[0].passed
         assert "VERIFICATION: FAILED" in report.as_prompt()
 
     async def test_no_go_files_is_a_skip_not_a_pass(self):
@@ -438,7 +466,8 @@ class TestVerifier:
         from pydantic_agents.core.verifier import verify_artifacts
 
         report = await verify_artifacts([Artifact(agent_name="docs", files={"README.md": "x"})])
-        assert report.skipped and not report.passed
+        assert report.skipped
+        assert not report.passed
 
 
 async def test_run_test_suite_reports_setup_errors_as_failures(monkeypatch):

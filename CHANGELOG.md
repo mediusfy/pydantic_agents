@@ -29,6 +29,8 @@ fresh **Unreleased** section above it.
 - Per-attempt checkpoints: `OrgitrationPipeline` saves `implementation.attempt<n>` after every implementation
   attempt and its gate, and a resume continues after the last saved attempt. The pipeline run id is the
   checkpoint id (`PipelineConfig.run_id`), so a resume continues its own run, not the project's newest file.
+  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are not
+  resumed (`find_latest_run_id` ignores them) and are removed by clearing their run id.
 - `run_orchestration_pipeline(project_name, requirement, blueprint="new_feature", framework="")` runs any
   blueprint (LangGraph, CrewAI, AutoGen), and `project_name` is validated as a plain name at the MCP boundary
   and in `PipelineConfig` (it becomes a directory under the output, checkpoint and approval roots).
@@ -110,6 +112,8 @@ fresh **Unreleased** section above it.
   instead of a bare model name the litellm SDK rejects. Every crew takes the `PipelineState` (`ResearchCrew` and
   `SecurityReviewCrew` expected strings), hierarchical crews set a `manager_llm`, and the review gate parses a
   `ReviewResult` JSON verdict instead of substring-matching "approved" (which approved "not approved").
+  A crew's artifact tasks merge into one artifact per owner (a later task's files replace the same paths), and
+  bridged tool calls share one bounded thread pool instead of starting a pool per call.
 - Local sentence-transformers embedding runs in a worker thread in the async paths; `vector_db.search` returns
   `[]` (with a logged warning) when the vector extras are missing, instead of an explanatory string that callers
   pasted into prompts.

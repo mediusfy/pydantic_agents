@@ -146,7 +146,8 @@ async def test_hybrid_issues_vector_and_text_queries_with_same_filters(
     fetches = _fetches(pool)
     assert len(fetches) == 2
     (vec_sql, vec_args), (txt_sql, txt_args) = fetches
-    assert "embedding <=> $1::vector" in vec_sql and "LIMIT $2" in vec_sql
+    assert "embedding <=> $1::vector" in vec_sql
+    assert "LIMIT $2" in vec_sql
     assert vec_args == ("[0.1,0.2]", expect_limit, *expect_params)
     assert "ts_rank_cd(content_tsv, plainto_tsquery('english', $1))" in txt_sql
     assert "content_tsv @@ plainto_tsquery('english', $1)" in txt_sql
@@ -154,9 +155,11 @@ async def test_hybrid_issues_vector_and_text_queries_with_same_filters(
     # Metadata placeholders start at $3 in both queries and the filter clauses are identical.
     for key, value in {**(filters or {}), **({"project": project} if project else {})}.items():
         clause = f"metadata->>'{key}' IS NULL" if value is None else f"metadata->>'{key}' = $"
-        assert clause in vec_sql and clause in txt_sql
+        assert clause in vec_sql
+        assert clause in txt_sql
     for i in range(len(expect_params)):
-        assert f"= ${i + 3}" in vec_sql and f"= ${i + 3}" in txt_sql
+        assert f"= ${i + 3}" in vec_sql
+        assert f"= ${i + 3}" in txt_sql
 
 
 async def test_hybrid_disabled_issues_single_vector_query(monkeypatch, no_table):
@@ -171,7 +174,8 @@ async def test_hybrid_disabled_issues_single_vector_query(monkeypatch, no_table)
     fetches = _fetches(pool)
     assert len(fetches) == 1
     sql, args = fetches[0]
-    assert "embedding <=> $1::vector" in sql and "ts_rank_cd" not in sql
+    assert "embedding <=> $1::vector" in sql
+    assert "ts_rank_cd" not in sql
     assert args == ("[0.5]", 2, "proj")
 
 
