@@ -394,18 +394,36 @@ async def resume_pipeline_run(run_id: str) -> str:
 
 
 @mcp.tool()
-async def approve_cto_gate(project_name: str, approved: bool = True) -> str:
+async def approve_cto_gate(
+    project_name: str, approved: bool = True, adr_id: str = "", adr_content: str = ""
+) -> str:
     """Approve (or reject) the CTO gate of a project's pipeline run that is waiting for approval.
 
     The gate polls for a marker file inside the server; this writes it, so an MCP caller can approve a run
     without shell access to the pod.
+
+    Approval requires ``adr_id`` (the same rule ``AgentAdvice.approved_to_proceed`` enforces in code for the
+    CrewAI architecture-review gate): there is no approved decision without a recorded one. When ``adr_content``
+    is also given, it is saved under ``adr_id`` via ``save_adr`` in the same call, so a human approving here does
+    not need a second tool call to persist the decision record.
     """
     from pydantic_agents.core.cto_gate import write_approval
 
     if error := _check_project_name(project_name):
         return f"ERROR: {error}"
+    if approved and not adr_id.strip():
+        return "ERROR: approved=true requires adr_id (the decision record this approval is recorded under)."
+    if adr_content.strip() and not adr_id.strip():
+        return "ERROR: adr_content requires adr_id (nothing to save it under)."
+    if adr_content.strip():
+        try:
+            save_adr(adr_id, adr_content)
+        except Exception as e:
+            logger.exception("save_adr failed for %r during approve_cto_gate", adr_id)
+            return f"ERROR: save_adr failed ({e}); the CTO gate was not approved so it can be retried."
     path = write_approval(project_name, approved)
-    return f"CTO gate for '{project_name}' set to {'approved' if approved else 'rejected'} ({path.name})."
+    suffix = f", ADR {adr_id} saved" if adr_content.strip() else ""
+    return f"CTO gate for '{project_name}' set to {'approved' if approved else 'rejected'} ({path.name}){suffix}."
 
 
 @mcp.tool()
