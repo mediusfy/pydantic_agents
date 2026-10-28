@@ -413,6 +413,49 @@ class TestCheckpointFiles:
 
         assert "Corrupted checkpoint for stage 'ba'" in caplog.text
 
+    def test_any_value_error_from_validation_is_treated_as_corrupt(self, tmp_path, monkeypatch, caplog):
+        """The resume path must never raise: a ValueError from a validator, not only a JSON error, is logged."""
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
+        repo.save("run-x", "ba", PipelineState(run_id="run-x", stage="ba"))
+
+        with (
+            patch.object(state_repository.PipelineState, "model_validate", side_effect=ValueError("validator bug")),
+            caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            assert repo.load("run-x", "ba") is None
+
+        assert "Corrupted checkpoint for stage 'ba': validator bug" in caplog.text
+
+    def test_a_vanished_legacy_file_with_no_target_is_an_error_that_is_retried(self, tmp_path, monkeypatch, caplog):
+        """FileNotFoundError is only "someone else renamed it" when the target exists; otherwise it propagates."""
+        from pydantic_agents.core.adapters import state_repository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        legacy = project_dir / f"{self.LEGACY_ID}_ba.json"
+        legacy.write_text('{"run_id": "x", "stage": "ba"}')
+        repo = state_repository.LocalDiskStateRepository("proj")
+
+        def vanish(src, dst):
+            legacy.unlink()  # gone, and nothing at the target either
+            raise FileNotFoundError(src)
+
+        with patch.object(state_repository.os, "replace", side_effect=vanish):
+            with pytest.raises(FileNotFoundError):
+                repo._migrate_legacy_files()
+            legacy.write_text('{"run_id": "x", "stage": "ba"}')
+            with caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"):
+                assert repo.find_latest_run_id() is None  # the pass failed; nothing in the new form yet
+        assert "Could not migrate legacy checkpoint files" in caplog.text
+
+        legacy.write_text('{"run_id": "x", "stage": "ba"}')
+        assert repo.find_latest_run_id() == self.LEGACY_ID  # retried once os.replace works again
+
     def test_rename_done_by_another_instance_counts_as_migrated(self, tmp_path, monkeypatch, caplog):
         """Two instances on one directory: the loser of the rename race must not fail or warn."""
         from pydantic_agents.core.adapters import state_repository
