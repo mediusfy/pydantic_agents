@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
+  tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
+  and latency drift (`core/observer_analysis.py`, pure functions, no I/O), persisting each as an open
+  `platform_findings` row via `save_finding`, skipping a finding whose kind and agent already have an open row so
+  scheduled scans do not pile up duplicates. Read-only with respect to the rest of the platform.
 - `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
   case-insensitive so a lowercase "critical" still reaches the gate),
   `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
