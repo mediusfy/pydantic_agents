@@ -17,6 +17,9 @@ from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.observer_analysis import detect_findings
 from pydantic_agents.core.settings import settings
 
+# Upper bound on any model-chosen row limit, so one tool call cannot pull the whole table into the context.
+_MAX_ROWS = 500
+
 observer_prompt = """You are the Observer Agent: a continuous quality/performance reviewer for this platform's own
 SDLC agents, not for user code.
 
@@ -51,26 +54,34 @@ observer_agent = Agent(
 @observer_agent.tool
 async def recent_metrics(ctx: RunContext[Any], agent: str | None = None, limit: int = 100) -> str:
     """Recent platform_metrics rows (agent, duration, success, verdict), newest first, as JSON."""
-    rows = await platform_metrics.recent_calls(agent=agent, limit=limit)
+    rows = await platform_metrics.recent_calls(agent=agent, limit=min(limit, _MAX_ROWS))
     return json.dumps(rows, default=str)
 
 
 @observer_agent.tool
 async def open_findings(ctx: RunContext[Any], limit: int = 50) -> str:
     """Already-open platform_findings rows, newest first, as JSON."""
-    rows = await platform_findings.list_findings(status="open", limit=limit)
+    rows = await platform_findings.list_findings(status="open", limit=min(limit, _MAX_ROWS))
     return json.dumps(rows, default=str)
 
 
 @observer_agent.tool
 async def scan_for_findings(ctx: RunContext[Any], limit: int = 200) -> str:
     """Scan the last `limit` platform_metrics rows for regressions, flaky agents and latency drift (grouped by
-    agent), persist each as an open platform_findings row, and return one line per finding written (or
-    'No findings.' when nothing crossed the threshold).
+    agent), persist each one not already open (same kind and agent) as an open platform_findings row, and return
+    one line per finding (or 'No findings.' when nothing crossed the threshold).
     """
-    rows = await platform_metrics.recent_calls(limit=limit)
+    rows = await platform_metrics.recent_calls(limit=min(limit, _MAX_ROWS))
+    # A scheduled scan sees the same persistent issue every time; one open row per (kind, agent) is enough.
+    already_open = {
+        (row.get("kind"), row.get("agent"))
+        for row in await platform_findings.list_findings(status="open", limit=_MAX_ROWS)
+    }
     lines = []
     for finding in detect_findings(rows):
+        if (finding.kind, finding.agent) in already_open:
+            lines.append(f"[{finding.kind}/{finding.severity}] {finding.summary} (already open, not re-recorded)")
+            continue
         finding_id = await platform_findings.save_finding(
             finding.kind, finding.severity, finding.summary, agent=finding.agent, evidence=finding.evidence
         )

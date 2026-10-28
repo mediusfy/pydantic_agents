@@ -71,6 +71,17 @@ async def test_scan_for_findings_persists_a_regression_from_a_metrics_fixture(po
     assert saved[0]["agent"] == "backend"
 
 
+async def test_scan_for_findings_does_not_duplicate_an_open_finding(pool):
+    for _ in range(3):
+        await platform_metrics.record_call("backend", duration=1.0, success=False)
+
+    await scan_for_findings(CTX, limit=200)
+    second = await scan_for_findings(CTX, limit=200)
+
+    assert "already open" in second
+    assert len(await platform_findings.list_findings()) == 1
+
+
 async def test_scan_for_findings_reports_nothing_when_all_calls_pass(pool):
     await platform_metrics.record_call("review", duration=1.0, success=True)
     assert await scan_for_findings(CTX, limit=200) == "No findings."
