@@ -12,6 +12,10 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
+  runs test suites `test_gen` produced via `execute_test_suite` and returns a `TestRunReport` (pass/fail per
+  acceptance-criterion id, coverage, unexecuted ids, `all_passed` derived in code),
+  without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
 - `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
   (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
   tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
