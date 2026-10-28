@@ -21,8 +21,13 @@ fresh **Unreleased** section above it.
 - `AuditCrew`'s consolidation task (`core/pipeline/crewai/crews.py`) now outputs a JSON array of `Finding`
   objects instead of free-text markdown, and the bridge's new `_apply_findings` (`core/pipeline/crewai/bridge.py`)
   enforces the ADR rule in code: findings missing a `file:line`/resource id are dropped, and the whole batch is
-  rejected (fail-closed, like the existing review/advice gates) if any surviving finding is missing an owner or
-  due date (KAN-491, part of epic KAN-482).
+  rejected (fail-closed, like the existing review/advice gates) if any other finding is invalid or a surviving
+  finding is missing an owner or due date (KAN-491, part of epic KAN-482).
+- `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
+  `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
+  (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
+  (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
+  JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they
@@ -132,6 +137,11 @@ fresh **Unreleased** section above it.
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
 
 ### Fixed
+- `run_store`, `platform_metrics` and `platform_findings` now reach the database through
+  `vector_db.with_connection`, which runs the query on the background loop that owns the cached asyncpg pool.
+  They used to acquire that pool from the caller's loop, so once a vector search had created it there, every
+  pipeline-run save and every `platform_metrics` row failed with a cross-loop error that the best-effort
+  `except` swallowed.
 
 - Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
   renamed to the current name before the first read of a project's repository, so runs checkpointed by that

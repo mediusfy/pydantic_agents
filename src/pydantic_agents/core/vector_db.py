@@ -42,10 +42,13 @@ import logging
 import os
 import re
 import threading
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, TypeVar
 
 from pydantic_agents.core.exceptions import ConfigurationError, OrgitrationDependencyError
 from pydantic_agents.core.settings import settings
+
+_T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
@@ -217,6 +220,21 @@ async def _get_pool():
     if dsn not in _connection_pools:
         _connection_pools[dsn] = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
     return _connection_pools[dsn]
+
+
+async def with_connection(fn: Callable[[Any], Awaitable[_T]]) -> _T:
+    """Run ``fn(conn)`` with a pooled connection, on the background loop that owns the cached pool.
+
+    For callers outside this module (``run_store``, ``platform_metrics``, ``platform_findings``): the pool is bound
+    to ``_bg_loop`` once any vector search has created it, so acquiring it from the caller's own loop fails.
+    """
+
+    async def _op() -> _T:
+        pool = await _get_pool()
+        async with pool.acquire() as conn:
+            return await fn(conn)
+
+    return await _bridge(_op())
 
 
 async def _ensure_table(collection_name: str):

@@ -1,8 +1,10 @@
 import asyncio
+import contextlib
 import logging
 import os
 import re
 import sys
+import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -17,6 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.context_engine import retrieve_context
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
 from pydantic_agents.core.limits import run_id_var
@@ -77,6 +80,9 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         raise AgentNotFoundError(f"Agent '{agent_name}' not registered")
 
     run_token = run_id_var.set(run_id_var.get() or f"call_{uuid.uuid4().hex[:12]}")
+    start = time.time()
+    success = False
+    verdict: str | None = None
     try:
         # ── Context Enrichment ────────────────────────────────────────────────
         # Pull relevant snippets from the vector-indexed knowledge base
@@ -96,12 +102,29 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         try:
             with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
                 result = await registry.run(agent_name, enriched_request)
+                success = True
+                verdict = _extract_verdict(result)
                 return serialize_output(result)
         except Exception as e:
             logger.warning("Agent '%s' failed: %s", agent_name, e)
             raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
     finally:
         run_id_var.reset(run_token)
+        # Additive to the provider's JSONL telemetry entry: one platform_metrics row per MCP call, best-effort.
+        with contextlib.suppress(Exception):
+            await platform_metrics.record_call(
+                agent_name, duration=time.time() - start, success=success, verdict=verdict
+            )
+
+
+def _extract_verdict(result: Any) -> str | None:
+    """'passed'/'failed' from a QualityGateResult.passed or ReviewResult.approved output, else None."""
+    output = getattr(result, "output", result)
+    for field in ("passed", "approved"):
+        value = getattr(output, field, None)
+        if isinstance(value, bool):
+            return "passed" if value else "failed"
+    return None
 
 
 AGENT_DOCSTRINGS = {
