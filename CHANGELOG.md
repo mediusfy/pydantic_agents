@@ -11,6 +11,13 @@ fresh **Unreleased** section above it.
 
 ## [Unreleased]
 
+### Added
+- `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
+  `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
+  (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
+  (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
+  JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
+
 ### Changed
 - CI installs with `uv sync --frozen --no-build --no-install-project` and runs tools with `uv run --no-build --no-sync` (Sonar
   S8541): only prebuilt wheels are installed, so no dependency build script runs, and the project is used from `src`

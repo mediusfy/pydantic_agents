@@ -17,6 +17,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.context_engine import retrieve_context
 from pydantic_agents.core.event_broker import Event, EventKind, event_broker
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
@@ -88,11 +89,13 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
 
     start = time.time()
     success = False
+    verdict: str | None = None
     try:
         with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
             resolved_deps = deps_factory() if callable(deps_factory) else {}
             result = await agent.run(enriched_request, deps=resolved_deps, usage_limits=usage_limits(agent_name))
             success = True
+            verdict = _extract_verdict(result)
             return serialize_output(result)
     except Exception as e:
         logger.warning("Agent '%s' failed: %s", agent_name, e)
@@ -101,6 +104,18 @@ async def run_agent_by_name(agent_name: str, request: str) -> str:
         duration = time.time() - start
         with contextlib.suppress(Exception):
             await telemetry.log_call(agent_name, duration, success, metadata=span_attrs)
+        with contextlib.suppress(Exception):
+            await platform_metrics.record_call(agent_name, duration=duration, success=success, verdict=verdict)
+
+
+def _extract_verdict(result: Any) -> str | None:
+    """'passed'/'failed' from a QualityGateResult.passed or ReviewResult.approved output, else None."""
+    output = getattr(result, "output", result)
+    for field in ("passed", "approved"):
+        value = getattr(output, field, None)
+        if isinstance(value, bool):
+            return "passed" if value else "failed"
+    return None
 
 
 AGENT_DOCSTRINGS = {
