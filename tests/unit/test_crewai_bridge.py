@@ -256,7 +256,7 @@ CREW_CASES = [
         "AuditCrew",
         "sequential",
         4,
-        ["security/note", "devops/note", "sre/note", "review/feedback"],
+        ["security/note", "devops/note", "sre/note", "review/findings"],
         id="audit",
     ),
 ]
@@ -419,6 +419,60 @@ class TestApplyResult:
         assert state.feedback == table
         assert state.advisory_results["security"] == "secret at config.go:3"
         assert state.approved is False
+
+    def test_findings_drops_entries_missing_a_location(self, fake_crewai):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        findings = json.dumps(
+            [
+                {
+                    "id": "f1",
+                    "source_agent": "security",
+                    "severity": "HIGH",
+                    "description": "no limits",
+                    "location": "main.go:12",
+                    "owner": "sre",
+                    "due_date": "2026-11-01",
+                },
+                {
+                    "id": "f2",
+                    "source_agent": "security",
+                    "severity": "LOW",
+                    "description": "vague concern",
+                    "owner": "sre",
+                    "due_date": "2026-11-01",
+                },
+            ]
+        )
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("review/findings", findings)]))
+
+        assert "main.go:12" in state.feedback
+        assert "1 finding(s) dropped" in state.feedback
+        assert state.errors == []
+
+    def test_findings_rejected_when_owner_or_due_date_missing(self, fake_crewai):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        findings = json.dumps(
+            [
+                {
+                    "id": "f1",
+                    "source_agent": "security",
+                    "severity": "HIGH",
+                    "description": "no limits",
+                    "location": "main.go:12",
+                    "owner": "",
+                    "due_date": "",
+                },
+            ]
+        )
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("review/findings", findings)]))
+
+        assert state.feedback is None
+        assert len(state.errors) == 1
+        assert "missing owner/due_date" in state.errors[0]
 
     def test_unnamed_tasks_fall_back_to_the_agent_role(self, fake_crewai):
         bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
