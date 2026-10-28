@@ -2,6 +2,8 @@ import abc
 import json
 import logging
 import os
+import threading
+import uuid
 
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.settings import settings
@@ -45,6 +47,74 @@ class LocalDiskStateRepository(StateRepositoryPort):
         self.project_name = project_name
         self.checkpoint_dir = os.path.join(str(settings.checkpoint_dir), project_name)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self._migrated = False
+        self._migration_warned = False
+        self._migration_lock = threading.Lock()
+
+    def _ensure_migrated(self) -> None:
+        """Before a read: rename legacy "{uuid}_{stage}.json" checkpoints to the "{run_id}__{stage}.json" name
+        ``load`` builds, so runs started by an older version resume. Runs until one pass succeeds (a failed pass is
+        retried on the next read, warned about once per instance), never raises, and is serialised per instance;
+        two instances on one directory both pass because a rename the other did first counts as done.
+        """
+        if self._migrated:
+            return
+        with self._migration_lock:
+            if self._migrated:
+                return
+            try:
+                migrated, unrecognised = self._migrate_legacy_files()
+            except OSError as e:
+                if not self._migration_warned:
+                    self._migration_warned = True
+                    logger.warning(
+                        "Could not migrate legacy checkpoint files in %s (will retry on the next read): %s",
+                        self.checkpoint_dir,
+                        e,
+                    )
+                return
+            self._migrated = True
+        if migrated:
+            logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
+        if unrecognised:
+            names = sorted(unrecognised)
+            logger.warning(
+                "%d .json file(s) in %s are not checkpoints (no '__' and no UUID run id) and are ignored: %s%s",
+                len(names),
+                self.checkpoint_dir,
+                ", ".join(names[:3]),
+                f" (+{len(names) - 3} more at DEBUG)" if len(names) > 3 else "",
+            )
+            logger.debug("Ignored files in %s: %s", self.checkpoint_dir, ", ".join(names))
+
+    def _migrate_legacy_files(self) -> tuple[int, list[str]]:
+        """Legacy run ids were always UUIDs (no underscore), so the first underscore is the separator and the stage
+        part, which may contain underscores, is kept whole. Returns (renamed count, files that are neither form)."""
+        migrated = 0
+        unrecognised: list[str] = []
+        for filename in os.listdir(self.checkpoint_dir):
+            if not filename.endswith(".json") or "__" in filename:
+                continue
+            run_id, sep, rest = filename.partition("_")
+            try:
+                uuid.UUID(run_id)
+            except ValueError:
+                unrecognised.append(filename)
+                continue
+            if not sep:
+                unrecognised.append(filename)
+                continue
+            target = os.path.join(self.checkpoint_dir, f"{run_id}__{rest}")
+            if os.path.exists(target):
+                continue
+            try:
+                os.replace(os.path.join(self.checkpoint_dir, filename), target)
+            except FileNotFoundError:
+                # Another instance on the same directory renamed it between our listdir and replace.
+                if not os.path.exists(target):
+                    raise
+            migrated += 1
+        return migrated, unrecognised
 
     def _get_filepath(self, run_id: str, stage: str) -> str:
         safe_stage = stage.replace("/", "_").replace(" ", "_")
@@ -67,6 +137,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
         logger.info(f"State saved to disk: stage='{stage}' at {os.path.relpath(filepath)}")
 
     def load(self, run_id: str, stage: str) -> PipelineState | None:
+        self._ensure_migrated()
         filepath = self._get_filepath(run_id, stage)
         if not os.path.exists(filepath):
             return None
@@ -77,11 +148,12 @@ class LocalDiskStateRepository(StateRepositoryPort):
                 return PipelineState.model_validate(data)
             except AttributeError:
                 return PipelineState.parse_obj(data)
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError) as e:  # JSONDecodeError and pydantic's ValidationError are ValueErrors
             logger.warning(f"Corrupted checkpoint for stage '{stage}': {e}")
             return None
 
     def exists(self, run_id: str, stage: str) -> bool:
+        self._ensure_migrated()
         return os.path.exists(self._get_filepath(run_id, stage))
 
     def clear(self, run_id: str) -> None:
@@ -97,22 +169,14 @@ class LocalDiskStateRepository(StateRepositoryPort):
     def find_latest_run_id(self) -> str | None:
         if not os.path.isdir(self.checkpoint_dir):
             return None
+        self._ensure_migrated()
         try:
             files = [f for f in os.listdir(self.checkpoint_dir) if f.endswith(".json")]
             if not files:
                 return None
-            # Only "{run_id}__{stage}.json" files are candidates. Checkpoints written before the double-underscore
-            # separator ("{uuid}_{stage}.json") cannot be loaded by ``load`` (it builds the new name), so they are
-            # not resumed; they are left in place and deleted by ``clear`` of their run id.
+            # Only "{run_id}__{stage}.json" files are candidates: that is the name ``load`` builds. Legacy files were
+            # renamed by _migrate_legacy_files; anything else without "__" is not a checkpoint of this repository.
             current = [f for f in files if "__" in f]
-            legacy = len(files) - len(current)
-            if legacy:
-                logger.warning(
-                    "%d legacy checkpoint file(s) in %s cannot be resumed (written before the '__' separator); "
-                    "runs started before this version restart from scratch. Remove them with clear(<run id>).",
-                    legacy,
-                    self.checkpoint_dir,
-                )
             if not current:
                 return None
             current.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)

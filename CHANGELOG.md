@@ -29,8 +29,8 @@ fresh **Unreleased** section above it.
 - Per-attempt checkpoints: `OrgitrationPipeline` saves `implementation.attempt<n>` after every implementation
   attempt and its gate, and a resume continues after the last saved attempt. The pipeline run id is the
   checkpoint id (`PipelineConfig.run_id`), so a resume continues its own run, not the project's newest file.
-  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are not
-  resumed (`find_latest_run_id` ignores them) and are removed by clearing their run id.
+  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are
+  renamed to the new form when the repository opens, so runs checkpointed by an older version still resume.
 - `run_orchestration_pipeline(project_name, requirement, blueprint="new_feature", framework="")` runs any
   blueprint (LangGraph, CrewAI, AutoGen), and `project_name` is validated as a plain name at the MCP boundary
   and in `PipelineConfig` (it becomes a directory under the output, checkpoint and approval roots).
@@ -119,6 +119,16 @@ fresh **Unreleased** section above it.
   pasted into prompts.
 - `.env.example`, README and `.ai/guidance/architecture.md` describe the Langfuse export, the run guards, the
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
+
+### Fixed
+
+- Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
+  renamed to the current name before the first read of a project's repository, so runs checkpointed by that
+  version resume instead of restarting. The rename runs before the first read, is retried on a later read if it
+  failed, and tolerates a second instance renaming the same file first. Files that are neither form are listed in
+  one warning and ignored.
+- A checkpoint file that is valid JSON but not a `PipelineState` is treated as corrupt (logged, `load` returns
+  `None`) instead of raising a validation error out of the resume path.
 
 ### Removed
 - The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,

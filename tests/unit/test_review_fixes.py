@@ -325,34 +325,209 @@ async def test_run_orchestration_pipeline_rejects_a_bad_project_name():
 
 
 class TestCheckpointFiles:
-    def test_legacy_single_underscore_checkpoints_are_not_resumed(self, tmp_path, monkeypatch):
-        """``load`` builds the "{run_id}__{stage}.json" name, so a legacy file could be found but never loaded."""
+    LEGACY_ID = "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70"
+
+    def test_legacy_single_underscore_checkpoints_are_migrated_and_resumable(self, tmp_path, monkeypatch, caplog):
+        """``load`` builds "{run_id}__{stage}.json"; a run checkpointed by an older version is renamed on open."""
         from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
         from pydantic_agents.core.models.core import PipelineState
 
         monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
-        repo = LocalDiskStateRepository("proj")
-        legacy = tmp_path / "proj" / "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70_ba.json"
-        legacy.write_text(PipelineState(run_id="legacy", stage="ba").model_dump_json())
-        assert repo.find_latest_run_id() is None
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text(
+            PipelineState(run_id=self.LEGACY_ID, stage="ba").model_dump_json()
+        )
+        (project_dir / f"{self.LEGACY_ID}_advisory_stage.json").write_text(
+            PipelineState(run_id=self.LEGACY_ID, stage="advisory").model_dump_json()
+        )
+        (project_dir / "notes_for_humans.json").write_text("{}")  # not a UUID prefix: left alone, reported
 
+        repo = LocalDiskStateRepository("proj")
+        assert (project_dir / f"{self.LEGACY_ID}_ba.json").exists()  # construction does no I/O beyond mkdir
+        with caplog.at_level("INFO", logger="pydantic_agents.core.adapters.state_repository"):
+            assert repo.find_latest_run_id() == self.LEGACY_ID
+
+        assert sorted(f.name for f in project_dir.iterdir()) == [
+            f"{self.LEGACY_ID}__advisory_stage.json",
+            f"{self.LEGACY_ID}__ba.json",
+            "notes_for_humans.json",
+        ]
+        assert "Migrated 2 legacy checkpoint file(s)" in caplog.text
+        assert "1 .json file(s) in" in caplog.text
+        assert "notes_for_humans.json" in caplog.text
+        assert repo.load(self.LEGACY_ID, "advisory_stage") is not None  # underscores in the stage round-trip
+        assert repo.exists(self.LEGACY_ID, "ba")
+
+    def test_a_second_instance_sees_the_rename_without_redoing_it(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text('{"run_id": "x", "stage": "ba"}')
+        first = LocalDiskStateRepository("proj")
+        assert first.find_latest_run_id() == self.LEGACY_ID
+
+        second = LocalDiskStateRepository("proj")
+        with caplog.at_level("INFO", logger="pydantic_agents.core.adapters.state_repository"):
+            assert second.find_latest_run_id() == self.LEGACY_ID
+            assert second.exists(self.LEGACY_ID, "ba")
+
+        assert "Migrated" not in caplog.text
+        assert sorted(f.name for f in project_dir.iterdir()) == [f"{self.LEGACY_ID}__ba.json"]
+
+    def test_migration_failure_is_warned_once_and_retried(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
         repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
-        legacy.touch()  # newer mtime than the current-format file, still ignored
-        assert repo.find_latest_run_id() == "run-new"
-        assert repo.load("run-new", "ba") is not None
+        legacy = tmp_path / "proj" / f"{self.LEGACY_ID}_ba.json"
+        legacy.write_text(PipelineState(run_id=self.LEGACY_ID, stage="ba").model_dump_json())
 
-    def test_clear_removes_legacy_files_of_that_run(self, tmp_path, monkeypatch):
+        with (
+            patch.object(state_repository.os, "replace", side_effect=PermissionError("read-only")),
+            caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            assert repo.find_latest_run_id() == "run-new"  # reads proceed on the files that are there
+            assert repo.load("run-new", "ba") is not None  # a second read does not warn again
+        assert caplog.text.count("Could not migrate legacy checkpoint files") == 1
+        assert legacy.exists()
+
+        # The failure was transient: the next read migrates (the legacy file is the newest) and loads the run.
+        assert repo.find_latest_run_id() == self.LEGACY_ID
+        assert not legacy.exists()
+        assert repo.load(self.LEGACY_ID, "ba") is not None
+
+    def test_a_checkpoint_that_is_not_a_pipeline_state_is_treated_as_corrupt(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = LocalDiskStateRepository("proj")
+        (tmp_path / "proj" / "run-x__ba.json").write_text("{}")  # valid JSON, not a PipelineState
+
+        with caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"):
+            assert repo.load("run-x", "ba") is None
+
+        assert "Corrupted checkpoint for stage 'ba'" in caplog.text
+
+    def test_any_value_error_from_validation_is_treated_as_corrupt(self, tmp_path, monkeypatch, caplog):
+        """The resume path must never raise: a ValueError from a validator, not only a JSON error, is logged."""
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
+        repo.save("run-x", "ba", PipelineState(run_id="run-x", stage="ba"))
+
+        with (
+            patch.object(state_repository.PipelineState, "model_validate", side_effect=ValueError("validator bug")),
+            caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            assert repo.load("run-x", "ba") is None
+
+        assert "Corrupted checkpoint for stage 'ba': validator bug" in caplog.text
+
+    @staticmethod
+    def _legacy_dir_with_two_runs(tmp_path, monkeypatch):
+        """A project dir with one legacy file plus an unrelated current-format run; returns (repo, legacy path)."""
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
+        repo.save("run-other", "ba", PipelineState(run_id="run-other", stage="ba"))
+        legacy = tmp_path / "proj" / f"{TestCheckpointFiles.LEGACY_ID}_ba.json"
+        legacy.write_text(PipelineState(run_id=TestCheckpointFiles.LEGACY_ID, stage="ba").model_dump_json())
+        return repo, legacy
+
+    def test_legacy_migration_missing_source_propagates(self, tmp_path, monkeypatch):
+        """FileNotFoundError is only "someone else renamed it" when the target exists; otherwise it propagates."""
+        from pydantic_agents.core.adapters import state_repository
+
+        repo, legacy = self._legacy_dir_with_two_runs(tmp_path, monkeypatch)
+
+        def vanish(src, dst):
+            legacy.unlink()  # the source disappears under us and nothing appears at the target
+            raise FileNotFoundError(src)
+
+        with patch.object(state_repository.os, "replace", side_effect=vanish), pytest.raises(FileNotFoundError):
+            repo._migrate_legacy_files()
+
+        # The unrelated run was left untouched by the failed pass.
+        assert (tmp_path / "proj" / "run-other__ba.json").exists()
+        assert repo.load("run-other", "ba") is not None
+
+    def test_legacy_migration_failure_is_retried_on_the_next_read(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters import state_repository
+
+        repo, legacy = self._legacy_dir_with_two_runs(tmp_path, monkeypatch)
+        with (
+            patch.object(state_repository.os, "replace", side_effect=FileNotFoundError("gone")),
+            caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            # The pass fails (no target appeared), is logged, and the read answers from the files that are there.
+            assert repo.find_latest_run_id() == "run-other"
+        assert "Could not migrate legacy checkpoint files" in caplog.text
+        assert legacy.exists()
+
+        # os.replace works again: the next read migrates the legacy file (the newest) and the run loads.
+        assert repo.find_latest_run_id() == self.LEGACY_ID
+        assert not legacy.exists()
+        assert repo.load(self.LEGACY_ID, "ba") is not None
+
+    def test_rename_done_by_another_instance_counts_as_migrated(self, tmp_path, monkeypatch, caplog):
+        """Two instances on one directory: the loser of the rename race must not fail or warn."""
+        from pydantic_agents.core.adapters import state_repository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text('{"run_id": "x", "stage": "ba"}')
+        real_replace = state_repository.os.replace
+
+        def other_instance_wins(src, dst):
+            real_replace(src, dst)  # the other instance renamed it between our listdir and replace
+            raise FileNotFoundError(src)
+
+        repo = state_repository.LocalDiskStateRepository("proj")
+        with (
+            patch.object(state_repository.os, "replace", side_effect=other_instance_wins),
+            caplog.at_level("INFO", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            assert repo.find_latest_run_id() == self.LEGACY_ID
+
+        assert "Could not migrate" not in caplog.text
+        assert "Migrated 1 legacy checkpoint file(s)" in caplog.text
+        assert repo.exists(self.LEGACY_ID, "ba")
+
+    def test_migration_never_overwrites_a_current_format_file(self, tmp_path, monkeypatch):
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text('{"old": true}')
+        (project_dir / f"{self.LEGACY_ID}__ba.json").write_text('{"new": true}')
+
+        LocalDiskStateRepository("proj")
+
+        assert (project_dir / f"{self.LEGACY_ID}__ba.json").read_text() == '{"new": true}'
+        assert (project_dir / f"{self.LEGACY_ID}_ba.json").exists()
+
+    def test_clear_removes_every_file_of_that_run(self, tmp_path, monkeypatch):
         from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
         from pydantic_agents.core.models.core import PipelineState
 
         monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
         repo = LocalDiskStateRepository("proj")
-        old_id = "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70"
         for stage in ("ba", "advisory"):
-            (tmp_path / "proj" / f"{old_id}_{stage}.json").write_text("{}")
+            (tmp_path / "proj" / f"{self.LEGACY_ID}_{stage}.json").write_text("{}")
         repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
 
-        repo.clear(old_id)
+        repo.clear(self.LEGACY_ID)
 
         assert sorted(f.name for f in (tmp_path / "proj").iterdir()) == ["run-new__ba.json"]
 
