@@ -351,7 +351,9 @@ def _task_output(name: str | None, output: str, agent: str = "Someone") -> Simpl
 _VALID_VERDICT = json.dumps(
     {"approved": True, "feedback": ["ORDERS-01-AC-1 covered"], "security_score": 90, "risk_level": "LOW"}
 )
-_VALID_ADVICE = json.dumps({"bottlenecks_identified": [], "recommendations": ["ship"], "approved_to_proceed": True})
+_VALID_ADVICE = json.dumps(
+    {"bottlenecks_identified": [], "recommendations": ["ship"], "adr_id": "0002", "approved_to_proceed": True}
+)
 _BLOCKING_ADVICE = json.dumps({"bottlenecks_identified": ["CRITICAL: no auth"], "approved_to_proceed": False})
 _GO_TEST = "tests for ORDERS-01-AC-1\n\n`billing_test.go`\n```go\npackage billing\n```\n"
 

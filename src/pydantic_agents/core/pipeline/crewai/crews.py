@@ -55,7 +55,8 @@ REVIEW_VERDICT_OUTPUT = _json_contract(
 )
 CTO_ADVICE_OUTPUT = _json_contract(
     AgentAdvice,
-    "Architecture advice. approved_to_proceed must be false while any CRITICAL finding is open.",
+    "Architecture advice. approved_to_proceed must be false while any CRITICAL finding is open, or while adr_id "
+    "is empty.",
 )
 QA_TEST_REPORT_OUTPUT = _json_contract(
     TestRunReport,
@@ -421,8 +422,9 @@ class ArchitectureReviewCrew:
         decision_task = _make_task(
             "Merge the bounded-context map, threat model, schema review and deployment review into one "
             "architecture decision. List bottlenecks, recommendations and the constraints that bind each "
-            "downstream agent. approved_to_proceed must be false while any CRITICAL finding from any review "
-            "is still open.",
+            "downstream agent. Record this decision under an adr_id (e.g. the next free ADR number, such as "
+            "'0002'); approved_to_proceed must be false while any CRITICAL finding from any review is still open, "
+            "or while adr_id is empty.",
             cto,
             CTO_ADVICE_OUTPUT,
             [contexts_task, threat_task, schema_task, deploy_task],

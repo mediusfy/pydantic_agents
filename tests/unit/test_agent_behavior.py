@@ -82,6 +82,7 @@ class TestCTOAgentOutputs:
         advice = AgentAdvice(
             bottlenecks_identified=["Payment gateway rate limiting"],
             recommendations=["Use event sourcing", "Add circuit breaker"],
+            adr_id="0002",
             approved_to_proceed=True,
         )
         assert advice.approved_to_proceed
