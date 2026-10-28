@@ -10,6 +10,7 @@ from pydantic_agents.core.cto_gate import write_approval
 from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.utils import PathTraversalError
+from tests.unit.db_stub import stub_database
 
 
 class _Conn:
@@ -34,37 +35,10 @@ class _Conn:
         return self.db.get(run_id)
 
 
-class _Ctx:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def __aenter__(self):
-        return self.conn
-
-    async def __aexit__(self, *_exc):
-        return False
-
-
-class _Pool:
-    def __init__(self):
-        self.db = {}
-
-    def acquire(self):
-        return _Ctx(_Conn(self.db))
-
-
 @pytest.fixture
 def pool(monkeypatch):
-    p = _Pool()
-    monkeypatch.setattr(settings, "database_url", "postgresql://stub/db")
-    monkeypatch.setattr(run_store, "_table_ready", False)
-
-    async def get_pool():
-        return p
-
-    monkeypatch.setattr(run_store.vector_db, "_get_pool", get_pool)
     monkeypatch.setattr(pipeline_jobs, "PIPELINE_RUNS", {})
-    return p
+    return stub_database(monkeypatch, run_store, _Conn)
 
 
 def _run(status, **extra):
