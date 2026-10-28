@@ -34,7 +34,17 @@ def test_agent_advice_blocks_approval_while_critical_finding_open():
 
 
 def test_agent_advice_allows_approval_with_only_non_critical_findings():
-    advice = AgentAdvice(approved_to_proceed=True, findings=[_finding(FindingSeverity.HIGH)])
+    advice = AgentAdvice(approved_to_proceed=True, adr_id="0002", findings=[_finding(FindingSeverity.HIGH)])
+    assert advice.approved_to_proceed is True
+
+
+def test_agent_advice_blocks_approval_without_an_adr_id():
+    advice = AgentAdvice(approved_to_proceed=True)
+    assert advice.approved_to_proceed is False
+
+
+def test_agent_advice_allows_approval_with_an_adr_id_and_no_critical_findings():
+    advice = AgentAdvice(approved_to_proceed=True, adr_id="0002")
     assert advice.approved_to_proceed is True
 
 

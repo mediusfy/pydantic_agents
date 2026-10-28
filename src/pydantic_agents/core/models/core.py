@@ -146,14 +146,19 @@ class AgentAdvice(BaseModel):
         default_factory=list,
         description="Typed findings merged from CTO review's members (ba/security/database/sre/finops)",
     )
+    adr_id: str = Field(
+        default="", description="The ADR this decision is recorded under; approval requires one (e.g. 0002)"
+    )
     approved_to_proceed: bool = Field(
         default=False, description="Must be set explicitly; an omitted value blocks the pipeline"
     )
 
     @model_validator(mode="after")
     def _block_on_critical_finding(self) -> "AgentAdvice":
-        """Overrides the supplied approval: no approval while a CRITICAL finding is open."""
+        """Overrides the supplied approval: no approval while a CRITICAL finding is open, or without an adr_id."""
         if self.approved_to_proceed and any(f.severity in FINDING_BLOCKING_SEVERITIES for f in self.findings):
+            self.approved_to_proceed = False
+        if self.approved_to_proceed and not self.adr_id.strip():
             self.approved_to_proceed = False
         return self
 
