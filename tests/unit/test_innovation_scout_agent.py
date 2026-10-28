@@ -71,10 +71,21 @@ async def test_propose_adr_persists_a_draft_via_the_adr_store(monkeypatch):
     result = await propose_adr(CTX, "ADR-0099", "## Context\n...")
 
     mock_add.assert_awaited_once_with(
-        "adrs", ["## Context\n..."], [{"id": "ADR-0099", "status": "proposed"}], ["ADR-0099"]
+        "adrs", ["## Context\n..."], [{"id": "draft-ADR-0099", "status": "proposed"}], ["draft-ADR-0099"]
     )
-    assert "ADR-0099" in result
+    assert "draft-ADR-0099" in result
     assert "pending human/CTO approval" in result
+
+
+@pytest.mark.parametrize("decision_id", ["ADR-0001", "draft-ADR-0001"])
+async def test_propose_adr_cannot_overwrite_an_existing_adr(monkeypatch, decision_id):
+    """The store upserts by id: a draft under an accepted ADR's id would replace it, so drafts get their own ids."""
+    mock_add = AsyncMock(return_value=None)
+    monkeypatch.setattr(innovation_scout.vector_db, "async_add_documents", mock_add)
+
+    await propose_adr(CTX, decision_id, "content")
+
+    assert mock_add.await_args.args[3] == ["draft-ADR-0001"]
 
 
 def test_build_report_assembles_proposals_without_an_llm_call():

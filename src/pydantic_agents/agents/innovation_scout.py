@@ -18,6 +18,8 @@ from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.vector_db import vector_db
 
+DRAFT_ID_PREFIX = "draft-"
+
 innovation_scout_prompt = """You are the Innovation Scout: you look for techniques, frameworks, and tools adoptable
 by this platform (this repo), and write up draft Architecture Decision Records for a human/CTO to review. You are
 not an implementer: you never write or change code, never create implementation tickets, and never approve your
@@ -55,7 +57,7 @@ innovation_scout_agent = Agent(
 @innovation_scout_agent.tool
 async def search_existing_adrs(ctx: RunContext[Any], query: str, n_results: int = 5) -> str:
     """Search past ADRs for related context, so a new proposal does not duplicate or contradict one."""
-    results = await vector_db.async_search("adrs", query, n_results=n_results)
+    results = await vector_db.async_search("adrs", query, n_results=max(1, min(n_results, 20)))
     if not results:
         return f"No ADRs found for query: {query}"
     return "Found past architectural context:\n" + "\n---\n".join(results)
@@ -67,10 +69,11 @@ async def propose_adr(ctx: RunContext[Any], decision_id: str, content: str) -> s
     draft requires explicit human/CTO approval (the existing CTO approval gate) before any follow-on
     implementation work is created — this tool never creates that follow-on work itself.
     """
-    await vector_db.async_add_documents(
-        "adrs", [content], [{"id": decision_id, "status": "proposed"}], [decision_id]
-    )
-    return f"Saved draft ADR {decision_id} (status: proposed, pending human/CTO approval)."
+    # The ADR store upserts by document id, so a draft saved under an existing ADR's id would replace that ADR's
+    # content. Drafts live in their own id namespace and can only ever overwrite another draft.
+    doc_id = decision_id if decision_id.startswith(DRAFT_ID_PREFIX) else f"{DRAFT_ID_PREFIX}{decision_id}"
+    await vector_db.async_add_documents("adrs", [content], [{"id": doc_id, "status": "proposed"}], [doc_id])
+    return f"Saved draft ADR {doc_id} (status: proposed, pending human/CTO approval)."
 
 
 def build_report(proposals: list[InnovationProposal], narrative: str = "") -> InnovationScoutReport:
