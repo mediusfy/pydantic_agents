@@ -15,6 +15,17 @@ fresh **Unreleased** section above it.
 - `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
   runs test suites `test_gen` produced via `execute_test_suite` and reports pass/fail per acceptance-criterion id,
   without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
+- `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
+  case-insensitive so a lowercase "critical" still reaches the gate),
+  `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
+  `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
+  forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
+  `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
+- `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
+  `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
+  (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
+  (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
+  JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they
@@ -124,6 +135,11 @@ fresh **Unreleased** section above it.
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
 
 ### Fixed
+- `run_store`, `platform_metrics` and `platform_findings` now reach the database through
+  `vector_db.with_connection`, which runs the query on the background loop that owns the cached asyncpg pool.
+  They used to acquire that pool from the caller's loop, so once a vector search had created it there, every
+  pipeline-run save and every `platform_metrics` row failed with a cross-loop error that the best-effort
+  `except` swallowed.
 
 - Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
   renamed to the current name before the first read of a project's repository, so runs checkpointed by that
