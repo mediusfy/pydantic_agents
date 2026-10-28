@@ -107,7 +107,12 @@ class LocalDiskStateRepository(StateRepositoryPort):
             current = [f for f in files if "__" in f]
             legacy = len(files) - len(current)
             if legacy:
-                logger.info("Ignoring %d legacy checkpoint file(s) in %s", legacy, self.checkpoint_dir)
+                logger.warning(
+                    "%d legacy checkpoint file(s) in %s cannot be resumed (written before the '__' separator); "
+                    "runs started before this version restart from scratch. Remove them with clear(<run id>).",
+                    legacy,
+                    self.checkpoint_dir,
+                )
             if not current:
                 return None
             current.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)

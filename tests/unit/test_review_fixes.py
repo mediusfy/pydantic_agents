@@ -341,6 +341,21 @@ class TestCheckpointFiles:
         assert repo.find_latest_run_id() == "run-new"
         assert repo.load("run-new", "ba") is not None
 
+    def test_clear_removes_legacy_files_of_that_run(self, tmp_path, monkeypatch):
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = LocalDiskStateRepository("proj")
+        old_id = "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70"
+        for stage in ("ba", "advisory"):
+            (tmp_path / "proj" / f"{old_id}_{stage}.json").write_text("{}")
+        repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
+
+        repo.clear(old_id)
+
+        assert sorted(f.name for f in (tmp_path / "proj").iterdir()) == ["run-new__ba.json"]
+
 
 # --- Langfuse OTLP export -------------------------------------------------------------------------------------
 

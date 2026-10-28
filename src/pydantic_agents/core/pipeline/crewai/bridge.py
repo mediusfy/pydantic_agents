@@ -203,9 +203,10 @@ def _apply_advice(state: PipelineState, owner: str, output: str) -> None:
 def _merge_artifact(state: PipelineState, artifact: Artifact) -> None:
     """Keep one artifact per owner: a later task of the same owner (QaCrew's fix task after its test task) updates
     the files it re-emits and adds the rest, instead of leaving two artifacts for consumers keyed by owner."""
-    for existing in state.artifacts:
+    for idx, existing in enumerate(state.artifacts):
         if existing.agent_name == artifact.agent_name:
-            existing.files.update(artifact.files)
+            # A new instance, not an in-place update: an Artifact may already be referenced elsewhere.
+            state.artifacts[idx] = existing.model_copy(update={"files": {**existing.files, **artifact.files}})
             return
     state.artifacts.append(artifact)
 

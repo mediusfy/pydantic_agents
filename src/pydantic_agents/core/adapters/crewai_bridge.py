@@ -9,6 +9,7 @@ that need it, so this module can be imported without it installed.
 """
 
 import asyncio
+import atexit
 import inspect
 import logging
 from collections.abc import Awaitable, Callable
@@ -107,8 +108,11 @@ async def _await(awaitable: Awaitable[Any]) -> Any:
 
 
 # One bounded pool for every bridged tool call, so a crew making many parallel calls does not start a thread per
-# call. Each call still runs its coroutine on its own short-lived event loop inside the worker.
+# call. Each call still runs its coroutine on its own short-lived event loop inside the worker. More than
+# max_workers concurrent calls queue (they never deadlock: a bridged call does not wait on another bridged call).
+# The pool is shut down at interpreter exit without waiting, so a hung tool cannot block shutdown.
 _TOOL_EXECUTOR = ThreadPoolExecutor(max_workers=8, thread_name_prefix="crewai-tool")
+atexit.register(_TOOL_EXECUTOR.shutdown, wait=False)
 
 
 def _run_awaitable(awaitable: Awaitable[Any]) -> Any:

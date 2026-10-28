@@ -148,6 +148,23 @@ class TestToolBridging:
         tools = {tool.name: tool for tool in crewai_bridge._extract_tool_defs(_agent_with_tools())}
         assert tools["async_plain"].run(x=5) == 5
 
+    async def test_bridged_calls_share_one_bounded_executor(self, fake_crewai, monkeypatch):
+        """Every call inside a running loop goes to the module-level pool, not a pool per call."""
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        submitted: list[object] = []
+        real_submit = crewai_bridge._TOOL_EXECUTOR.submit
+
+        def spy(fn, *args, **kwargs):
+            submitted.append(fn)
+            return real_submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(crewai_bridge._TOOL_EXECUTOR, "submit", spy)
+        tools = {tool.name: tool for tool in crewai_bridge._extract_tool_defs(_agent_with_tools())}
+        assert [tools["async_plain"].run(x=i) for i in range(3)] == [0, 1, 2]
+        assert len(submitted) == 3
+        assert crewai_bridge._TOOL_EXECUTOR._max_workers == 8
+
     def test_agent_without_toolset_yields_no_tools(self, fake_crewai):
         from pydantic_agents.core.adapters import crewai_bridge
 
