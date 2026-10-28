@@ -4,6 +4,7 @@ import pytest
 
 from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.settings import settings
+from tests.unit.db_stub import stub_database
 
 
 class _Conn:
@@ -35,36 +36,9 @@ class _Conn:
         return rows[:limit]
 
 
-class _Ctx:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def __aenter__(self):
-        return self.conn
-
-    async def __aexit__(self, *_exc):
-        return False
-
-
-class _Pool:
-    def __init__(self):
-        self.db = {}
-
-    def acquire(self):
-        return _Ctx(_Conn(self.db))
-
-
 @pytest.fixture
 def pool(monkeypatch):
-    p = _Pool()
-    monkeypatch.setattr(settings, "database_url", "postgresql://stub/db")
-    monkeypatch.setattr(platform_metrics, "_table_ready", False)
-
-    async def get_pool():
-        return p
-
-    monkeypatch.setattr(platform_metrics.vector_db, "_get_pool", get_pool)
-    return p
+    return stub_database(monkeypatch, platform_metrics, _Conn)
 
 
 async def test_record_call_persists_a_row(pool):

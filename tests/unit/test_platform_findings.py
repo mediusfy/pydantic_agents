@@ -4,6 +4,7 @@ import pytest
 
 from pydantic_agents.core import platform_findings
 from pydantic_agents.core.settings import settings
+from tests.unit.db_stub import stub_database
 
 
 class _Conn:
@@ -40,36 +41,9 @@ class _Conn:
         return rows[:limit]
 
 
-class _Ctx:
-    def __init__(self, conn):
-        self.conn = conn
-
-    async def __aenter__(self):
-        return self.conn
-
-    async def __aexit__(self, *_exc):
-        return False
-
-
-class _Pool:
-    def __init__(self):
-        self.db = {}
-
-    def acquire(self):
-        return _Ctx(_Conn(self.db))
-
-
 @pytest.fixture
 def pool(monkeypatch):
-    p = _Pool()
-    monkeypatch.setattr(settings, "database_url", "postgresql://stub/db")
-    monkeypatch.setattr(platform_findings, "_table_ready", False)
-
-    async def get_pool():
-        return p
-
-    monkeypatch.setattr(platform_findings.vector_db, "_get_pool", get_pool)
-    return p
+    return stub_database(monkeypatch, platform_findings, _Conn)
 
 
 async def test_save_and_list_a_finding(pool):
@@ -93,11 +67,9 @@ async def test_list_filters_by_status_and_kind(pool):
     assert await platform_findings.list_findings(status="resolved") == []
 
 
-def test_invalid_kind_is_rejected():
+async def test_invalid_kind_is_rejected():
     with pytest.raises(ValueError, match="Invalid finding kind"):
-        import asyncio
-
-        asyncio.run(platform_findings.save_finding("not-a-kind", "low", "x"))
+        await platform_findings.save_finding("not-a-kind", "low", "x")
 
 
 async def test_disabled_without_a_database(monkeypatch):
