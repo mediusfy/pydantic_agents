@@ -1,4 +1,3 @@
-import asyncio
 import datetime
 import hashlib
 import logging
@@ -6,7 +5,6 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
-from pydantic_agents.core.settings import settings
 from pydantic_agents.core.vector_db import vector_db
 
 logger = logging.getLogger(__name__)
@@ -83,64 +81,15 @@ class VectorMemory:
 long_term_memory = VectorMemory("activity_logs")
 
 
-class RedisIrisMemory:
-    """Redis-backed long-term memory via redis-agent-memory package.
-
-    Provides persistent, distributed memory storage. Falls back gracefully
-    to VectorMemory if redis-agent-memory is not installed or unreachable.
-    """
-
-    def __init__(self, server_url: str, store_id: str, api_key: str):
-        self.server_url = server_url
-        self.store_id = store_id
-        self.api_key = api_key
-
-    @staticmethod
-    def _require_package() -> None:
-        """Lazy import: raises ImportError if redis-agent-memory is not installed."""
-        import redis_agent_memory  # noqa: F401
-
-    async def add_memory(self, content: str, metadata: dict[str, Any] | None = None) -> None:
-        """Add a memory to the Redis IRIS store."""
-        await asyncio.to_thread(self._require_package)  # the first import is blocking disk I/O
-        logger.warning(
-            "RedisIrisMemory.add_memory is not implemented; dropped %d characters (metadata keys: %s)",
-            len(content),
-            sorted(metadata or {}),
-        )
-
-    async def get_relevant_memories(self, query: str, n_results: int = 5) -> list["Memory"]:
-        """Retrieve relevant memories from the Redis IRIS store."""
-        await asyncio.to_thread(self._require_package)
-        raise NotImplementedError(
-            "redis_agent_memory integration not yet implemented "
-            f"(query of {len(query)} characters, n_results={n_results})"
-        )
+_memory_backend: VectorMemory | None = None
 
 
-_memory_backend: VectorMemory | RedisIrisMemory | None = None
-
-
-def create_memory_backend() -> VectorMemory | RedisIrisMemory:
-    """Create the appropriate memory backend based on configuration.
-
-    Returns RedisIrisMemory if REDIS_IRIS_TOKEN is configured and the
-    redis-agent-memory package is available. Falls back to VectorMemory
-    otherwise.
-    """
-    if settings.redis_iris_token:
-        try:
-            return RedisIrisMemory(
-                server_url=settings.redis_iris_url or "http://localhost:6380",
-                store_id=settings.redis_iris_store_id or "orchestration",
-                api_key=settings.redis_iris_token,
-            )
-        except Exception:
-            logger.warning("Failed to initialize RedisIrisMemory, falling back to VectorMemory", exc_info=True)
+def create_memory_backend() -> VectorMemory:
+    """The memory backend: the pgvector-backed activity log (the only implementation)."""
     return VectorMemory("activity_logs")
 
 
-def get_memory_backend() -> VectorMemory | RedisIrisMemory:
+def get_memory_backend() -> VectorMemory:
     """Get the singleton memory backend, creating it lazily on first call."""
     global _memory_backend
     if _memory_backend is None:

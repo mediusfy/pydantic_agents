@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -44,11 +44,30 @@ class RiskLevel(str, Enum):
     CRITICAL = "CRITICAL"
 
 
+# A review cannot approve code it rates as a high or critical risk, or scores below the security pass band.
+REVIEW_BLOCKING_RISKS = frozenset({RiskLevel.HIGH, RiskLevel.CRITICAL})
+REVIEW_MIN_SECURITY_SCORE = 70
+
+
 class ReviewResult(BaseModel):
     approved: bool
     feedback: list[str]
     security_score: int = Field(ge=0, le=100)
     risk_level: RiskLevel
+
+    @model_validator(mode="after")
+    def _consistent_verdict(self) -> "ReviewResult":
+        """Force a rejection when the risk level or the security score contradicts an approval."""
+        if self.approved and (
+            self.risk_level in REVIEW_BLOCKING_RISKS or self.security_score < REVIEW_MIN_SECURITY_SCORE
+        ):
+            self.approved = False
+            self.feedback = [
+                *self.feedback,
+                f"Approval withdrawn: risk_level={self.risk_level.value}, security_score={self.security_score} "
+                f"(approval needs risk below HIGH and a score of at least {REVIEW_MIN_SECURITY_SCORE}).",
+            ]
+        return self
 
 
 QUALITY_GATE_MAX_COMPLEXITY = 60
@@ -137,7 +156,9 @@ class PipelineState(BaseModel):
     refinement_attempts: int = 0
     user_stories: list[UserStory] = Field(default_factory=list)
     advisory_results: dict[str, str] = Field(default_factory=dict)
-    cto_approved: bool = Field(default=True, description="CTO gate: true when approved_to_proceed")
+    cto_approved: bool = Field(
+        default=False, description="CTO gate: true only after approved_to_proceed or an explicit human override"
+    )
     approved: bool = Field(default=False)
     artifacts: list[Artifact] = Field(default_factory=list)
     feedback: str | None = None
@@ -145,3 +166,79 @@ class PipelineState(BaseModel):
     errors: list[str] = Field(default_factory=list)
     active_context: ContextFrame | None = None
     context_history: list[ContextFrame] = Field(default_factory=list)
+
+
+class ClaimCheck(BaseModel):
+    claim: str = Field(description="The claim, as the producing agent stated it")
+    supported: bool = Field(description="True iff the supplied evidence backs the claim")
+    evidence: str = Field(default="", description="The evidence that backs the claim, or why none does")
+
+
+class CriticReport(BaseModel):
+    claims: list[ClaimCheck] = Field(default_factory=list)
+    unsupported_count: int = Field(
+        default=0, description="Derived in code from claims (count with supported=false); supplied value ignored"
+    )
+    passed: bool = Field(
+        default=False, description="Derived in code: true iff unsupported_count == 0; supplied value ignored"
+    )
+    feedback: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_verdict(self) -> "CriticReport":
+        """Overrides (does not validate) the supplied counts: the claim list is the single source of truth."""
+        self.unsupported_count = sum(1 for check in self.claims if not check.supported)
+        self.passed = self.unsupported_count == 0
+        return self
+
+
+ContractDriftKind = Literal["missing_endpoint", "extra_endpoint", "type_mismatch", "breaking_change"]
+# Drift kinds that fail the contract check; the other kinds are reported but do not block.
+CONTRACT_BLOCKING_KINDS: frozenset[str] = frozenset({"breaking_change", "type_mismatch"})
+
+
+class ContractDrift(BaseModel):
+    kind: ContractDriftKind
+    location: str = Field(description="file:line of the drift (spec, handler or frontend type)")
+    detail: str = Field(description="What differs between the spec and the implementation")
+
+
+class ContractReport(BaseModel):
+    drifts: list[ContractDrift] = Field(default_factory=list)
+    passed: bool = Field(
+        default=False,
+        description=f"Derived in code: true iff no drift has a kind in {sorted(CONTRACT_BLOCKING_KINDS)}; "
+        "supplied value ignored",
+    )
+    feedback: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_passed(self) -> "ContractReport":
+        """Overrides (does not validate) the supplied `passed`: the drift kinds are the single source of truth."""
+        self.passed = not any(drift.kind in CONTRACT_BLOCKING_KINDS for drift in self.drifts)
+        return self
+
+
+class CostLine(BaseModel):
+    item: str = Field(description="What was paid for (model group, key alias, cloud resource)")
+    amount_usd: float = Field(ge=0, description="Spend for the item in USD, never negative")
+    period: str = Field(description="The period the amount covers (e.g. '2026-10-20..2026-10-27', 'monthly')")
+    source: str = Field(description="Where the number came from (tool output, invoice, estimate)")
+
+
+class CostReport(BaseModel):
+    lines: list[CostLine] = Field(default_factory=list)
+    total_usd: float = Field(default=0.0, description="Derived in code as the sum of lines; supplied value ignored")
+    budget_usd: float | None = Field(default=None, description="The budget the total is compared against, if any")
+    over_budget: bool = Field(
+        default=False,
+        description="Derived in code: true iff a budget is set and total_usd exceeds it; supplied value ignored",
+    )
+    recommendations: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _derive_totals(self) -> "CostReport":
+        """Overrides (does not validate) the supplied total and verdict: the lines are the single source of truth."""
+        self.total_usd = sum(line.amount_usd for line in self.lines)
+        self.over_budget = self.budget_usd is not None and self.total_usd > self.budget_usd
+        return self

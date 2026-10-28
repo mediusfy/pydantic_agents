@@ -1,19 +1,133 @@
+"""Quality gate: deterministic verification first, then the SRE, security, quality-gate and review agents.
+
+Order and fail-closed rules:
+
+1. ``verify_artifacts`` builds, vets and tests the Go files with the real toolchain. Its report is handed to every
+   LLM gate, and a failed build stops the stage with a ``quality_gate_validation`` failure (no model is asked to
+   review code that does not compile).
+2. The SRE agent writes the infrastructure for the requirement and stories (it used to get no context at all).
+3. Security, quality gate and review judge the artifacts in batches that fit their character budget, so a large
+   run is reviewed completely instead of being truncated and judged on what was left. A batch that fails stops the
+   stage with that gate's failure report.
+"""
+
 import logging
+from collections.abc import Sequence
+from typing import Any
 
 from pydantic_agents.agents.review import ReviewCriteria
 from pydantic_agents.core.limits import llm_semaphore
-from pydantic_agents.core.models.core import FailureReport, PipelineState
+from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.session_recorder import recorder
 from pydantic_agents.core.stages.base import StageRunner
 from pydantic_agents.core.utils import format_artifacts
 from pydantic_agents.core.validators import CodeValidator
+from pydantic_agents.core.verifier import VerificationReport, verify_artifacts
 
 logger = logging.getLogger(__name__)
 
+# Character budget per gate prompt. Artifacts are batched so that no batch exceeds it; a single artifact larger
+# than the budget is reviewed alone and the gate is told it is reading a truncated file.
+GATE_BATCH_CHARS = 80_000
+
+
+def _batches(artifacts: Sequence[Artifact], max_chars: int = GATE_BATCH_CHARS) -> list[list[Artifact]]:
+    """Group artifacts into batches whose formatted size stays under ``max_chars`` (one oversized artifact alone)."""
+    batches: list[list[Artifact]] = []
+    current: list[Artifact] = []
+    size = 0
+    for art in artifacts:
+        art_size = sum(len(p) + len(c) + 10 for p, c in art.files.items()) + 60
+        if current and size + art_size > max_chars:
+            batches.append(current)
+            current, size = [], 0
+        current.append(art)
+        size += art_size
+    if current:
+        batches.append(current)
+    return batches
+
+
+def _reject(state: PipelineState, source: str, error_type: str, feedback: str) -> PipelineState:
+    state.feedback = feedback
+    state.failure_report = FailureReport(source=source, error_type=error_type, trace=feedback)
+    state.approved = False
+    return state
+
+
+def _context_query(state: PipelineState) -> str:
+    """What to retrieve context for: the requirement and the story titles, never the artifact dump."""
+    titles = ", ".join(us.title for us in state.user_stories)
+    return f"{state.requirement}\n{titles}".strip() or "generated service"
+
 
 class QualityGateStage(StageRunner):
+    async def _run_agent(self, state: PipelineState, agent: str, prompt: str, deps: Any = None) -> Any:
+        semaphore = llm_semaphore()
+        async with recorder.record_span(
+            run_id=state.run_id, agent_name=agent, pipeline_stage="quality_gate", prompt=prompt
+        ) as rec:
+            res = await self.provider.run_agent(semaphore, agent, registry.get(agent), prompt, deps=deps)
+            rec.set_output(res)
+            return res.output
+
+    async def _retrieved(self, agent: str, state: PipelineState, config: PipelineConfig, heading: str) -> str:
+        from pydantic_agents.core.context_engine import retrieve_context
+
+        ctx = await retrieve_context(agent, _context_query(state), project=config.project)
+        return f"\n\nRetrieved {heading}:\n{ctx}" if ctx else ""
+
+    async def _run_sre(self, state: PipelineState, config: PipelineConfig, artifacts: list[Artifact]) -> None:
+        logger.info("Running SRE Agent...")
+        stories = "\n".join(f"- {us.id}: {us.title}" for us in state.user_stories)
+        services = sorted({a.metadata.get("service_name") or config.project for a in artifacts if a.files})
+        sre_prompt = (
+            f"Provision infrastructure and Helm charts for project '{config.project}'.\n\n"
+            f"REQUIREMENT:\n{state.requirement}\n\nSTORIES:\n{stories}\n\n"
+            f"SERVICES TO DEPLOY: {', '.join(services) or config.project}\n\n"
+            f"CTO ADVICE:\n{state.advisory_results.get('cto', '(none)')}"
+        ) + await self._retrieved("sre", state, config, "SRE Context/ADRs")
+        sre_output = await self._run_agent(state, "sre", sre_prompt)
+        # Create a clean copy to avoid mutating the agent's returned artifact
+        sre_artifact = sre_output.model_copy(deep=True)
+        sre_artifact.metadata["user_story_id"] = "infrastructure"
+        sre_artifact.agent_name = "infrastructure"
+        artifacts.append(sre_artifact)
+
+    async def _security(self, state, config, text: str, verification: str) -> list[str] | None:
+        """Findings when the audit fails, else None."""
+        prompt = f"Audit the following code for vulnerabilities:\n{text}\n\n{verification}"
+        prompt += await self._retrieved("security", state, config, "Security Context")
+        result = await self._run_agent(state, "security", prompt)
+        logger.info(f"Security: passed={result.passed}, score={result.score}")
+        if result.passed:
+            return None
+        return list(result.feedback) or ["(the security agent gave no details; re-audit the artifacts)"]
+
+    async def _quality(self, state, config, text: str, verification: str) -> list[str] | None:
+        prompt = f"Perform quality gate check on these artifacts:\n{text}\n\n{verification}"
+        prompt += await self._retrieved("quality_gate", state, config, "Quality Gate Rules")
+        result = await self._run_agent(state, "quality_gate", prompt)
+        logger.info(f"Quality Gate: passed={result.passed}, complexity={result.complexity_score}")
+        return None if result.passed else list(result.feedback)
+
+    async def _review(self, state, config, text: str, verification: str) -> list[str] | None:
+        prompt = (
+            f"Review the following generated artifacts:\n{text}\n\n{verification}\n"
+            "Ensure code is robust, secure, and meets all criteria."
+        )
+        if state.feedback:
+            prompt += f"\n\nPrevious feedback to verify as resolved (report it only if still present): {state.feedback}"
+        prompt += await self._retrieved("review", state, config, "Review Context/Conventions")
+        contexts = sorted({us.bounded_context for us in state.user_stories if us.bounded_context})
+        result = await self._run_agent(state, "review", prompt, deps=ReviewCriteria(bounded_contexts=contexts))
+        logger.info(
+            f"Review: approved={result.approved}, risk={result.risk_level}, security_score={result.security_score}"
+        )
+        return None if result.approved else list(result.feedback)
+
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:
         logger.info("--- Running Quality Gate Stage ---")
 
@@ -23,161 +137,51 @@ class QualityGateStage(StageRunner):
             state.stage = "quality_gate"
             return state
 
-        semaphore = llm_semaphore()
         artifacts = state.artifacts or []
-
-        logger.info("Running SRE Agent...")
-        from pydantic_agents.core.context_engine import retrieve_context
-
-        sre_ctx = retrieve_context("sre", "Provision infrastructure and apply Helm charts.")
-        sre_prompt = "Provision infrastructure and apply Helm charts."
-        if sre_ctx:
-            sre_prompt += f"\n\nRetrieved SRE Context/ADRs:\n{sre_ctx}"
-
-        async with recorder.record_span(
-            run_id=state.run_id,
-            agent_name="sre",
-            pipeline_stage="quality_gate",
-            prompt=sre_prompt,
-        ) as rec:
-            sre_res = await self.provider.run_agent(semaphore, "sre", registry.get("sre"), sre_prompt)
-            rec.set_output(sre_res)
-            # Create a clean copy to avoid mutating the agent's returned artifact
-            sre_artifact = sre_res.output.model_copy(deep=True)
-            sre_artifact.metadata["user_story_id"] = "infrastructure"
-            sre_artifact.agent_name = "infrastructure"
-            artifacts.append(sre_artifact)
-
-        full_text = format_artifacts(artifacts, max_chars=80_000)
+        state.stage = "quality_gate"
 
         logger.info("Running Code Validation...")
         if not await CodeValidator.run_all_async(artifacts):
             logger.warning("Code validation failed.")
-            state.feedback = "Code validation failed during the Quality Gate. Please fix compilation issues."
-            state.failure_report = FailureReport(
-                source="quality_gate_validation",
-                error_type="compilation",
-                trace=state.feedback,
+            return _reject(
+                state,
+                "quality_gate_validation",
+                "compilation",
+                "Code validation failed during the Quality Gate. Please fix compilation issues.",
             )
-            state.approved = False
-            return state
 
-        logger.info("Running Security Audit...")
-        from pydantic_agents.core.context_engine import retrieve_context
+        logger.info("Running deterministic verification (go build / vet / test)...")
+        report: VerificationReport = await verify_artifacts(artifacts)
+        if not report.skipped and not report.passed:
+            logger.warning("Verification failed: %s", report.failures())
+            return _reject(state, "quality_gate_validation", "compilation", "\n".join(report.failures()))
+        verification = report.as_prompt()
 
-        sec_ctx = retrieve_context("security", full_text)
-        sec_prompt = f"Audit the following code for vulnerabilities:\n{full_text}"
-        if sec_ctx:
-            sec_prompt += f"\n\nRetrieved Security Context:\n{sec_ctx}"
+        await self._run_sre(state, config, artifacts)
 
-        async with recorder.record_span(
-            run_id=state.run_id,
-            agent_name="security",
-            pipeline_stage="quality_gate",
-            prompt=sec_prompt,
-        ) as rec:
-            sec_res = await self.provider.run_agent(
-                semaphore,
+        gates = (
+            (
                 "security",
-                registry.get("security"),
-                sec_prompt,
-            )
-            rec.set_output(sec_res)
-            sec_result = sec_res.output
-            logger.info(f"Security: passed={sec_result.passed}, score={sec_result.score}")
-            if not sec_result.passed:
-                logger.warning("Security audit failed.")
-                findings = (
-                    "\n".join(sec_result.feedback) or "(the security agent gave no details; re-audit the artifacts)"
-                )
-                state.feedback = "Security audit failed. Resolve these findings: \n" + findings
-                state.failure_report = FailureReport(
-                    source="security_audit",
-                    error_type="security",
-                    trace=state.feedback,
-                )
-                state.approved = False
-                return state
-
-        logger.info("Running Quality Gate...")
-        qg_ctx = retrieve_context("quality_gate", full_text)
-        qg_prompt = f"Perform quality gate check on these artifacts:\n{full_text}"
-        if qg_ctx:
-            qg_prompt += f"\n\nRetrieved Quality Gate Rules:\n{qg_ctx}"
-
-        async with recorder.record_span(
-            run_id=state.run_id,
-            agent_name="quality_gate",
-            pipeline_stage="quality_gate",
-            prompt=qg_prompt,
-        ) as rec:
-            q_res = await self.provider.run_agent(
-                semaphore,
-                "quality_gate",
-                registry.get("quality_gate"),
-                qg_prompt,
-            )
-            rec.set_output(q_res)
-            q_result = q_res.output
-            logger.info(f"Quality Gate: passed={q_result.passed}, complexity={q_result.complexity_score}")
-            if not q_result.passed:
-                logger.warning("Quality Gate rejected.")
-                state.feedback = "\n".join(q_result.feedback)
-                state.failure_report = FailureReport(
-                    source="quality_gate_agent",
-                    error_type="quality_check",
-                    trace=state.feedback,
-                )
-                state.approved = False
-                return state
-
-        logger.info("Running Board of Review...")
-        review_prompt = (
-            f"Review the following generated artifacts:\n{full_text}\n"
-            "Ensure code is robust, secure, and meets all criteria."
+                "security_audit",
+                "security",
+                "Security audit failed. Resolve these findings: \n",
+                self._security,
+            ),
+            ("quality_gate", "quality_gate_agent", "quality_check", "", self._quality),
+            ("review", "review_agent", "review_rejection", "", self._review),
         )
-        if state.feedback:
-            review_prompt += (
-                f"\n\nPrevious feedback to verify as resolved (report it only if still present): {state.feedback}"
-            )
+        batches = _batches(artifacts)
+        logger.info("Reviewing %d artifacts in %d batch(es)", len(artifacts), len(batches))
+        for name, source, error_type, prefix, gate in gates:
+            logger.info("Running %s...", name)
+            for batch in batches:
+                text = format_artifacts(batch, max_chars=GATE_BATCH_CHARS)
+                findings = await gate(state, config, text, verification)
+                if findings is not None:
+                    logger.warning("%s rejected.", name)
+                    return _reject(state, source, error_type, prefix + "\n".join(findings))
 
-        review_ctx = retrieve_context("review", full_text)
-        if review_ctx:
-            review_prompt += f"\n\nRetrieved Review Context/Conventions:\n{review_ctx}"
-
-        async with recorder.record_span(
-            run_id=state.run_id,
-            agent_name="review",
-            pipeline_stage="quality_gate",
-            prompt=review_prompt,
-        ) as rec:
-            contexts = sorted({us.bounded_context for us in state.user_stories if us.bounded_context})
-            review_res = await self.provider.run_agent(
-                semaphore,
-                "review",
-                registry.get("review"),
-                review_prompt,
-                deps=ReviewCriteria(bounded_contexts=contexts),
-            )
-            rec.set_output(review_res)
-            result = review_res.output
-            logger.info(
-                f"Review: approved={result.approved}, risk={result.risk_level}, security_score={result.security_score}"
-            )
-
-            if result.approved:
-                state.approved = True
-                state.feedback = None
-                state.failure_report = None
-            else:
-                logger.warning("Review rejected. Setting feedback for implementation retry.")
-                state.feedback = "\n".join(result.feedback)
-                state.failure_report = FailureReport(
-                    source="review_agent",
-                    error_type="review_rejection",
-                    trace=state.feedback,
-                )
-                state.approved = False
-
-        state.stage = "quality_gate"
+        state.approved = True
+        state.feedback = None
+        state.failure_report = None
         return state

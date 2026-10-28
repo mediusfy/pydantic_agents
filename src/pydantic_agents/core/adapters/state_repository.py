@@ -2,7 +2,6 @@ import abc
 import json
 import logging
 import os
-import uuid
 
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.settings import settings
@@ -49,7 +48,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
 
     def _get_filepath(self, run_id: str, stage: str) -> str:
         safe_stage = stage.replace("/", "_").replace(" ", "_")
-        return os.path.join(self.checkpoint_dir, f"{run_id}_{safe_stage}.json")
+        return os.path.join(self.checkpoint_dir, f"{run_id}__{safe_stage}.json")
 
     def save(self, run_id: str, stage: str, state: PipelineState) -> None:
         filepath = self._get_filepath(run_id, stage)
@@ -102,14 +101,22 @@ class LocalDiskStateRepository(StateRepositoryPort):
             files = [f for f in os.listdir(self.checkpoint_dir) if f.endswith(".json")]
             if not files:
                 return None
-            files.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)
-            latest = files[0]
-            run_id = latest.split("_")[0]
-            try:
-                uuid.UUID(run_id)
-                return run_id
-            except ValueError:
+            # Only "{run_id}__{stage}.json" files are candidates. Checkpoints written before the double-underscore
+            # separator ("{uuid}_{stage}.json") cannot be loaded by ``load`` (it builds the new name), so they are
+            # not resumed; they are left in place and deleted by ``clear`` of their run id.
+            current = [f for f in files if "__" in f]
+            legacy = len(files) - len(current)
+            if legacy:
+                logger.warning(
+                    "%d legacy checkpoint file(s) in %s cannot be resumed (written before the '__' separator); "
+                    "runs started before this version restart from scratch. Remove them with clear(<run id>).",
+                    legacy,
+                    self.checkpoint_dir,
+                )
+            if not current:
                 return None
+            current.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)
+            return current[0].split("__")[0]
         except Exception as e:
             logger.warning(f"Error finding latest run: {e}")
             return None

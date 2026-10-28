@@ -1,5 +1,6 @@
 """Pipeline configuration: blueprint catalog and per-run config dataclass."""
 
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -117,6 +118,24 @@ _BLUEPRINT_SPECS: list[BlueprintSpec] = [
         framework=Framework.CREWAI,
     ),
     BlueprintSpec(
+        name="crew_qa",
+        description="QA via CrewAI: BA criteria → Go/Playwright tests → test fixes → review sign-off",
+        crew_class="QaCrew",
+        framework=Framework.CREWAI,
+    ),
+    BlueprintSpec(
+        name="crew_architecture_review",
+        description="Architecture review via CrewAI: BA + security + database + SRE merged by the CTO",
+        crew_class="ArchitectureReviewCrew",
+        framework=Framework.CREWAI,
+    ),
+    BlueprintSpec(
+        name="crew_audit",
+        description="Audit via CrewAI: secrets/OWASP + CI/container + runtime findings table",
+        crew_class="AuditCrew",
+        framework=Framework.CREWAI,
+    ),
+    BlueprintSpec(
         name="autogen_sdlc",
         description="Conversational SDLC via AutoGen group chat",
         group_class="SdlcGroupChat",
@@ -139,6 +158,10 @@ _BLUEPRINT_SPECS: list[BlueprintSpec] = [
 BLUEPRINTS: dict[str, dict[str, Any]] = {bp.name: bp.to_dict() for bp in _BLUEPRINT_SPECS}
 
 
+# The project name becomes a directory under the output, checkpoint and approval roots, so it must be a plain name.
+_PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+
+
 @dataclass
 class PipelineConfig:
     project: str = "default"
@@ -150,10 +173,16 @@ class PipelineConfig:
     dry_run: bool = False
     requirement: str | None = None
     target_root: str = field(default=".")
+    # The run's id (also its checkpoint key); None lets the orchestrator mint one.
+    run_id: str | None = None
 
     blueprints: ClassVar[dict[str, dict[str, Any]]] = BLUEPRINTS
 
     def __post_init__(self):
+        if not _PROJECT_NAME.fullmatch(self.project) or ".." in self.project:
+            raise ValueError(
+                f"Invalid project name {self.project!r}: letters, digits, '_', '.' and '-' only (at most 64 characters)"
+            )
         self.target_root = PROJECT_ROOTS.get(self.project, self.project)
         self._validate_blueprint()
 
@@ -163,6 +192,8 @@ class PipelineConfig:
         bp = BLUEPRINTS[self.blueprint]
         expected = bp.get("framework", "legacy")
         if self.framework == "legacy" and expected != "legacy":
+            # The default framework is the blueprint's own: a crewai blueprint must not build the legacy pipeline.
+            self.framework = expected
             return
         if self.framework != "legacy" and self.framework != expected:
             import logging

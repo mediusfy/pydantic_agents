@@ -1,0 +1,478 @@
+"""Pins the CrewAI bridge against a fake ``crewai`` package (the real one is not installed in CI)."""
+
+import asyncio
+import importlib
+import json
+import sys
+import types
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from pydantic_ai import Agent, RunContext
+
+from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core.models.core import Artifact, PipelineState
+from pydantic_agents.core.models.factory import create_model
+from pydantic_agents.core.settings import settings
+
+_OUR_CREWAI_MODULES = (
+    "pydantic_agents.core.pipeline.crewai.crews",
+    "pydantic_agents.core.pipeline.crewai.bridge",
+    "pydantic_agents.core.pipeline.crewai.orchestrator",
+)
+
+
+class FakeLLM:
+    def __init__(self, model: str, base_url: str | None = None, api_key: str | None = None, **kwargs: Any):
+        self.model = model
+        self.base_url = base_url
+        self.api_key = api_key
+        self.kwargs = kwargs
+
+
+class _KwargsRecord:
+    def __init__(self, **kwargs: Any):
+        self.kwargs = kwargs
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
+
+class FakeAgent(_KwargsRecord):
+    pass
+
+
+class FakeTask(_KwargsRecord):
+    pass
+
+
+class FakeCrew(_KwargsRecord):
+    kickoff_result: Any = None
+
+    def kickoff(self) -> Any:
+        return self.kickoff_result
+
+
+class FakeProcess:
+    sequential = "sequential"
+    hierarchical = "hierarchical"
+
+
+class FakeBaseTool:
+    name: str = ""
+    description: str = ""
+
+    def run(self, *args: Any, **kwargs: Any) -> Any:
+        return self._run(*args, **kwargs)
+
+    def _run(self, *args: Any, **kwargs: Any) -> Any:  # pragma: no cover - overridden
+        raise NotImplementedError
+
+
+@pytest.fixture
+def fake_crewai(monkeypatch):
+    """Install a fake ``crewai`` package and make the bridge modules import against it."""
+    crewai = types.ModuleType("crewai")
+    tools = types.ModuleType("crewai.tools")
+    crewai.Agent = FakeAgent  # type: ignore[attr-defined]
+    crewai.Crew = FakeCrew  # type: ignore[attr-defined]
+    crewai.Process = FakeProcess  # type: ignore[attr-defined]
+    crewai.Task = FakeTask  # type: ignore[attr-defined]
+    crewai.LLM = FakeLLM  # type: ignore[attr-defined]
+    tools.BaseTool = FakeBaseTool  # type: ignore[attr-defined]
+    crewai.tools = tools  # type: ignore[attr-defined]
+    monkeypatch.setitem(sys.modules, "crewai", crewai)
+    monkeypatch.setitem(sys.modules, "crewai.tools", tools)
+    for name in _OUR_CREWAI_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+    try:
+        yield crewai
+    finally:
+        # Modules imported during the test are bound to the fake; never leak them into other tests.
+        for name in _OUR_CREWAI_MODULES:
+            sys.modules.pop(name, None)
+
+
+@pytest.fixture
+def litellm_env(monkeypatch):
+    monkeypatch.setenv("MODEL_PROVIDER", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm.test:4000")
+    monkeypatch.setenv("LITELLM_VIRTUAL_KEY", "sk-test-virtual")
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setattr(settings, "model_provider", "litellm")
+
+
+@pytest.fixture
+def registered_agents():
+    register_all_agents()
+
+
+def _agent_with_tools() -> Agent:
+    agent = Agent("test", system_prompt="You are a tool tester.", defer_model_check=True)
+
+    def plain(x: int) -> int:
+        """Return x unchanged."""
+        return x
+
+    async def async_plain(x: int) -> int:
+        """Return x after awaiting."""
+        await asyncio.sleep(0)
+        return x
+
+    def needs_ctx(ctx: RunContext[None], x: int) -> int:
+        return x
+
+    agent.tool_plain(plain)
+    agent.tool_plain(async_plain)
+    agent.tool(needs_ctx)
+    return agent
+
+
+class TestToolBridging:
+    def test_tools_are_bridged_by_value_and_runcontext_tools_are_skipped(self, fake_crewai):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        tools = crewai_bridge._extract_tool_defs(_agent_with_tools())
+
+        by_name = {tool.name: tool for tool in tools}
+        assert set(by_name) == {"plain", "async_plain"}
+        assert all(isinstance(tool, FakeBaseTool) for tool in tools)
+        assert by_name["plain"].description == "Return x unchanged."
+        assert by_name["plain"].run(x=2) == 2
+        assert by_name["async_plain"].run(x=3) == 3
+
+    async def test_async_tool_runs_inside_a_running_loop(self, fake_crewai):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        tools = {tool.name: tool for tool in crewai_bridge._extract_tool_defs(_agent_with_tools())}
+        assert tools["async_plain"].run(x=5) == 5
+
+    async def test_bridged_calls_share_one_bounded_executor(self, fake_crewai, monkeypatch):
+        """Every call inside a running loop goes to the module-level pool, not a pool per call."""
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        submitted: list[object] = []
+        real_submit = crewai_bridge._TOOL_EXECUTOR.submit
+
+        def spy(fn, *args, **kwargs):
+            submitted.append(fn)
+            return real_submit(fn, *args, **kwargs)
+
+        monkeypatch.setattr(crewai_bridge._TOOL_EXECUTOR, "submit", spy)
+        tools = {tool.name: tool for tool in crewai_bridge._extract_tool_defs(_agent_with_tools())}
+        assert [tools["async_plain"].run(x=i) for i in range(3)] == [0, 1, 2]
+        assert len(submitted) == 3
+        assert crewai_bridge._TOOL_EXECUTOR._max_workers == 8
+
+    def test_agent_without_toolset_yields_no_tools(self, fake_crewai):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        assert crewai_bridge._extract_tool_defs(SimpleNamespace()) == []
+
+
+class TestLlmResolution:
+    def test_litellm_provider_builds_prefixed_llm_from_environment(self, fake_crewai, litellm_env):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        agent = Agent(create_model("openai:deepseek-v4-pro"), system_prompt="hi", defer_model_check=True)
+        llm = crewai_bridge.build_crewai_llm(agent)
+
+        assert isinstance(llm, FakeLLM)
+        assert llm.model == "openai/deepseek-v4-pro"
+        assert llm.base_url == "http://litellm.test:4000/v1"
+        assert llm.api_key == "sk-test-virtual"
+
+    def test_as_crewai_agent_carries_llm_backstory_and_tools(self, fake_crewai, litellm_env):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        crew_agent = crewai_bridge.as_crewai_agent(_agent_with_tools(), role="Tester", goal="Test things")
+
+        assert isinstance(crew_agent, FakeAgent)
+        assert crew_agent.role == "Tester"
+        assert crew_agent.backstory == "You are a tool tester."
+        assert isinstance(crew_agent.llm, FakeLLM)
+        assert crew_agent.llm.model == "openai/test"
+        assert {tool.name for tool in crew_agent.tools} == {"plain", "async_plain"}
+
+    def test_non_litellm_provider_passes_model_name_through(self, fake_crewai, monkeypatch):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        monkeypatch.setattr(settings, "model_provider", "deepseek")
+        agent = Agent(create_model("deepseek:deepseek-reasoner"), defer_model_check=True)
+
+        assert crewai_bridge.build_crewai_llm(agent) == "deepseek-reasoner"
+
+    def test_agent_without_model_is_rejected(self, fake_crewai):
+        from pydantic_agents.core.adapters import crewai_bridge
+
+        agent = SimpleNamespace(_model=None)
+        with pytest.raises(ValueError, match="no model"):
+            crewai_bridge.build_crewai_llm(agent)
+
+
+def _state(**overrides: Any) -> PipelineState:
+    fields: dict[str, Any] = {"run_id": "run-crew", "stage": "init", "requirement": "Build a billing service"}
+    fields.update(overrides)
+    return PipelineState(**fields)
+
+
+CREW_CASES = [
+    pytest.param(
+        "SdlcCrew",
+        "sequential",
+        6,
+        ["ba/note", "cto/note", "backend/artifact", "frontend/artifact", "test_eng/artifact", "review/verdict"],
+        id="sdlc",
+    ),
+    pytest.param(
+        "ResearchCrew",
+        "hierarchical",
+        3,
+        ["weather/note", "crypto_oracle/note", "market_shark/note"],
+        id="research",
+    ),
+    pytest.param(
+        "SecurityReviewCrew",
+        "sequential",
+        3,
+        ["security/note", "sre/note", "review/verdict"],
+        id="security_review",
+    ),
+    pytest.param(
+        "QaCrew",
+        "sequential",
+        4,
+        ["ba/note", "test_eng/artifact", "test_eng/artifact", "review/verdict"],
+        id="qa",
+    ),
+    pytest.param(
+        "ArchitectureReviewCrew",
+        "hierarchical",
+        5,
+        ["ba/note", "security/note", "database/note", "sre/note", "cto/advice"],
+        id="architecture_review",
+    ),
+    pytest.param(
+        "AuditCrew",
+        "sequential",
+        4,
+        ["security/note", "devops/note", "sre/note", "review/feedback"],
+        id="audit",
+    ),
+]
+
+
+class TestCrews:
+    @pytest.mark.parametrize(("crew_name", "process", "agent_count", "task_names"), CREW_CASES)
+    def test_build_accepts_pipeline_state(
+        self, fake_crewai, litellm_env, registered_agents, crew_name, process, agent_count, task_names
+    ):
+        crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+        state = _state(artifacts=[Artifact(agent_name="backend", files={"main.go": "package main"})])
+
+        crew = getattr(crews, crew_name)().build(state)
+
+        assert isinstance(crew, FakeCrew)
+        assert crew.process == process
+        assert len(crew.agents) == agent_count
+        assert all(isinstance(agent, FakeAgent) for agent in crew.agents)
+        assert all(isinstance(agent.llm, FakeLLM) and agent.llm.model.startswith("openai/") for agent in crew.agents)
+        assert [task.name for task in crew.tasks] == task_names
+        assert all(task.agent in crew.agents for task in crew.tasks)
+        if process == "hierarchical":
+            assert isinstance(crew.manager_llm, FakeLLM)
+            assert crew.manager_llm.model.startswith("openai/")
+        else:
+            assert "manager_llm" not in crew.kwargs
+
+    def test_requirement_and_artifacts_reach_the_task_descriptions(self, fake_crewai, litellm_env, registered_agents):
+        crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+        state = _state(artifacts=[Artifact(agent_name="backend", files={"main.go": "package main"})])
+
+        research = crews.ResearchCrew().build(state)
+        audit = crews.AuditCrew().build(state)
+
+        assert all("Build a billing service" in task.description for task in research.tasks)
+        assert "package main" in audit.tasks[0].description
+
+    def test_qa_tasks_require_criterion_ids(self, fake_crewai, litellm_env, registered_agents):
+        crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+
+        crew = crews.QaCrew().build(_state())
+
+        assert all("criterion id" in task.description for task in crew.tasks)
+        assert "approved" in crew.tasks[-1].expected_output
+
+    def test_json_contract_tasks_name_the_schema(self, fake_crewai, litellm_env, registered_agents):
+        crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+
+        decision = crews.ArchitectureReviewCrew().build(_state()).tasks[-1]
+
+        assert "approved_to_proceed" in decision.expected_output
+        assert "CRITICAL" in decision.description
+
+    def test_all_crews_are_registered_for_their_blueprints(self, fake_crewai, litellm_env):
+        from pydantic_agents.core.pipeline.config import BLUEPRINTS
+
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+
+        crew_blueprints = {name: bp["crew_class"] for name, bp in BLUEPRINTS.items() if bp["framework"] == "crewai"}
+        assert set(crew_blueprints.values()) <= set(bridge._CREW_MAP)
+        assert crew_blueprints["crew_qa"] == "QaCrew"
+        assert crew_blueprints["crew_architecture_review"] == "ArchitectureReviewCrew"
+        assert crew_blueprints["crew_audit"] == "AuditCrew"
+
+
+def _task_output(name: str | None, output: str, agent: str = "Someone") -> SimpleNamespace:
+    return SimpleNamespace(name=name, agent=agent, raw=output, output=output)
+
+
+_VALID_VERDICT = json.dumps(
+    {"approved": True, "feedback": ["ORDERS-01-AC-1 covered"], "security_score": 90, "risk_level": "LOW"}
+)
+_VALID_ADVICE = json.dumps({"bottlenecks_identified": [], "recommendations": ["ship"], "approved_to_proceed": True})
+_BLOCKING_ADVICE = json.dumps({"bottlenecks_identified": ["CRITICAL: no auth"], "approved_to_proceed": False})
+_GO_TEST = "tests for ORDERS-01-AC-1\n\n`billing_test.go`\n```go\npackage billing\n```\n"
+
+
+class TestApplyResult:
+    @pytest.mark.parametrize(
+        ("output", "approved", "error_fragment"),
+        [
+            pytest.param("The change is not approved; please fix the handler.", False, "no JSON object", id="prose"),
+            pytest.param("Verdict: APPROVED", False, "no JSON object", id="approved_prose"),
+            pytest.param(_VALID_VERDICT, True, None, id="valid_json"),
+            pytest.param(f"Here is my verdict:\n```json\n{_VALID_VERDICT}\n```", True, None, id="fenced_json"),
+            pytest.param('{"approved": true}', False, "failed validation", id="incomplete_json"),
+        ],
+    )
+    def test_review_verdict_is_parsed_as_review_result(self, fake_crewai, output, approved, error_fragment):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("review/verdict", output)]))
+
+        assert state.approved is approved
+        assert state.feedback
+        if error_fragment is None:
+            assert state.errors == []
+        else:
+            assert len(state.errors) == 1
+            assert error_fragment in state.errors[0]
+
+    @pytest.mark.parametrize(
+        ("output", "cto_approved", "error_count"),
+        [
+            pytest.param(_VALID_ADVICE, True, 0, id="approved"),
+            pytest.param(_BLOCKING_ADVICE, False, 0, id="blocked"),
+            pytest.param("Looks fine to me.", False, 1, id="prose"),
+        ],
+    )
+    def test_cto_advice_sets_the_cto_gate(self, fake_crewai, output, cto_approved, error_count):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("cto/advice", output)]))
+
+        assert state.advisory_results["cto"] == output
+        assert state.cto_approved is cto_approved
+        assert len(state.errors) == error_count
+
+    def test_qa_test_outputs_merge_into_one_test_eng_artifact(self, fake_crewai):
+        """The fix task re-emits the files it changed: per path the later task wins, the rest is kept."""
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        fixed = "fixed ORDERS-01-AC-1\n\n`billing_test.go`\n```go\npackage billing // fixed\n```\n"
+        result = SimpleNamespace(
+            tasks_output=[
+                _task_output("ba/note", "ORDERS-01-AC-1: Given ... When ... Then ..."),
+                _task_output("test_eng/artifact", _GO_TEST + "`e2e.spec.ts`\n```ts\ntest('ORDERS-01-AC-1')\n```\n"),
+                _task_output("test_eng/artifact", fixed),
+            ]
+        )
+
+        bridge._apply_result(state, result)
+
+        assert state.advisory_results["ba"].startswith("ORDERS-01-AC-1")
+        assert [art.agent_name for art in state.artifacts] == ["test_eng"]
+        assert state.artifacts[0].files == {
+            "billing_test.go": "package billing // fixed",
+            "e2e.spec.ts": "test('ORDERS-01-AC-1')",
+        }
+
+    def test_audit_findings_become_feedback(self, fake_crewai):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        table = (
+            "| id | severity | location | finding | owner | due date |\n"
+            "| 1 | HIGH | main.go:12 | no limits | sre | 2026-11-01 |"
+        )
+        result = SimpleNamespace(
+            tasks_output=[
+                _task_output("security/note", "secret at config.go:3"),
+                _task_output("review/feedback", table),
+            ]
+        )
+
+        bridge._apply_result(state, result)
+
+        assert state.feedback == table
+        assert state.advisory_results["security"] == "secret at config.go:3"
+        assert state.approved is False
+
+    def test_unnamed_tasks_fall_back_to_the_agent_role(self, fake_crewai):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        result = SimpleNamespace(
+            tasks_output=[
+                _task_output(None, "stories", agent="Senior Business Analyst"),
+                _task_output(None, "`a.go`\n```go\npackage a\n```", agent="Lead Go Backend Engineer"),
+                _task_output(None, "not approved", agent="Code Review Engineer"),
+            ]
+        )
+
+        bridge._apply_result(state, result)
+
+        assert state.advisory_results["ba"] == "stories"
+        assert state.artifacts[0].agent_name == "backend"
+        assert state.approved is False
+
+
+class TestRunCrewaiPipeline:
+    async def test_crew_is_built_from_state_and_result_applied(self, fake_crewai, litellm_env, monkeypatch):
+        from pydantic_agents.core.pipeline.config import PipelineConfig
+
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        recorder = MagicMock()
+        recorder.record_span.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        recorder.record_span.return_value.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(bridge, "recorder", recorder)
+
+        built_with: list[PipelineState] = []
+
+        class StubCrew:
+            def build(self, state: PipelineState) -> FakeCrew:
+                built_with.append(state)
+                crew = FakeCrew(agents=[], tasks=[], process="sequential")
+                crew.kickoff_result = SimpleNamespace(
+                    tasks_output=[
+                        _task_output("test_eng/artifact", _GO_TEST),
+                        _task_output("review/verdict", _VALID_VERDICT),
+                    ]
+                )
+                return crew
+
+        monkeypatch.setitem(bridge._CREW_MAP, "QaCrew", StubCrew)
+        config = PipelineConfig(blueprint="crew_qa", framework="crewai", requirement="Build a billing service")
+        state = _state()
+
+        final = await bridge.run_crewai_pipeline(state, config)
+
+        assert built_with == [state]
+        assert final.approved is True
+        assert final.errors == []
+        assert [art.agent_name for art in final.artifacts] == ["test_eng"]
+        assert final.active_context is not None
+        assert final.active_context.modified_files == ["billing_test.go"]
+        assert final.stage == "implementation"

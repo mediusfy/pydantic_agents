@@ -1,6 +1,7 @@
 import pydantic_agents.core.tools.a2a_tools
 import pydantic_agents.core.tools.deps
 import pydantic_agents.core.tools.docs
+import pydantic_agents.core.tools.finops_tools
 import pydantic_agents.core.tools.frontend_tools
 import pydantic_agents.core.tools.fs_tools
 import pydantic_agents.core.tools.gobuild

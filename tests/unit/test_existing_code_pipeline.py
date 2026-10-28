@@ -12,6 +12,7 @@ import pytest
 
 from pydantic_agents.core import existing_code_handler as ech
 from pydantic_agents.core.models.core import Artifact
+from pydantic_agents.core.verifier import CheckResult, VerificationReport
 
 MAX = ech.MAX_RETRIES
 
@@ -64,7 +65,13 @@ def env(monkeypatch):
     monkeypatch.setattr(ech, "_run_quality_gate", quality)
     monkeypatch.setattr(ech, "_run_code_review", review)
     monkeypatch.delenv("ORCHESTRATION_CODEBASE_ROOT", raising=False)
-    holder = SimpleNamespace(recorder=recorder, sync=sync, quality=quality, review=review, script=None)
+    verifier = AsyncMock(return_value=VerificationReport(skipped="not in tests"))
+    monkeypatch.setattr(ech, "verify_tree", verifier)
+    monkeypatch.setattr(ech, "verify_artifacts", verifier)
+    monkeypatch.setattr(ech, "_write_result", MagicMock())
+    holder = SimpleNamespace(
+        recorder=recorder, sync=sync, quality=quality, review=review, verifier=verifier, script=None
+    )
 
     def use(script: Script) -> SimpleNamespace:
         holder.script = script
@@ -110,12 +117,42 @@ async def test_every_stage_is_recorded_in_order(env):
     assert [(s, a, v) for s, a, v, _ in env.recorder.events] == [
         ("service_engineer", 0, "ok"),
         ("test_engineer", 0, "ok"),
+        ("verifier", 0, "skipped"),
         ("quality_gate", 0, "passed"),
         ("review", 0, "approved"),
         ("pipeline", 0, "passed"),
     ]
     assert env.recorder.events[0][3] == "1 files"
-    assert env.recorder.events[3][3] == "risk=low"
+    assert env.recorder.events[4][3] == "risk=low"
+
+
+async def test_a_failed_verification_is_retried_with_its_failures(env):
+    script = Script(
+        service_engineer=[_artifact(main_dot_go="x"), _artifact(main_dot_go="y")],
+        test_eng=[_artifact("test_eng", t_dot_go="t")] * 2,
+    )
+    env.verifier.side_effect = [
+        VerificationReport(checks=[CheckResult("go build", False, "undefined: foo")]),
+        VerificationReport(checks=[CheckResult("go build", True), CheckResult("go vet", True)]),
+    ]
+
+    result = await _run(env, script)
+
+    assert result.passed is True
+    assert result.retries_used == 1
+    assert env.recorder.verdicts("verifier") == [(0, "failed"), (1, "passed")]
+    assert "go build: undefined: foo" in script.calls[2][2]  # the second engineer prompt carries the failure
+    assert "VERIFICATION: passed" in result.verification
+
+
+async def test_the_gates_receive_the_verification_report(env):
+    script = Script(service_engineer=[_artifact(main_dot_go="x")], test_eng=[_artifact("test_eng", t_dot_go="t")])
+    env.verifier.return_value = VerificationReport(checks=[CheckResult("go build", True)])
+
+    await _run(env, script)
+
+    assert env.quality.await_args.args[1].startswith("VERIFICATION: passed")
+    assert env.review.await_args.args[1].startswith("VERIFICATION: passed")
 
 
 async def test_the_engineer_prompt_names_the_change_and_the_codebase(env):
@@ -218,19 +255,30 @@ async def test_no_changed_files_passes_immediately(env):
 
 
 @pytest.mark.parametrize(
-    ("codebase", "expect_set"),
-    [("/srv/app", True), ("", False)],
+    ("codebase", "expected"),
+    [("/srv/app", os.path.realpath("/srv/app")), ("", os.getcwd())],
+    ids=["codebase", "no-codebase"],
 )
-async def test_the_codebase_root_environment_variable_follows_the_path(env, monkeypatch, codebase, expect_set):
-    monkeypatch.setenv("ORCHESTRATION_CODEBASE_ROOT", "stale")
-    env.use(Script(service_engineer=[_artifact()]))
+async def test_the_sandbox_root_follows_the_codebase_during_the_run_only(env, monkeypatch, codebase, expected):
+    from pydantic_agents.core.utils import sandbox_root
+
+    monkeypatch.delenv("ORCHESTRATION_CODEBASE_ROOT", raising=False)
+    roots: list[str] = []
+    script = Script(service_engineer=[_artifact()])
+    original = script.run_stage
+
+    async def run_stage(*args, **kwargs):
+        roots.append(str(sandbox_root()))
+        return await original(*args, **kwargs)
+
+    script.run_stage = run_stage
+    env.use(script)
 
     await ech.run_existing_code_pipeline("change", codebase)
 
-    if expect_set:
-        assert os.environ["ORCHESTRATION_CODEBASE_ROOT"] == os.path.realpath(codebase)
-    else:
-        assert "ORCHESTRATION_CODEBASE_ROOT" not in os.environ
+    assert roots == [expected]
+    assert str(sandbox_root()) == os.getcwd()  # reset after the run: no process-wide state leaks
+    assert "ORCHESTRATION_CODEBASE_ROOT" not in os.environ
 
 
 # --- retries ----------------------------------------------------------------------------------------------------
@@ -315,14 +363,14 @@ async def test_a_rejected_review_is_retried_and_its_feedback_is_kept(env):
     assert result.review_risk == "low"
 
 
-async def test_review_feedback_is_kept_even_when_the_review_approves(env):
+async def test_an_approved_review_s_remarks_are_not_errors(env):
     script = Script(service_engineer=[_artifact(main_dot_go="x")], test_eng=[_artifact("test_eng", t_dot_go="t")])
     env.review.return_value = (True, "low", ["consider a comment"])
 
     result = await _run(env, script)
 
     assert result.passed is True
-    assert result.errors == ["consider a comment"]
+    assert result.errors == []
 
 
 async def test_a_gate_that_raises_fails_the_attempt_and_is_recorded_as_an_error(env):

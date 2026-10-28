@@ -17,6 +17,7 @@ from pydantic_agents.core.models.core import Artifact, EventTrigger, FailureRepo
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.stages import implementation_stage as impl
+from pydantic_agents.core.tools.test_tools import TestRunResult
 
 EXT = {"backend": "go", "frontend": "vue", "database": "sql", "devops": "yml", "docs": "md", "test_eng": "go"}
 
@@ -88,14 +89,16 @@ def _config(**kwargs) -> PipelineConfig:
 @pytest.fixture
 def env(monkeypatch):
     provider = FakeProvider()
-    run_tests = AsyncMock(return_value="PASSED")
+    run_tests = AsyncMock(return_value=TestRunResult(True, "ok"))
     monkeypatch.setattr(impl, "registry", MagicMock(get=lambda name: f"agent:{name}"))
     monkeypatch.setattr(impl, "recorder", FakeRecorder())
     monkeypatch.setattr("pydantic_agents.core.adapters.workspace.WorkspaceContext", FakeWorkspace)
-    monkeypatch.setattr(
-        "pydantic_agents.core.context_engine.retrieve_context", lambda agent, _gherkin: f"[{agent} guidance]"
-    )
-    monkeypatch.setattr("pydantic_agents.core.tools.test_tools.execute_test_suite", run_tests)
+
+    async def guidance(agent, _gherkin, project=None):
+        return f"[{agent} guidance]"
+
+    monkeypatch.setattr("pydantic_agents.core.context_engine.retrieve_context", guidance)
+    monkeypatch.setattr("pydantic_agents.core.tools.test_tools.run_test_suite", run_tests)
     return SimpleNamespace(provider=provider, run_tests=run_tests, monkeypatch=monkeypatch)
 
 
@@ -164,7 +167,9 @@ async def test_the_backend_prompt_carries_context_and_the_hexagonal_brief(env):
     await _run(env, _state(_story(1)))
 
     prompt = env.provider.prompt("backend")
-    assert prompt.startswith("REPO-CONTEXT\n\nCTO ADVICE:\nCTO-ADVICE\n\nFULL GHERKIN:\nFeature for US-1\n\n")
+    assert prompt.startswith(
+        "REPO-CONTEXT\n\nMARKDOWN-CONTEXT\n\nCTO ADVICE:\nCTO-ADVICE\n\nFULL GHERKIN:\nFeature for US-1\n\n"
+    )
     assert "Hexagonal Architecture" in prompt
     assert settings.go_entrypoint in prompt
     assert "Run `run_go_build` to self-validate" in prompt
@@ -212,7 +217,10 @@ async def test_the_global_prompts_list_the_stories_and_the_requirement(env):
 
 
 async def test_missing_retrieved_context_leaves_the_prompts_without_a_guidelines_section(env):
-    env.monkeypatch.setattr("pydantic_agents.core.context_engine.retrieve_context", lambda _agent, _gherkin: "")
+    async def nothing(_agent, _gherkin, project=None):
+        return ""
+
+    env.monkeypatch.setattr("pydantic_agents.core.context_engine.retrieve_context", nothing)
 
     await _run(env, _state(_story(1)))
 
@@ -252,7 +260,7 @@ def _retry_state(*stories: UserStory, existing: list[Artifact]) -> PipelineState
     return state
 
 
-async def test_a_retry_only_reruns_the_backend_and_tests(env):
+async def test_a_retry_after_a_test_failure_only_reruns_the_backend_and_tests(env):
     state = _retry_state(_story(1), _story(2), existing=[])
 
     await _run(env, state)
@@ -260,11 +268,25 @@ async def test_a_retry_only_reruns_the_backend_and_tests(env):
     assert sorted(env.provider.agents()) == ["backend", "backend", "test_eng", "test_eng"]
 
 
+@pytest.mark.parametrize("source", ["review_agent", "security_audit", "quality_gate_agent", "quality_gate_validation"])
+async def test_a_retry_after_a_gate_rejection_reruns_frontend_and_database_too(env, source):
+    state = _retry_state(_story(1), existing=[])
+    state.failure_report = FailureReport(source=source, error_type="x", trace="rejected")
+
+    await _run(env, state)
+
+    assert sorted(env.provider.agents()) == ["backend", "database", "frontend", "test_eng"]
+    assert "PREVIOUS FAILURE DETECTED" in env.provider.prompt("frontend")
+    assert "PREVIOUS FAILURE DETECTED" in env.provider.prompt("database")
+
+
 async def test_the_retry_backend_prompt_carries_the_failure_and_asks_for_a_patch(env):
     await _run(env, _retry_state(_story(1), existing=[]))
 
     prompt = env.provider.prompt("backend")
-    assert prompt.startswith("REPO-CONTEXT\n\nCTO ADVICE:\nCTO-ADVICE\n\nFULL GHERKIN:\nFeature for US-1\n\n")
+    assert prompt.startswith(
+        "REPO-CONTEXT\n\nMARKDOWN-CONTEXT\n\nCTO ADVICE:\nCTO-ADVICE\n\nFULL GHERKIN:\nFeature for US-1\n\n"
+    )
     assert (
         "PREVIOUS FAILURE DETECTED:\nSource: test_suite\nError Type: test_failure\nTrace/Feedback:\nUS-1 broke\n\n"
         in prompt
@@ -303,7 +325,8 @@ async def test_the_test_suite_runs_with_the_story_s_test_and_backend_source(env)
     await _run(env, _state(_story(1)))
 
     env.run_tests.assert_awaited_once_with(
-        "test_eng_US-1_test.go", "test_eng code for US-1", "backend_US-1.go", "backend code for US-1"
+        {"backend_US-1.go": "backend code for US-1", "frontend_US-1.vue": "frontend code for US-1"},
+        {"test_eng_US-1_test.go": "test_eng code for US-1"},
     )
 
 
@@ -317,7 +340,11 @@ async def test_a_passing_suite_clears_any_earlier_failure(env):
 
 
 async def test_a_failing_suite_records_the_failed_stories(env, caplog):
-    env.run_tests.side_effect = ["FAILED: assertion", "PASSED", "FAILED: compile error"]
+    env.run_tests.side_effect = [
+        TestRunResult(False, "FAILED: assertion"),
+        TestRunResult(True, "ok"),
+        TestRunResult(False, "", "'go mod init' timed out."),  # a suite that could not run is a failure too
+    ]
 
     with caplog.at_level(logging.WARNING, logger=impl.logger.name):
         state = await _run(env, _state(_story(1), _story(2), _story(3)))
@@ -338,8 +365,8 @@ async def test_a_failing_suite_records_the_failed_stories(env, caplog):
     assert any("Test failures in 2/3 stories: US-1, US-3" in m for m in messages)
 
 
-async def test_a_story_with_no_backend_source_is_not_run(env):
-    provider = FakeProvider(failures={"backend": RuntimeError("no backend")})
+async def test_a_story_with_no_source_files_is_not_run(env):
+    provider = FakeProvider(failures={"backend": RuntimeError("no backend"), "frontend": RuntimeError("no ui")})
 
     state = await _run(env, _state(_story(1)), provider=provider)
 
@@ -347,9 +374,9 @@ async def test_a_story_with_no_backend_source_is_not_run(env):
     assert state.failure_report is None
 
 
-async def test_the_first_matching_source_file_is_the_test_target(env):
+async def test_every_source_file_of_the_story_is_given_to_the_test_run(env):
     class TwoFileProvider(FakeProvider):
-        async def run_agent(self, sem, agent_name, agent, prompt, deps=None):
+        async def run_agent(self, sem, agent_name, agent, prompt, deps=None, usage=None):
             res = await super().run_agent(sem, agent_name, agent, prompt, deps)
             if agent_name == "backend":
                 res.output.files = {"README.md": "docs", "api.go": "package api", "other.go": "package other"}
@@ -357,7 +384,9 @@ async def test_the_first_matching_source_file_is_the_test_target(env):
 
     await _run(env, _state(_story(1)), provider=TwoFileProvider())
 
-    assert env.run_tests.await_args.args[2:] == ("api.go", "package api")
+    sources = env.run_tests.await_args.args[0]
+    assert {"README.md", "api.go", "other.go"} <= set(sources)
+    assert sources["api.go"] == "package api"
 
 
 async def test_a_test_agent_that_raises_is_skipped_and_not_counted_as_a_failure(env, caplog):
@@ -419,31 +448,25 @@ class TestCollectArtifacts:
         assert existing.files == {"a.go": "new", "keep.go": "k"}
 
 
-class TestFindTestTarget:
-    def test_the_first_source_file_with_content_wins(self):
-        artifacts = [_art("backend", **{"README.md": "docs", "api.go": "package api", "b.go": "package b"})]
+class TestStorySources:
+    def test_backend_and_frontend_files_of_the_story_are_collected(self):
+        artifacts = [
+            _art("backend", **{"README.md": "docs", "api.go": "package api"}),
+            _art("frontend", **{"app.vue": "ui"}),
+            _art("database", **{"001.sql": "create"}),
+        ]
 
-        assert impl._find_test_target(artifacts, "US-1") == ("api.go", "package api")
+        assert impl._story_sources(artifacts, "US-1") == {"README.md": "docs", "api.go": "package api", "app.vue": "ui"}
 
-    @pytest.mark.parametrize("name", ["App.vue", "view.tsx", "main.go"])
-    def test_go_vue_and_tsx_files_qualify(self, name):
-        assert impl._find_test_target([_art("backend", **{name: "src"})], "US-1") == (name, "src")
-
-    def test_an_empty_first_source_moves_on_to_the_next_artifact(self):
+    def test_empty_files_are_dropped(self):
         artifacts = [_art("backend", **{"empty.go": ""}), _art("backend", **{"full.go": "package full"})]
 
-        assert impl._find_test_target(artifacts, "US-1") == ("full.go", "package full")
+        assert impl._story_sources(artifacts, "US-1") == {"full.go": "package full"}
 
     @pytest.mark.parametrize(
         "artifacts",
-        [
-            [],
-            [_art("frontend", **{"app.vue": "ui"})],  # not a backend artifact
-            [_art("backend", "US-2", **{"a.go": "x"})],  # another story
-            [_art("backend", **{"notes.txt": "x"})],  # no source file
-            [_art("backend")],  # no files
-        ],
-        ids=["none", "not-backend", "other-story", "no-source", "no-files"],
+        [[], [_art("backend", "US-2", **{"a.go": "x"})], [_art("backend")]],
+        ids=["none", "other-story", "no-files"],
     )
-    def test_with_no_match_the_default_is_returned_with_no_source(self, artifacts):
-        assert impl._find_test_target(artifacts, "US-1") == ("service.go", "")
+    def test_with_no_match_nothing_is_returned(self, artifacts):
+        assert impl._story_sources(artifacts, "US-1") == {}

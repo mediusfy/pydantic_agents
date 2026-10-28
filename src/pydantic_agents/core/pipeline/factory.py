@@ -109,10 +109,11 @@ class _GraphPipelineWrapper:
     async def execute(self) -> PipelineState:
         import uuid
 
-        initial = PipelineState(
-            run_id=f"run-{uuid.uuid4().hex[:8]}",
-            stage="init",
-            requirement=self._config.requirement or "",
-        )
-        final = await self._graph.ainvoke(initial)
-        return final
+        from pydantic_agents.core.limits import run_id_var
+
+        run_id = run_id_var.get() or f"run-{uuid.uuid4().hex[:8]}"
+        initial = PipelineState(run_id=run_id, stage="init", requirement=self._config.requirement or "")
+        # A graph compiled with a checkpointer refuses to run without a thread id; the run id is the thread, so a
+        # resume of the same run continues its saved state.
+        final = await self._graph.ainvoke(initial, config={"configurable": {"thread_id": run_id}})
+        return PipelineState.model_validate(final) if isinstance(final, dict) else final

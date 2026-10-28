@@ -3,7 +3,9 @@
 Captures full prompt, context summary, tool calls, output, and decisions
 per agent run — for fine-tuning data, debugging, and context-audit traces.
 
-Output: JSONL with one record per agent invocation.
+Output: JSONL with one record per agent invocation. Each ``record_span`` owns its own record, so concurrent
+spans (the advisory stage runs the CTO and UX agents side by side, the implementation stage every story's agents)
+never overwrite each other.
 """
 
 import contextlib
@@ -19,6 +21,8 @@ from typing import Any
 
 import logfire
 
+from pydantic_agents.core.limits import run_id_var
+
 logger = logging.getLogger(__name__)
 
 # Context variable carrying current agent run info (run_id, agent_name, pipeline_stage)
@@ -26,6 +30,9 @@ logger = logging.getLogger(__name__)
 # The default is an immutable empty mapping so no caller can mutate state shared across contexts; writers always
 # allocate a new dict before .set().
 current_run_context: ContextVar[Mapping[str, Any]] = ContextVar("current_run_context", default=MappingProxyType({}))
+
+# The record of the innermost open span in this task, for tool wrappers that record tool calls.
+_current_record: ContextVar["AgentRunRecord | None"] = ContextVar("session_recorder_record", default=None)
 
 
 @dataclass
@@ -63,18 +70,44 @@ class AgentRunRecord:
         d["prompt_truncated"] = len(d["prompt"]) > 100_000
         return d
 
+    def set_output(self, output: Any, success: bool = True) -> None:
+        self.output = str(output)[:50_000]
+        if hasattr(output, "model_dump"):
+            with contextlib.suppress(Exception):
+                self.output_json = output.model_dump()
+        elif isinstance(output, dict):
+            self.output_json = output
+        self.success = success
+
+
+class RecordingSpan:
+    """What ``record_span`` yields: the span's own record plus the recorder that writes it."""
+
+    def __init__(self, recorder: "SessionRecorder", record: AgentRunRecord):
+        self._recorder = recorder
+        self.record = record
+
+    def set_output(self, output: Any, success: bool = True) -> None:
+        """Set the output for this span (call inside the record_span block)."""
+        self.record.set_output(output, success)
+
+    def record_tool_call(self, tool_name: str, tool_args: dict[str, Any], result: Any, duration_sec: float) -> None:
+        self._recorder._append_tool_call(self.record, tool_name, tool_args, result, duration_sec)
+
+    def abort_run(self, error: str) -> None:
+        """Abort this span's run without output."""
+        self._recorder._finish(self.record, success=False, error=error)
+
 
 class SessionRecorder:
-    """Thread-safe session recorder that writes structured trace records."""
+    """Session recorder that writes one structured trace record per agent run."""
 
     def __init__(self, filepath: str = DEFAULT_TRACE_FILE, max_bytes: int = 50 * 1024 * 1024):
         self.filepath = filepath
         self.max_bytes = max_bytes
-        self._current: AgentRunRecord | None = None
-        self._write_lock = False
 
-    def start_run(
-        self,
+    @staticmethod
+    def _new_record(
         run_id: str,
         agent_name: str,
         pipeline_stage: str,
@@ -82,9 +115,8 @@ class SessionRecorder:
         context_summary: str = "",
         story_id: str = "",
         story_gherkin: str = "",
-    ) -> None:
-        """Begin recording an agent invocation."""
-        self._current = AgentRunRecord(
+    ) -> AgentRunRecord:
+        return AgentRunRecord(
             run_id=run_id,
             timestamp=time.time(),
             agent_name=agent_name,
@@ -95,6 +127,19 @@ class SessionRecorder:
             story_gherkin=story_gherkin,
         )
 
+    @staticmethod
+    def _append_tool_call(
+        record: AgentRunRecord, tool_name: str, tool_args: dict[str, Any], result: Any, duration_sec: float
+    ) -> None:
+        record.tool_calls.append(
+            ToolCallRecord(
+                tool_name=tool_name,
+                tool_args=tool_args,
+                result_preview=str(result)[:500],
+                duration_sec=duration_sec,
+            )
+        )
+
     def record_tool_call(
         self,
         tool_name: str,
@@ -102,48 +147,30 @@ class SessionRecorder:
         result: Any,
         duration_sec: float,
     ) -> None:
-        """Record a tool call made during the current agent run."""
-        if self._current is None:
+        """Record a tool call made during the innermost open span of this task; a no-op outside a span."""
+        record = _current_record.get()
+        if record is None:
             return
-        result_str = str(result)[:500]
-        self._current.tool_calls.append(
-            ToolCallRecord(
-                tool_name=tool_name,
-                tool_args=tool_args,
-                result_preview=result_str,
-                duration_sec=duration_sec,
-            )
-        )
+        self._append_tool_call(record, tool_name, tool_args, result, duration_sec)
 
-    def finish_run(
+    def _finish(
         self,
+        record: AgentRunRecord,
         success: bool,
         output: Any = None,
         error: str | None = None,
         token_usage: dict[str, int] | None = None,
-    ) -> dict[str, Any] | None:
-        """Finalize the current agent run and write to JSONL."""
-        if self._current is None:
-            return None
-
-        record = self._current
+    ) -> dict[str, Any]:
+        """Finalize a record and write it to JSONL. Called once per span; a second call writes a second line."""
         record.success = success
         record.duration_sec = time.time() - record.timestamp
         record.error = error
         if token_usage:
             record.token_usage = token_usage
-
         if output is not None:
-            record.output = str(output)[:50_000]
-            if hasattr(output, "model_dump"):
-                with contextlib.suppress(Exception):
-                    record.output_json = output.model_dump()
-            elif isinstance(output, dict):
-                record.output_json = output
-
+            record.set_output(output, success)
         data = record.to_dict()
         self._write(data)
-        self._current = None
         return data
 
     @contextlib.asynccontextmanager
@@ -157,7 +184,7 @@ class SessionRecorder:
         story_id: str = "",
         story_gherkin: str = "",
         **logfire_attrs,
-    ) -> AsyncIterator["SessionRecorder"]:
+    ) -> AsyncIterator[RecordingSpan]:
         """Async context manager wrapping a full agent run span.
 
         Usage:
@@ -165,29 +192,30 @@ class SessionRecorder:
                 result = await run_agent(...)
                 rec.set_output(result)
 
-        Automatically calls finish_run on success or abort on exception
-        — no dangling spans, no manual try/finally needed.
+        The record is written when the block exits: as a success (with whatever ``set_output`` recorded) or, if
+        the block raised, as a failure carrying the error. Each span has its own record, so concurrent spans are
+        independent.
         """
-        # Also open a logfire span for this agent run so the JSONL trace
-        # correlates with Logfire's pydantic-ai spans
-        with logfire.span(
-            f"pipeline.{pipeline_stage}",
+        record = self._new_record(
+            run_id=run_id,
             agent_name=agent_name,
-            story_id=story_id or "",
-            prompt_length=len(prompt),
+            pipeline_stage=pipeline_stage,
+            prompt=prompt,
+            context_summary=context_summary,
+            story_id=story_id,
+            story_gherkin=story_gherkin,
+        )
+        span = RecordingSpan(self, record)
+        # Also open a logfire span for this agent run so the JSONL trace correlates with Logfire's pydantic-ai spans
+        span_attrs: dict[str, Any] = {
+            "agent_name": agent_name,
+            "story_id": story_id or "",
+            "prompt_length": len(prompt),
+            "langfuse.session.id": run_id_var.get() or run_id,
             **logfire_attrs,
-            _level="info",
-        ):
-            self.start_run(
-                run_id=run_id,
-                agent_name=agent_name,
-                pipeline_stage=pipeline_stage,
-                prompt=prompt,
-                context_summary=context_summary,
-                story_id=story_id,
-                story_gherkin=story_gherkin,
-            )
-            # Set contextvar so tool wrappers can read run_id, agent_name, pipeline_stage
+        }
+        with logfire.span(f"pipeline.{pipeline_stage}", _level="info", **span_attrs):
+            # Set contextvars so tool wrappers can read run_id, agent_name, pipeline_stage and record tool calls
             token = current_run_context.set(
                 {
                     "run_id": run_id,
@@ -196,36 +224,19 @@ class SessionRecorder:
                     "story_id": story_id,
                 }
             )
+            record_token = _current_record.set(record)
+            finished = False
             try:
-                yield self
+                yield span
             except Exception as e:
-                self.finish_run(success=False, error=str(e))
+                finished = True
+                self._finish(record, success=False, error=str(e))
                 raise
-            else:
-                self.finish_run(success=True)
             finally:
+                if not finished:
+                    self._finish(record, success=record.success or not record.error, output=None)
+                _current_record.reset(record_token)
                 current_run_context.reset(token)
-
-    def set_output(self, output: Any, success: bool = True) -> None:
-        """Set the output for the current span (call inside record_span block).
-
-        This replaces the default success=True with the actual output content.
-        Must be called before the record_span block exits.
-        """
-        if self._current is None:
-            return
-        self._current.output = str(output)[:50_000]
-        if hasattr(output, "model_dump"):
-            with contextlib.suppress(Exception):
-                self._current.output_json = output.model_dump()
-        elif isinstance(output, dict):
-            self._current.output_json = output
-        self._current.success = success
-
-    def abort_run(self, error: str) -> None:
-        """Abort the current run without output."""
-        if self._current:
-            self.finish_run(success=False, error=error)
 
     def _write(self, data: dict[str, Any]) -> None:
         try:

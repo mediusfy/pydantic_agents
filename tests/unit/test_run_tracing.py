@@ -45,12 +45,18 @@ async def test_run_agent_passes_session_metadata(monkeypatch, run_id):
     finally:
         run_id_var.reset(token)
     sent = agent.run.await_args.kwargs.get("model_settings")
-    assert (sent is not None) == (run_id is not None)
-    if sent is not None:
+    assert sent["max_tokens"] == settings.agent_max_output_tokens  # the output cap is always sent
+    assert ("extra_body" in sent) == (run_id is not None)
+    if run_id is not None:
         assert sent["extra_body"]["metadata"]["session_id"] == run_id
 
 
-@pytest.mark.parametrize("field", sorted(f for f in Settings.model_fields if f.endswith("_model")))
+_NON_AGENT_MODEL_FIELDS = {"embedding_model", "rerank_model"}  # vector-store settings, not agent models
+
+
+@pytest.mark.parametrize(
+    "field", sorted(f for f in Settings.model_fields if f.endswith("_model") and f not in _NON_AGENT_MODEL_FIELDS)
+)
 def test_agent_model_defaults_are_real_litellm_groups(field):
     """claude-* names are aliases that LiteLLM silently maps to DeepSeek; defaults must name the real group."""
     assert Settings.model_fields[field].default in {"deepseek-v4-pro", "subagent"}

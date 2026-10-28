@@ -256,9 +256,10 @@ async def test_the_mcp_server_returns_parseable_json_for_a_typed_investing_resul
     agent.run.return_value = MagicMock(output=Forecast(**_forecast()))
     with (
         patch("pydantic_agents.mcp_server.registry") as reg,
-        patch("pydantic_agents.mcp_server.retrieve_context", return_value=""),
+        patch("pydantic_agents.mcp_server.retrieve_context", AsyncMock(return_value="")),
     ):
-        reg.get.return_value = agent
+        reg.is_registered.return_value = True
+        reg.run = AsyncMock(return_value=agent.run.return_value)
         reg._agents = {"crypto_oracle": (None, None, lambda: None, None)}
         result = await run_agent_by_name("crypto_oracle", "BTC outlook?")
 

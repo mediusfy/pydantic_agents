@@ -3,12 +3,68 @@
 import asyncio
 import contextlib
 import tempfile
+from dataclasses import dataclass
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
 from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
 
 TEST_EXECUTION_TIMEOUT = 60.0
+
+
+@dataclass(frozen=True)
+class TestRunResult:
+    """What running a test suite produced. ``passed`` is the only verdict: ``error`` says the suite could not be
+    run at all (toolchain missing, module setup failed, timeout, unwritable names), which also counts as a failure."""
+
+    passed: bool
+    output: str
+    error: str = ""
+
+    def trace(self) -> str:
+        """The legacy string form: SUCCESS/FAILED plus the output, or TEST EXECUTION FAILED plus the error."""
+        if self.error:
+            return f"TEST EXECUTION FAILED: {self.error}"
+        return f"{'SUCCESS' if self.passed else 'FAILED'}\n{self.output}"
+
+
+async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> TestRunResult:
+    """Write the source files and the test files into one temporary module and run its tests.
+
+    Go test files (``*_test.go``) run with ``go test ./...`` against every source file given, so a suite that
+    touches more than one file compiles; anything else runs with vitest.
+    """
+    with tempfile.TemporaryDirectory() as temp_dir:
+        try:
+            for name, content in {**files, **test_files}.items():
+                await asyncio.to_thread(safe_write, temp_dir, name, content)
+        except WRITE_NAME_ERRORS as e:
+            return TestRunResult(False, "", f"cannot write the given files: {e}")
+
+        go_tests = [name for name in test_files if name.endswith(".go")]
+        if go_tests:
+            err = await init_and_tidy(temp_dir)
+            if err:
+                return TestRunResult(False, "", err)
+            cmd = ["go", "test", "-v", "./..."]
+        else:
+            cmd = ["npx", "vitest", "run", *(str(safe_write(temp_dir, n, c)) for n, c in test_files.items())]
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd, cwd=temp_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+        except FileNotFoundError as e:
+            return TestRunResult(False, "", f"test runner not installed: {e}")
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TEST_EXECUTION_TIMEOUT)
+        except TimeoutError:
+            with contextlib.suppress(ProcessLookupError):
+                proc.kill()
+            return TestRunResult(False, "", "Timed out.")
+
+        output = f"{stdout.decode()}\n{stderr.decode()}".strip()
+        return TestRunResult(proc.returncode == 0, output)
 
 
 async def execute_test_suite(
@@ -24,57 +80,11 @@ async def execute_test_suite(
         target_source_code: The string content of the target file.
 
     Returns:
-        The full execution trace of the test suite (stdout and stderr).
+        The full execution trace of the test suite (stdout and stderr), starting with SUCCESS, FAILED or
+        TEST EXECUTION FAILED.
     """
-    with tempfile.TemporaryDirectory() as temp_dir:
-        # Write files
-        try:
-            test_path = await asyncio.to_thread(safe_write, temp_dir, test_file_name, test_source_code)
-            await asyncio.to_thread(safe_write, temp_dir, target_code_file, target_source_code)
-        except WRITE_NAME_ERRORS as e:
-            return f"TEST EXECUTION FAILED: cannot write {test_file_name!r} / {target_code_file!r}: {e}"
-
-        # Determine the test runner based on file extension
-        if test_file_name.endswith(".go"):
-            # Go tests need a module; wait for init and tidy to finish (with timeouts) before running them.
-            err = await init_and_tidy(temp_dir)
-            if err:
-                return f"TEST EXECUTION FAILED: {err}"
-
-            proc = await asyncio.create_subprocess_exec(
-                "go",
-                "test",
-                "-v",
-                "./...",
-                cwd=temp_dir,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-        else:
-            # Assume JS/TS (vitest)
-            proc = await asyncio.create_subprocess_exec(
-                "npx",
-                "vitest",
-                "run",
-                str(test_path),
-                cwd=temp_dir,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-
-        try:
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TEST_EXECUTION_TIMEOUT)
-        except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
-            return "TEST EXECUTION FAILED: Timed out."
-
-        output = f"{stdout.decode()}\n{stderr.decode()}".strip()
-
-        if proc.returncode == 0:
-            return f"SUCCESS\n{output}"
-        else:
-            return f"FAILED\n{output}"
+    result = await run_test_suite({target_code_file: target_source_code}, {test_file_name: test_source_code})
+    return result.trace()
 
 
 register_tool(

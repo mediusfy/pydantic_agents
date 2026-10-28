@@ -92,30 +92,43 @@ class _Run:
     progress: ProgressTracker
 
 
-def _guidelines(agent: str, gherkin: str, heading: str) -> str:
+async def _guidelines(agent: str, gherkin: str, heading: str, project: str | None = None) -> str:
     """Retrieved guidelines for an agent as a prompt section, or "" when there are none."""
     from pydantic_agents.core.context_engine import retrieve_context
 
-    retrieved = retrieve_context(agent, gherkin)
+    retrieved = await retrieve_context(agent, gherkin, project=project)
     return f"\n\nRetrieved {heading} Guidelines:\n{retrieved}" if retrieved else ""
 
 
-def _backend_prompt(run: _Run, us: UserStory, guidelines: str) -> str:
+def _retry_section(run: _Run) -> str:
+    """The previous failure, for an agent that is asked to patch rather than rewrite; "" on a first run."""
     failure = run.state.failure_report
-    if run.is_retry and failure is not None:
+    if not (run.is_retry and failure is not None):
+        return ""
+    return (
+        f"PREVIOUS FAILURE DETECTED:\n"
+        f"Source: {failure.source}\n"
+        f"Error Type: {failure.error_type}\n"
+        f"Trace/Feedback:\n{failure.trace}\n\n"
+        "TASK: Analyze the failure telemetry and generate a hyper-specific patch to fix "
+        "the issue. Only output corrected files instead of rewriting from scratch."
+    )
+
+
+# Prompt layout: the blocks that are identical for every story of a run (repository context, local guidelines,
+# CTO advice) come first and in the same order, so a provider-side prefix cache can reuse them across the
+# per-story calls; the story and the retrieved snippets vary at the end.
+def _backend_prompt(run: _Run, us: UserStory, guidelines: str) -> str:
+    retry = _retry_section(run)
+    if retry:
         return (
-            f"{run.repo_context}\n\n"
+            f"{run.repo_context}\n\n{run.markdown_ctx}\n\n"
             f"CTO ADVICE:\n{run.cto_advice}\n\n"
             f"FULL GHERKIN:\n{us.gherkin}\n\n"
-            f"PREVIOUS FAILURE DETECTED:\n"
-            f"Source: {failure.source}\n"
-            f"Error Type: {failure.error_type}\n"
-            f"Trace/Feedback:\n{failure.trace}\n\n"
-            f"TASK: Analyze the failure telemetry and generate a hyper-specific patch to fix "
-            f"the issue. Only output corrected files instead of rewriting from scratch.{guidelines}"
+            f"{retry}{guidelines}"
         )
     return (
-        f"{run.repo_context}\n\n"
+        f"{run.repo_context}\n\n{run.markdown_ctx}\n\n"
         f"CTO ADVICE:\n{run.cto_advice}\n\n"
         f"FULL GHERKIN:\n{us.gherkin}\n\n"
         f"TASK: Generate a complete Go backend for this user story using Hexagonal Architecture. "
@@ -130,23 +143,30 @@ def _backend_prompt(run: _Run, us: UserStory, guidelines: str) -> str:
     )
 
 
-def _frontend_prompt(run: _Run, us: UserStory) -> str:
+async def _frontend_prompt(run: _Run, us: UserStory) -> str:
+    guidelines = await _guidelines("frontend", us.gherkin, "Frontend", run.config.project)
+    retry = _retry_section(run)
+    task = retry or f"TASK:\nImplement frontend for story {us.id}: {us.title}"
     return (
         f"{run.repo_context}\n\n{run.markdown_ctx}\n\n"
         f"CTO ADVICE:\n{run.cto_advice}\n\n"
         f"UX GUIDELINES:\n{run.ux_advice}\n\n"
         f"FULL GHERKIN:\n{us.gherkin}\n\n"
-        f"TASK:\nImplement frontend for story {us.id}: {us.title}{_guidelines('frontend', us.gherkin, 'Frontend')}"
+        f"{task}{guidelines}"
     )
 
 
-def _database_prompt(us: UserStory) -> str:
+async def _database_prompt(run: _Run, us: UserStory) -> str:
+    guidelines = await _guidelines("database", us.gherkin, "Database", run.config.project)
+    retry = _retry_section(run)
+    task = retry or f"TASK:\nGenerate database schema/migrations for story {us.id}: {us.title}"
     return (
+        f"{run.markdown_ctx}\n\n"
+        f"CTO ADVICE:\n{run.cto_advice}\n\n"
         f"FULL GHERKIN:\n{us.gherkin}\n\n"
         "EVENTS:\n"
         + "\n".join(f" - {e.name}: {e.description}" for e in (us.event_triggers or []))
-        + f"\n\nTASK:\nGenerate database schema/migrations for story {us.id}: {us.title}"
-        f"{_guidelines('database', us.gherkin, 'Database')}"
+        + f"\n\n{task}{guidelines}"
     )
 
 
@@ -165,15 +185,13 @@ def _collect_artifacts(
     return artifacts
 
 
-def _find_test_target(artifacts: list[Artifact], story_id: str) -> tuple[str, str]:
-    """The (file name, source) of the story's first backend source file with content, to test against."""
+def _story_sources(artifacts: list[Artifact], story_id: str) -> dict[str, str]:
+    """Every non-empty source file the story's implementation artifacts produced, to run its tests against."""
+    sources: dict[str, str] = {}
     for a in artifacts:
-        if not (a.agent_name == "backend" and a.metadata.get("user_story_id") == story_id and a.files):
-            continue
-        first_source = next(((n, c) for n, c in a.files.items() if n.endswith((".go", ".vue", ".tsx"))), None)
-        if first_source and first_source[1]:
-            return first_source
-    return "service.go", ""
+        if a.agent_name in ("backend", "frontend") and a.metadata.get("user_story_id") == story_id:
+            sources.update({n: c for n, c in (a.files or {}).items() if c})
+    return sources
 
 
 def _replace_test_artifact(artifacts: list[Artifact], new_test: Artifact) -> list[Artifact]:
@@ -260,7 +278,7 @@ class ImplementationStage(StageRunner):
     # Backend: one consolidated prompt per story. Collapsed from 4 sequential phases into 1: the backend agent
     # already self-validates with run_go_build, so splitting doesn't buy quality.
     async def _run_backend(self, run: _Run, us: UserStory, story_idx: int) -> Artifact:
-        prompt = _backend_prompt(run, us, _guidelines("backend", us.gherkin, "Backend"))
+        prompt = _backend_prompt(run, us, await _guidelines("backend", us.gherkin, "Backend", run.config.project))
         res = await self._run_tagged(run, "backend", prompt, story_id=us.id, deps=run.project_state)
         res.metadata["story_index"] = story_idx
         return res
@@ -269,8 +287,7 @@ class ImplementationStage(StageRunner):
         label = f"{us.id}:test_eng"
         run.progress.start(label)
         test_prompt = f"Write tests for gherkin: {us.gherkin}"
-        test_ctx = _guidelines("test_eng", us.gherkin, "Test")
-        test_prompt += test_ctx
+        test_prompt += await _guidelines("test_eng", us.gherkin, "Test", run.config.project)
         async with recorder.record_span(
             run_id=run.state.run_id,
             agent_name="test_eng",
@@ -286,14 +303,26 @@ class ImplementationStage(StageRunner):
             run.progress.done(label)
             return res.output
 
+    async def _run_frontend(self, run: _Run, us: UserStory) -> Artifact:
+        return await self._run_tagged(run, "frontend", await _frontend_prompt(run, us), story_id=us.id)
+
+    async def _run_database(self, run: _Run, us: UserStory) -> Artifact:
+        return await self._run_tagged(run, "database", await _database_prompt(run, us), story_id=us.id)
+
     def _generation_tasks(self, run: _Run) -> list[tuple[str, Any]]:
-        """The (agent, coroutine) pairs to run concurrently: per-story work, then the global agents."""
+        """The (agent, coroutine) pairs to run concurrently: per-story work, then the global agents.
+
+        A retry after a test failure re-runs the backend only; a retry after a gate rejection (review, security,
+        quality gate, validation) re-runs the frontend and database agents too, since their files were judged.
+        """
+        failure = run.state.failure_report
+        rerun_all = run.is_retry and failure is not None and failure.source != "test_suite"
         tasks: list[tuple[str, Any]] = []
         for idx, us in enumerate(run.state.user_stories or []):
             tasks.append(("backend", self._run_backend(run, us, idx)))
-            if not run.is_retry:
-                tasks.append(("frontend", self._run_tagged(run, "frontend", _frontend_prompt(run, us), story_id=us.id)))
-                tasks.append(("database", self._run_tagged(run, "database", _database_prompt(us), story_id=us.id)))
+            if not run.is_retry or rerun_all:
+                tasks.append(("frontend", self._run_frontend(run, us)))
+                tasks.append(("database", self._run_database(run, us)))
 
         if not run.is_retry:
             stories = run.state.user_stories or []
@@ -306,9 +335,10 @@ class ImplementationStage(StageRunner):
         return tasks
 
     async def _run_test_phase(self, run: _Run, artifacts: list[Artifact]) -> tuple[list[Artifact], list[str]]:
-        """Per-story test agents in parallel (failures isolated), then each story's suite; returns the new artifact
-        list and the ids of the stories whose suite failed."""
-        from pydantic_agents.core.tools.test_tools import execute_test_suite
+        """Per-story test agents in parallel (failures isolated), then each story's suite against every source
+        file of the story; returns the new artifact list and the ids of the stories whose suite failed or could
+        not be run (a toolchain or setup error is a failure, not a pass)."""
+        from pydantic_agents.core.tools.test_tools import run_test_suite
 
         logger.info("Running Test agents per story...")
         user_stories = run.state.user_stories or []
@@ -324,15 +354,12 @@ class ImplementationStage(StageRunner):
             res.metadata["user_story_id"] = res.metadata.get("user_story_id", "?")
             artifacts = _replace_test_artifact(artifacts, res)
 
-            target_code_file, target_source_code = _find_test_target(artifacts, res.metadata["user_story_id"])
-            if res.files and target_source_code:
-                test_file_name = next(iter(res.files.keys()))
-                trace = await execute_test_suite(
-                    test_file_name, res.files[test_file_name], target_code_file, target_source_code
-                )
-                if trace.startswith("FAILED"):
+            sources = _story_sources(artifacts, res.metadata["user_story_id"])
+            if res.files and sources:
+                outcome = await run_test_suite(sources, dict(res.files))
+                if not outcome.passed:
                     failed_stories.append(us.id)
-                    logger.warning(f"Test suite failed for {us.id}: {trace[:200]}...")
+                    logger.warning(f"Test suite failed for {us.id}: {(outcome.error or outcome.output)[:200]}...")
         return artifacts, failed_stories
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:

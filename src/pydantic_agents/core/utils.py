@@ -1,6 +1,7 @@
 import os
 import re
 from collections.abc import Iterator
+from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
 
@@ -26,12 +27,21 @@ def safe_path_join(base: str | Path, *parts: str) -> Path:
 WRITE_NAME_ERRORS: tuple[type[BaseException], ...] = (PathTraversalError, OSError, ValueError)
 
 
+# The codebase root of the pipeline running in the current task. A ContextVar (not an environment variable) so two
+# concurrent pipelines on different codebases never see each other's root; tasks and threads started from the
+# pipeline inherit it. ``run_existing_code_pipeline`` sets it for the duration of a run.
+sandbox_root_var: ContextVar[Path | None] = ContextVar("sandbox_root", default=None)
+
+
 def sandbox_root() -> Path:
     """Root that model-driven file tools may touch.
 
-    Read from ORCHESTRATION_CODEBASE_ROOT (set by run_existing_code_pipeline), with
-    CWD as the safe local-dev default.
+    The current pipeline's root (``sandbox_root_var``), else ORCHESTRATION_CODEBASE_ROOT (for a server started with a
+    fixed codebase), else CWD as the safe local-dev default.
     """
+    root = sandbox_root_var.get()
+    if root is not None:
+        return root
     return Path(os.environ.get("ORCHESTRATION_CODEBASE_ROOT", os.getcwd())).resolve()
 
 

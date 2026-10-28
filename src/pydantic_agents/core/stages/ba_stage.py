@@ -39,7 +39,7 @@ class BAStage(StageRunner):
 
         from pydantic_agents.core.context_engine import retrieve_context
 
-        retrieved_ctx = retrieve_context("ba", raw_requirements)
+        retrieved_ctx = await retrieve_context("ba", raw_requirements, project=config.project)
 
         prompt = f"Process these requirements: {raw_requirements}"
         if retrieved_ctx:
@@ -60,7 +60,9 @@ class BAStage(StageRunner):
             state.user_stories = output if isinstance(output, list) else []
 
             if not state.user_stories:
+                # The orchestrator stops the run on an empty story list; the stage still records that it ran.
                 logger.warning("BA returned no user stories. Exiting.")
+                state.stage = "ba"
                 return state
 
             logger.info(f"BA generated {len(state.user_stories)} stories:")
