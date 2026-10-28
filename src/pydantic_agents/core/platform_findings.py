@@ -62,22 +62,24 @@ async def save_finding(
     if not enabled():
         return None
     finding_id = f"find_{uuid.uuid4().hex[:12]}"
+
+    async def _op(conn: Any) -> None:
+        await _ensure_table(conn)
+        await conn.execute(
+            """
+            INSERT INTO platform_findings (id, kind, severity, agent, summary, evidence, status)
+            VALUES ($1, $2, $3, $4, $5, $6, 'open')
+            """,
+            finding_id,
+            kind,
+            severity,
+            agent,
+            summary,
+            vector_db.json.dumps(evidence) if evidence is not None else None,
+        )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            await conn.execute(
-                """
-                INSERT INTO platform_findings (id, kind, severity, agent, summary, evidence, status)
-                VALUES ($1, $2, $3, $4, $5, $6, 'open')
-                """,
-                finding_id,
-                kind,
-                severity,
-                agent,
-                summary,
-                vector_db.json.dumps(evidence) if evidence is not None else None,
-            )
+        await vector_db.with_connection(_op)
     except Exception as exc:  # best-effort by design
         logger.warning("Could not persist platform finding (%s: %s)", type(exc).__name__, exc)
         return None
@@ -98,13 +100,15 @@ async def list_findings(*, status: str | None = None, kind: str | None = None, l
         clauses.append(f"kind = ${len(args)}")
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     args.append(limit)
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        return await conn.fetch(
+            f"SELECT * FROM platform_findings {where} ORDER BY created_at DESC LIMIT ${len(args)}", *args
+        )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            rows = await conn.fetch(
-                f"SELECT * FROM platform_findings {where} ORDER BY created_at DESC LIMIT ${len(args)}", *args
-            )
+        rows = await vector_db.with_connection(_op)
     except Exception as exc:
         logger.warning("Could not load platform findings (%s: %s)", type(exc).__name__, exc)
         return []
