@@ -266,7 +266,7 @@ class QaCrew:
 
     CrewAI's ``Process.sequential`` runs each task exactly once, so the bounded retry (KAN-487) can't live
     inside one ``Crew``: each stage below is its own single- or two-task crew, chained by the orchestrator in
-    ``bridge._run_qa_crew_with_retry``, which re-runs ``build_fix``/``build_execution`` up to
+    ``bridge._run_qa_staged_gate``, which re-runs ``build_fix``/``build_execution`` up to
     ``settings.qa_max_fix_rounds`` times before ``build_signoff`` runs regardless.
     """
 
@@ -332,7 +332,7 @@ class QaCrew:
     def build_fix(self, tests_output: str, report: TestRunReport) -> Crew:
         """One bounded fix round: go_test only touches the criteria the last report marked failing.
 
-        ``bridge._run_qa_crew_with_retry`` only calls this once a parsed ``TestRunReport`` says the gate isn't
+        ``bridge._run_qa_staged_gate`` only calls this once a parsed ``TestRunReport`` says the gate isn't
         met yet, so the all-unnamed fallback below fires only for a parsed report with zero criterion results
         (an executor that ran nothing, reported no failures and no unexecuted ids) — not for a report that
         failed to parse at all, which short-circuits straight to the gate instead of reaching this method.
@@ -356,14 +356,19 @@ class QaCrew:
             verbose=True,
         )
 
-    def build_signoff(self, tests_output: str, report: TestRunReport) -> Crew:
-        """Final stage: review signs off, but the fix-loop's own TestRunReport is the fail-closed gate."""
+    def build_signoff(self, tests_output: str, report: TestRunReport | None) -> Crew:
+        """Final stage: review signs off, but the fix-loop's own TestRunReport is the fail-closed gate.
+
+        ``report`` is None when qa_executor's output never parsed; the reviewer is told so rather than shown an
+        empty report, and the bridge blocks approval in code either way.
+        """
         reviewer = _agent("review", "QA Reviewer", "Sign off test coverage against the acceptance criteria")
+        report_text = report.model_dump_json() if report is not None else "(none: qa_executor's output did not parse)"
         signoff_task = _make_task(
             "Check that every acceptance criterion has at least one passing test that references its id. "
             "Approve only when no criterion is left uncovered. Every feedback entry must start with the "
             f"criterion id it concerns. {_CRITERION_ID_RULE}\n\n"
-            f"Tests:\n{tests_output}\n\nLatest test-execution report: {report.model_dump_json()}",
+            f"Tests:\n{tests_output}\n\nLatest test-execution report: {report_text}",
             reviewer,
             REVIEW_VERDICT_OUTPUT,
             name=_task_name("review", "verdict"),

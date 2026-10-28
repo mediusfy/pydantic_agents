@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import ValidationError
@@ -69,8 +70,9 @@ async def run_crewai_pipeline(
             from pydantic_agents.core.pipeline.context import ContextFrame
 
             logger.info("Running %s...", crew_class_name)
-            if crew_class_name == "QaCrew":
-                summary = await _run_qa_crew_with_retry(state)
+            staged_runner = _STAGED_RUNNERS.get(crew_cls)
+            if staged_runner is not None:
+                summary = await staged_runner(state)
                 rec.set_output({"crew": crew_class_name, "result": summary[:500]})
             else:
                 crew = crew_cls().build(state)
@@ -103,14 +105,26 @@ async def _run_crew_async(crew: Any) -> Any:
     return await asyncio.to_thread(crew.kickoff)
 
 
-async def _run_qa_crew_with_retry(state: PipelineState) -> str:
-    """QaCrew's bounded fix loop (KAN-487).
+def _qa_gate_reason(report: TestRunReport | None) -> str | None:
+    """Why the QA gate is not met, or None when it is: no parsed report, a failing run, or coverage under the floor."""
+    if report is None:
+        return "qa_executor's test-execution report did not parse"
+    if not report.all_passed:
+        return "test run still failing"
+    if report.coverage_percent < settings.qa_min_coverage_percent:
+        return f"coverage {report.coverage_percent}% below floor {settings.qa_min_coverage_percent}%"
+    return None
 
-    ``Process.sequential`` runs each task exactly once, so the retry can't live inside one ``Crew``: this runs a
+
+async def _run_qa_staged_gate(state: PipelineState) -> str:
+    """QaCrew's staged run: tests, then a bounded execute-and-fix loop, then sign-off behind a fail-closed gate.
+
+    ``Process.sequential`` runs each task exactly once, so the loop can't live inside one ``Crew``: this runs a
     bounded sequence of single-purpose crews instead, re-running ``qa_executor``/``go_test`` up to
     ``settings.qa_max_fix_rounds`` times before the review sign-off runs regardless. The final ``TestRunReport``
     (not the reviewer's own verdict) gates ``state.approved``: a reviewer can't approve what the test run itself
-    still says is failing or under the coverage floor.
+    still says is failing or under the coverage floor. ``state.test_run_report`` is the last parsed report, or
+    None when ``qa_executor``'s output never parsed, so "no report" and "an empty report" stay distinguishable.
     """
     qa = QaCrew()
 
@@ -122,28 +136,23 @@ async def _run_qa_crew_with_retry(state: PipelineState) -> str:
             _merge_artifact(state, _artifact_from_output(target[0], _output_text(task_out)))
     tests_output = _output_text(tests_outputs[-1]) if tests_outputs else ""
 
-    report = TestRunReport()
-    report_parsed = False
+    report: TestRunReport | None = None
+    fix_rounds = 0
     for round_num in range(settings.qa_max_fix_rounds + 1):
         exec_result = await _run_crew_async(qa.build_execution(tests_output))
         exec_outputs = list(getattr(exec_result, "tasks_output", None) or [])
         raw_report = _output_text(exec_outputs[0]) if exec_outputs else ""
-        parsed, reason = _parse_json_model(TestRunReport, raw_report)
-        if parsed is None:
+        report, reason = _parse_json_model(TestRunReport, raw_report)
+        if report is None:
             state.errors.append(f"crewai qa_executor: {reason}")
             logger.warning("QaCrew execution report rejected on round %d: %s", round_num, reason)
-            report = TestRunReport()
-            report_parsed = False
             # qa_executor's output didn't parse, not the tests failing: a fix round would hand go_test a
             # meaningless empty failing-id list, so stop retrying and let the fail-closed gate below block.
             break
-        report = parsed
-        report_parsed = True
-        state.test_run_report = report
-        gate_met = report.all_passed and report.coverage_percent >= settings.qa_min_coverage_percent
-        if gate_met or round_num >= settings.qa_max_fix_rounds:
+        if _qa_gate_reason(report) is None or round_num >= settings.qa_max_fix_rounds:
             break
 
+        fix_rounds += 1
         fix_result = await _run_crew_async(qa.build_fix(tests_output, report))
         fix_outputs = list(getattr(fix_result, "tasks_output", None) or [])
         if fix_outputs:
@@ -157,22 +166,25 @@ async def _run_qa_crew_with_retry(state: PipelineState) -> str:
     if signoff_outputs:
         _apply_verdict(state, _output_text(signoff_outputs[0]))
 
-    gate_met = report.all_passed and report.coverage_percent >= settings.qa_min_coverage_percent
-    if not gate_met:
+    gate_reason = _qa_gate_reason(report)
+    if gate_reason is not None:
         state.approved = False
-        if not report_parsed:
-            reason = "qa_executor's test-execution report did not parse"
-        elif not report.all_passed:
-            reason = "test run still failing"
+        if report is None:
+            state.errors.append(f"crewai QaCrew: {gate_reason}; no fix round was run and approval is blocked")
         else:
-            reason = f"coverage {report.coverage_percent}% below floor {settings.qa_min_coverage_percent}%"
-        msg = f"crewai QaCrew: fix loop exhausted after {settings.qa_max_fix_rounds} round(s), {reason}"
-        state.errors.append(msg)
+            state.errors.append(f"crewai QaCrew: fix loop exhausted after {fix_rounds} round(s), {gate_reason}")
 
+    if report is None:
+        return f"QaCrew finished: report=unparsed fix_rounds={fix_rounds} approved={state.approved}"
     return (
-        f"QaCrew finished: all_passed={report.all_passed} coverage={report.coverage_percent} "
-        f"approved={state.approved}"
+        f"QaCrew finished: report=parsed fix_rounds={fix_rounds} all_passed={report.all_passed} "
+        f"coverage={report.coverage_percent} approved={state.approved}"
     )
+
+
+# Crews whose stages the bridge orchestrates itself instead of one ``build(state)`` + ``kickoff``. Keyed by class,
+# not by the blueprint's ``crew_class`` name, so renaming a ``_CREW_MAP`` entry cannot silently drop the runner.
+_STAGED_RUNNERS: dict[type, Callable[[PipelineState], Awaitable[str]]] = {QaCrew: _run_qa_staged_gate}
 
 
 # ── Mapping crew output back onto the pipeline state ──────────────────────

@@ -70,7 +70,8 @@ fresh **Unreleased** section above it.
   retried only on the failing/unexecuted criterion ids, and review's sign-off runs regardless but `state.approved`
   is forced false in code if the final report isn't `all_passed` with coverage at or above
   `settings.qa_min_coverage_percent` (default 80%), closing the gap where the retry was unbounded and ungated
-  (KAN-487, part of epic KAN-482).
+  (KAN-487, part of epic KAN-482). `PipelineState.test_run_report` is the last parsed report, or None when
+  `qa_executor`'s output never parsed; the bridge picks the staged runner by crew class, not by name.
 - `AgentAdvice.adr_id`: approval also now forces `approved_to_proceed=False` in code while `adr_id` is empty, so
   the CTO gate can't approve a decision with no ADR to point at. `approve_cto_gate` (MCP tool) enforces the same
   rule for the human-approval path (`approved=true` requires `adr_id`), rejects `adr_content` given without an
