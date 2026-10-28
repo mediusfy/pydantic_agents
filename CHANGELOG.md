@@ -12,6 +12,45 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/innovation_scout.py` (AP-81, ADR-0001 Platform Intelligence Layer): registered agent with a settings
+  field (`innovation_scout_model`), tool category (`"innovation_scout": ["web", "search", "memory",
+  "documentation"]`), and `run_innovation_scout` MCP tool. Its own tools search past ADRs (`search_existing_adrs`)
+  and persist a draft ADR (`propose_adr`, status: proposed, id prefixed `draft-` so a draft can never overwrite
+  an existing ADR) to the ADR store. Read-only with respect to the rest
+  of the platform other than that one draft-write path; drafts are never auto-adopted — any follow-on
+  implementation work still requires an explicit human/CTO approval through the existing CTO approval gate
+  (`core/cto_gate.py`, `approve_cto_gate`), which this agent has no code path to bypass.
+- `agents/sre_autopilot.py` (AP-83, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`sre_autopilot_model`), tool category (`"sre_autopilot": ["security", "validation", "memory"]`), and
+  `run_sre_autopilot` MCP tool. Extends `core/healthcheck.py`'s checks to a repeatable health-scan path and adds
+  `pipeline_jobs.list_interrupted_runs()` (stored in-flight runs last written before this process started, the ones
+  `get_run` reports as interrupted, via a new `run_store.list_runs`). `core/sre_remediation.py` (pure, no I/O) classifies each detected issue
+  against a literal v1 allowlist of exactly one action — auto-resuming an interrupted pipeline run via the
+  existing `resume_pipeline_run` — and escalates everything else (startup-check failures) as an open
+  `platform_findings` row instead of acting (once per open issue; a refused resume is reported as escalated). ADR-0001 also named "retry one stuck broker task" as an allowlisted
+  action; dropped here because the event broker it targeted was removed from the codebase the same day (#60)
+  before this ticket was picked up.
+- `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
+  runs test suites `test_gen` produced via `execute_test_suite` and returns a `TestRunReport` (pass/fail per
+  acceptance-criterion id, coverage, unexecuted ids, `all_passed` derived in code),
+  without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
+- `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
+  tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
+  and latency drift (`core/observer_analysis.py`, pure functions, no I/O), persisting each as an open
+  `platform_findings` row via `save_finding`, skipping a finding whose kind and agent already have an open row so
+  scheduled scans do not pile up duplicates. Read-only with respect to the rest of the platform.
+- `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
+  case-insensitive so a lowercase "critical" still reaches the gate),
+  `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
+  `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
+  forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
+  `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
+- `AuditCrew`'s consolidation task (`core/pipeline/crewai/crews.py`) now outputs a JSON array of `Finding`
+  objects instead of free-text markdown, and the bridge's new `_apply_findings` (`core/pipeline/crewai/bridge.py`)
+  enforces the ADR rule in code: findings missing a `file:line`/resource id are dropped, and the whole batch is
+  rejected (fail-closed, like the existing review/advice gates) if any other finding is invalid or a surviving
+  finding is missing an owner or due date (KAN-491, part of epic KAN-482).
 - `agents/product_strategist.py` (AP-82, ADR-0001 Platform Intelligence Layer): registered agent with a
   settings field (`product_strategist_model`), tool category (`"product_strategist": ["memory"]` —
   deliberately narrower than the ADR's literal `web, search, memory, documentation`: `documentation` grants

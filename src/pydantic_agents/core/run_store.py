@@ -86,6 +86,36 @@ async def save_run(run_id: str, run: dict[str, Any]) -> None:
         logger.warning("Could not persist pipeline run %s (%s: %s)", run_id, type(exc).__name__, exc)
 
 
+async def list_runs(statuses: tuple[str, ...], *, updated_before: datetime, limit: int = 20) -> list[dict[str, Any]]:
+    """Stored runs in one of ``statuses`` whose row was last written before ``updated_before``, oldest first, as
+    ``PIPELINE_RUNS``-shaped dicts plus ``run_id`` (ISO timestamps). Never raises; [] with no database."""
+    if not enabled():
+        return []
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        return await conn.fetch(
+            "SELECT * FROM pipeline_runs WHERE status = ANY($1::text[]) AND updated_at < $2 "
+            "ORDER BY updated_at LIMIT $3",
+            list(statuses),
+            updated_before,
+            limit,
+        )
+
+    try:
+        rows = await vector_db.with_connection(_op)
+    except Exception as exc:
+        logger.warning("Could not list pipeline runs (%s: %s)", type(exc).__name__, exc)
+        return []
+    out = []
+    for row in rows:
+        run = {"run_id": row["run_id"], **{k: row[k] for k in _COLUMNS}}
+        for key in ("started_at", "completed_at"):
+            run[key] = run[key].isoformat() if run[key] else None
+        out.append(run)
+    return out
+
+
 async def recent_requirements(limit: int = 50) -> list[dict[str, Any]]:
     """Recent requirements across pipeline runs (run_id, project, requirement, status, completed_at), newest
     first, as plain dicts (ISO timestamps). Read-only, for the `product_strategist` agent's requirement-history
