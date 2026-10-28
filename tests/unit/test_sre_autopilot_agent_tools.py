@@ -12,6 +12,9 @@ from pydantic_agents.core import platform_findings
 from tests.unit.db_stub import stub_database
 
 CTX = MagicMock()
+_CHECKS = "pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks"
+_LIST_INTERRUPTED = "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs"
+_RESUME = "pydantic_agents.agents.sre_autopilot.pipeline_jobs.resume_pipeline_run"
 
 
 class _Conn:
@@ -45,14 +48,14 @@ def pool(monkeypatch):
 async def test_scan_and_remediate_auto_resumes_an_interrupted_run(pool):
     interrupted = {"pipe_abc123": {"project": "demo", "status": "interrupted"}}
     with (
-        patch("pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks", return_value=[]),
+        patch(_CHECKS, return_value=[]),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value=interrupted,
         ),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.resume_pipeline_run",
+            _RESUME,
             new_callable=AsyncMock,
             return_value="pipe_abc123",
         ) as resume,
@@ -70,17 +73,15 @@ async def test_scan_and_remediate_auto_resumes_an_interrupted_run(pool):
 async def test_scan_and_remediate_escalates_a_startup_check_error_without_acting(pool):
     with (
         patch(
-            "pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks",
+            _CHECKS,
             return_value=["DATABASE_URL not set"],
         ),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value={},
         ),
-        patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.resume_pipeline_run", new_callable=AsyncMock
-        ) as resume,
+        patch(_RESUME, new_callable=AsyncMock) as resume,
     ):
         result = await scan_and_remediate(CTX)
 
@@ -94,9 +95,9 @@ async def test_scan_and_remediate_escalates_a_startup_check_error_without_acting
 
 async def test_scan_and_remediate_reports_nothing_when_healthy(pool):
     with (
-        patch("pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks", return_value=[]),
+        patch(_CHECKS, return_value=[]),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value={},
         ),
@@ -108,11 +109,11 @@ async def test_scan_and_remediate_reports_nothing_when_healthy(pool):
 async def test_health_snapshot_returns_json():
     with (
         patch(
-            "pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks",
+            _CHECKS,
             return_value=["bad key"],
         ),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value={},
         ),
@@ -125,14 +126,14 @@ async def test_health_snapshot_returns_json():
 async def test_scan_and_remediate_escalates_when_the_resume_is_refused(pool):
     interrupted = {"pipe_abc123": {"project": "demo", "status": "interrupted"}}
     with (
-        patch("pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks", return_value=[]),
+        patch(_CHECKS, return_value=[]),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value=interrupted,
         ),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.resume_pipeline_run",
+            _RESUME,
             new_callable=AsyncMock,
             return_value=None,
         ),
@@ -146,11 +147,11 @@ async def test_scan_and_remediate_escalates_when_the_resume_is_refused(pool):
 async def test_scan_and_remediate_does_not_re_record_an_open_escalation(pool):
     with (
         patch(
-            "pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks",
+            _CHECKS,
             return_value=["DATABASE_URL not set"],
         ),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value={},
         ),
@@ -178,9 +179,9 @@ async def test_startup_checks_run_off_the_event_loop():
         raise AssertionError("run_startup_checks ran on the event loop")
 
     with (
-        patch("pydantic_agents.agents.sre_autopilot.healthcheck.run_startup_checks", side_effect=checks),
+        patch(_CHECKS, side_effect=checks),
         patch(
-            "pydantic_agents.agents.sre_autopilot.pipeline_jobs.list_interrupted_runs",
+            _LIST_INTERRUPTED,
             new_callable=AsyncMock,
             return_value={},
         ),

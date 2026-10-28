@@ -1,6 +1,7 @@
 """pipeline_jobs.list_interrupted_runs: the stored runs sre_autopilot may auto-resume (AP-83)."""
 
 from datetime import UTC, datetime, timedelta
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -15,8 +16,7 @@ class _Conn:
     def __init__(self, db):
         self.db = db
 
-    async def execute(self, _sql, *_args):  # CREATE TABLE IF NOT EXISTS
-        return None
+    execute = AsyncMock(return_value=None)  # CREATE TABLE IF NOT EXISTS
 
     async def fetch(self, sql, statuses, updated_before, limit):
         assert "FROM pipeline_runs" in sql
@@ -76,23 +76,15 @@ async def test_runs_this_process_knows_are_excluded(db, monkeypatch):
 async def test_listed_runs_are_ones_resume_accepts(db, monkeypatch):
     """The point of the listing: resume_pipeline_run must not refuse what it returns."""
     db["pipe_abc123def456"] = _row("pipe_abc123def456", "running")
-    monkeypatch.setattr(run_store, "load_run", lambda run_id: _load(db, run_id))
-    submitted = []
-
-    async def submit(project, requirement, **kwargs):
-        submitted.append(kwargs["run_id"])
-        return kwargs["run_id"]
-
+    monkeypatch.setattr(
+        run_store, "load_run", AsyncMock(side_effect=lambda run_id: {k: db[run_id][k] for k in run_store._COLUMNS})
+    )
+    submit = AsyncMock(side_effect=lambda *_args, **kwargs: kwargs["run_id"])
     monkeypatch.setattr(pipeline_jobs, "submit_pipeline_run", submit)
 
     for run_id in await pipeline_jobs.list_interrupted_runs():
         assert await pipeline_jobs.resume_pipeline_run(run_id) == run_id
-    assert submitted == ["pipe_abc123def456"]
-
-
-async def _load(db, run_id):
-    row = db.get(run_id)
-    return {k: row[k] for k in run_store._COLUMNS} if row else None
+    assert [call.kwargs["run_id"] for call in submit.await_args_list] == ["pipe_abc123def456"]
 
 
 async def test_no_database_yields_no_runs(monkeypatch):
