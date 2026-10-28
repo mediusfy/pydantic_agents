@@ -20,3 +20,4 @@ telemetry.jsonl
 # coverage data
 .coverage
 .coverage.*
+.mypy_cache/

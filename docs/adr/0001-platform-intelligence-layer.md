@@ -78,6 +78,14 @@ on-demand. No scheduler is added to the Python package.
   automatically, are explicitly out of scope for this ADR and tracked as follow-up tickets (AP-TBD, filled in once
   created).
 
+## Amendments
+
+- 2026-10-28 (AP-83): the second allowlisted `sre_autopilot` action named above, "retry one stuck broker task",
+  is dropped. The event broker it targeted (`core/event_broker.py`) was removed from the codebase the same day
+  (#60, "dead event broker and Redis stubs removed") before this ticket was picked up. v1's allowlist is therefore
+  exactly one action: auto-resuming an interrupted `pipeline_runs` row via `resume_pipeline_run`. Extending the
+  allowlist later is still a deliberate code change plus an ADR amendment, never a runtime model decision.
+
 ## Alternatives considered
 
 - Bolt observation directly onto the existing `quality_gate`/`sre` agents instead of new roles: rejected — conflates

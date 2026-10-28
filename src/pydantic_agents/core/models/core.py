@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pydantic_agents.core.pipeline.context import ContextFrame
 
@@ -93,6 +93,47 @@ class ArchitecturalConstraint(BaseModel):
     affected_agents: list[str] = Field(default_factory=list, description="Agents that must honour the constraint")
 
 
+class FindingSeverity(str, Enum):
+    INFO = "INFO"
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+# A CRITICAL finding blocks downstream approval (CTO review gate); no other severity does.
+FINDING_BLOCKING_SEVERITIES = frozenset({FindingSeverity.CRITICAL})
+
+
+class Finding(BaseModel):
+    """A typed, versioned finding shared across the CTO Architecture Review and SecOps/FinOps Audit pipelines.
+
+    `location` is required so a finding can be acted on without re-investigation; unreferenced findings
+    (no file:line, no resource id) must be dropped by the orchestrator, not accepted here.
+    """
+
+    schema_version: Literal[1] = 1
+    id: str
+    source_agent: str = Field(description="Agent that raised the finding (e.g. security, devops, sre, finops)")
+    severity: FindingSeverity
+    description: str
+    location: str = Field(min_length=1, description="file:line or a resource id the finding applies to")
+    owner: str = Field(default="", description="Set by review when consolidating; empty until then")
+    due_date: str = Field(default="", description="ISO date set by review when consolidating; empty until then")
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _upper_severity(cls, value: Any) -> Any:
+        """Models write "critical" as often as "CRITICAL"; either must reach the CRITICAL gate."""
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def _strip_location(cls, value: Any) -> Any:
+        """A blank location is no location: it must fail min_length, not pass as "   "."""
+        return value.strip() if isinstance(value, str) else value
+
+
 class AgentAdvice(BaseModel):
     bottlenecks_identified: list[str] = Field(
         default_factory=list, description="Potential issues or bottlenecks spotted"
@@ -101,9 +142,54 @@ class AgentAdvice(BaseModel):
     architectural_constraints: list[ArchitecturalConstraint] = Field(
         default_factory=list, description="Constraints that bind specific downstream agents"
     )
+    findings: list[Finding] = Field(
+        default_factory=list,
+        description="Typed findings merged from CTO review's members (ba/security/database/sre/finops)",
+    )
     approved_to_proceed: bool = Field(
         default=False, description="Must be set explicitly; an omitted value blocks the pipeline"
     )
+
+    @model_validator(mode="after")
+    def _block_on_critical_finding(self) -> "AgentAdvice":
+        """Overrides the supplied approval: no approval while a CRITICAL finding is open."""
+        if self.approved_to_proceed and any(f.severity in FINDING_BLOCKING_SEVERITIES for f in self.findings):
+            self.approved_to_proceed = False
+        return self
+
+
+class CriterionResult(BaseModel):
+    criterion_id: str = Field(description="Acceptance-criterion id the Business Analyst assigned")
+    passed: bool
+    detail: str = Field(default="", description="Failure detail, or any other note about the run")
+
+
+class TestRunReport(BaseModel):
+    """A versioned test-execution report produced by `qa_executor` for the QA Engineer pipeline."""
+
+    __test__ = False  # pytest: not a test class despite the name
+
+    schema_version: Literal[1] = 1
+    criterion_results: list[CriterionResult] = Field(default_factory=list)
+    coverage_percent: float = Field(ge=0, le=100, default=0.0)
+    unexecuted_criterion_ids: list[str] = Field(
+        default_factory=list, description="Criterion ids qa_executor could not execute; reason goes in feedback"
+    )
+    feedback: list[str] = Field(default_factory=list)
+    all_passed: bool = Field(
+        default=False,
+        description="Derived in code: true iff every result passed and nothing is unexecuted; supplied value ignored",
+    )
+
+    @model_validator(mode="after")
+    def _derive_verdict(self) -> "TestRunReport":
+        """Overrides (does not validate) the supplied verdict: results and unexecuted ids are the source of truth."""
+        self.all_passed = (
+            bool(self.criterion_results)
+            and all(r.passed for r in self.criterion_results)
+            and not self.unexecuted_criterion_ids
+        )
+        return self
 
 
 class FailureReport(BaseModel):
@@ -163,6 +249,38 @@ class InnovationScoutReport(BaseModel):
     """
 
     proposals: list[InnovationProposal] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+
+
+class ObserverFinding(BaseModel):
+    """One cross-run signal the observer agent surfaced; mirrors a `platform_findings` row."""
+
+    kind: str = Field(description="regression, flaky, pattern, or health")
+    severity: str = Field(description="low, medium, high, or critical")
+    agent: str | None = Field(default=None, description="Affected agent name, when the finding is agent-specific")
+    summary: str
+
+
+class ObserverReport(BaseModel):
+    """Structured output of the observer agent: what it found, in its own words."""
+
+    findings: list[ObserverFinding] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+
+
+class RemediationRecord(BaseModel):
+    """One action the sre_autopilot agent took or escalated, from a single health/remediation scan."""
+
+    action: str | None = Field(default=None, description="Allowlisted action name, or null when escalated")
+    auto_remediated: bool
+    summary: str
+    finding_id: str | None = Field(default=None, description="platform_findings row id, when one was written")
+
+
+class SreAutopilotReport(BaseModel):
+    """Structured output of the sre_autopilot agent: what it checked, fixed, and escalated."""
+
+    records: list[RemediationRecord] = Field(default_factory=list)
     narrative: str = Field(default="", description="Short human-readable digest of the scan")
 
 

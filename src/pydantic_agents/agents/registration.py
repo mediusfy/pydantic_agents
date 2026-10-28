@@ -51,6 +51,7 @@ def _register_sdlc_agents() -> None:
     from pydantic_agents.agents.frontend import component_gen, frontend_agent
     from pydantic_agents.agents.observability_engineer import observability_engineer_agent
     from pydantic_agents.agents.planner_agent import planner_agent
+    from pydantic_agents.agents.qa_executor import qa_executor_agent
     from pydantic_agents.agents.quality_gate import quality_gate_agent
     from pydantic_agents.agents.release_manager import release_manager_agent
     from pydantic_agents.agents.review import review_agent
@@ -75,6 +76,7 @@ def _register_sdlc_agents() -> None:
     registry.register("review", review_agent, ["review", "code_review"])
     registry.register("security", security_agent, ["security", "audit"])
     registry.register("ux", ux_agent, ["ux", "design"])
+    registry.register("qa_executor", qa_executor_agent, ["qa_executor", "test_execution"])
     registry.register("quality_gate", quality_gate_agent, ["quality_gate"])
     registry.register(
         "service_engineer", service_engineer_agent, ["service_engineer", "existing_code", "implementation.modification"]
@@ -90,7 +92,11 @@ def _register_sdlc_agents() -> None:
 def _register_platform_intelligence_agents() -> None:
     """Register the Platform Intelligence Layer agents (ADR-0001 / AP-77)."""
     from pydantic_agents.agents.innovation_scout import innovation_scout_agent
+    from pydantic_agents.agents.observer import observer_agent
+    from pydantic_agents.agents.sre_autopilot import sre_autopilot_agent
 
+    registry.register("observer", observer_agent, ["observer", "platform_observability"])
+    registry.register("sre_autopilot", sre_autopilot_agent, ["sre_autopilot", "platform_health"])
     registry.register("innovation_scout", innovation_scout_agent, ["innovation_scout", "platform_intelligence"])
 
 
