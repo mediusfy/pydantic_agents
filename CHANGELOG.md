@@ -25,7 +25,8 @@ fresh **Unreleased** section above it.
   (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
   tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
   and latency drift (`core/observer_analysis.py`, pure functions, no I/O), persisting each as an open
-  `platform_findings` row via `save_finding`. Read-only with respect to the rest of the platform.
+  `platform_findings` row via `save_finding`, skipping a finding whose kind and agent already have an open row so
+  scheduled scans do not pile up duplicates. Read-only with respect to the rest of the platform.
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
@@ -140,6 +141,11 @@ fresh **Unreleased** section above it.
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
 
 ### Fixed
+- `run_store`, `platform_metrics` and `platform_findings` now reach the database through
+  `vector_db.with_connection`, which runs the query on the background loop that owns the cached asyncpg pool.
+  They used to acquire that pool from the caller's loop, so once a vector search had created it there, every
+  pipeline-run save and every `platform_metrics` row failed with a cross-loop error that the best-effort
+  `except` swallowed.
 
 - Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
   renamed to the current name before the first read of a project's repository, so runs checkpointed by that
