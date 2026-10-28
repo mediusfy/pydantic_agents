@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
+  tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
+  and latency drift (`core/observer_analysis.py`, pure functions, no I/O), persisting each as an open
+  `platform_findings` row via `save_finding`. Read-only with respect to the rest of the platform.
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
