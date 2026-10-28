@@ -6,6 +6,7 @@ AGENT_TOOL_CATEGORIES = {
     "test_eng": ["search", "validation", "go_build", "test_run", "memory", "a2a", "fs_read"],
     "test_gen": ["search", "validation", "go_build", "test_run", "memory", "a2a", "fs_read"],
     "go_test": ["search", "validation", "go_build", "test_run", "memory", "a2a", "fs_read"],
+    "qa_executor": ["validation", "go_build", "test_run", "memory", "a2a", "fs_read"],
     "sre": ["web", "security", "validation", "deps", "memory", "a2a", "fs_read"],
     # Verifiers get read and execute tools only: a gate that could delegate to the agent it judges is no gate.
     "quality_gate": ["validation", "go_build", "memory"],

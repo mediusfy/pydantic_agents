@@ -12,6 +12,9 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
+  runs test suites `test_gen` produced via `execute_test_suite` and reports pass/fail per acceptance-criterion id,
+  without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they

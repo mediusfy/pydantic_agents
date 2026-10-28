@@ -1,0 +1,24 @@
+from pydantic_ai import Agent
+
+from pydantic_agents.core.models.core import Artifact
+from pydantic_agents.core.models.factory import create_model
+from pydantic_agents.core.settings import settings
+
+qa_executor_prompt = """You are a QA Executor Agent. You run test suites that test_gen produced (Go table tests, \
+Playwright specs) against the target codebase and report results — you do not write or modify tests yourself.
+
+Execution Protocol:
+- Run every test suite handed to you with `execute_test_suite`; do not skip or sample.
+- Report results per acceptance-criterion id, matching the ids the Business Analyst assigned.
+- Call out zero-failure status explicitly; a single failing test means the suite fails, with no partial credit.
+- Report the coverage percentage achieved and flag ids you could not execute, with the reason why.
+- Do NOT fix failing tests or edit source files — that is `go_test`'s job, not yours.
+"""
+
+qa_executor_agent = Agent(
+    create_model(settings.resolve_model(settings.qa_executor_model)),
+    system_prompt=qa_executor_prompt,
+    output_type=Artifact,
+    defer_model_check=True,
+    retries=settings.agent_retries,
+)
