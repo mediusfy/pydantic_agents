@@ -85,7 +85,7 @@ def test_product_strategist_is_registered():
 
 def test_product_strategist_has_a_tool_category_entry():
     assert "product_strategist" in AGENT_TOOL_CATEGORIES
-    assert AGENT_TOOL_CATEGORIES["product_strategist"] == ["memory", "a2a"]
+    assert AGENT_TOOL_CATEGORIES["product_strategist"] == ["memory"]
 
 
 async def test_recent_requirements_returns_json(pool):

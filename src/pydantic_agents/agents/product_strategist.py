@@ -15,6 +15,9 @@ from pydantic_agents.core.models.core import ProductStrategistReport
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 
+# Upper bound on any model-chosen row limit, so one tool call cannot pull a whole table into the context.
+_MAX_ROWS = 500
+
 product_strategist_prompt = """You are the Product Strategist: you mine the history of requirements this platform
 has already been asked to build, plus open platform findings, for customer-facing product or capability ideas —
 patterns in what users keep asking for, recurring pain points, adjacent capabilities nobody has proposed yet.
@@ -49,12 +52,12 @@ product_strategist_agent = Agent(
 async def recent_requirements(ctx: RunContext[Any], limit: int = 50) -> str:
     """Recent pipeline requirement history (run_id, project, requirement, status, completed_at), newest first,
     as JSON."""
-    rows = await run_store.recent_requirements(limit=limit)
+    rows = await run_store.recent_requirements(limit=min(limit, _MAX_ROWS))
     return json.dumps(rows, default=str)
 
 
 @product_strategist_agent.tool
 async def open_findings(ctx: RunContext[Any], limit: int = 50) -> str:
     """Open platform_findings rows (from the observer agent), newest first, as JSON."""
-    rows = await platform_findings.list_findings(status="open", limit=limit)
+    rows = await platform_findings.list_findings(status="open", limit=min(limit, _MAX_ROWS))
     return json.dumps(rows, default=str)

@@ -13,10 +13,10 @@ fresh **Unreleased** section above it.
 
 ### Added
 - `agents/product_strategist.py` (AP-82, ADR-0001 Platform Intelligence Layer): registered agent with a
-  settings field (`product_strategist_model`), tool category (`"product_strategist": ["memory", "a2a"]` —
+  settings field (`product_strategist_model`), tool category (`"product_strategist": ["memory"]` —
   deliberately narrower than the ADR's literal `web, search, memory, documentation`: `documentation` grants
-  `update_documentation`, a real filesystem write, which would contradict AP-82's "no direct writes to the repo"
-  acceptance criterion), and `run_product_strategist` MCP tool. Fully read-only — its two tools (`recent_requirements`, backed
+  `update_documentation`, a real filesystem write, and `a2a` would let it delegate to agents that write, either
+  of which would contradict AP-82's "no direct writes to the repo" acceptance criterion), and `run_product_strategist` MCP tool. Fully read-only — its two tools (`recent_requirements`, backed
   by a new `run_store.recent_requirements()` read query over `pipeline_runs`, and `open_findings`, backed by the
   existing `platform_findings.list_findings()`) are its only inputs, and it has no write tool at all. Output is a
   `ProductStrategistReport` (proposals + narrative) — a written report for human/CTO review, never code or a

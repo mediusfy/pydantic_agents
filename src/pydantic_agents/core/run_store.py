@@ -93,20 +93,22 @@ async def recent_requirements(limit: int = 50) -> list[dict[str, Any]]:
     """
     if not enabled():
         return []
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        return await conn.fetch(
+            """
+            SELECT run_id, project, requirement, status, completed_at
+            FROM pipeline_runs
+            WHERE requirement IS NOT NULL
+            ORDER BY completed_at DESC NULLS LAST
+            LIMIT $1
+            """,
+            limit,
+        )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            rows = await conn.fetch(
-                """
-                SELECT run_id, project, requirement, status, completed_at
-                FROM pipeline_runs
-                WHERE requirement IS NOT NULL
-                ORDER BY completed_at DESC NULLS LAST
-                LIMIT $1
-                """,
-                limit,
-            )
+        rows = await vector_db.with_connection(_op)
     except Exception as exc:
         logger.warning("Could not load recent requirements (%s: %s)", type(exc).__name__, exc)
         return []
