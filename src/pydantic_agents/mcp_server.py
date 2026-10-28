@@ -157,6 +157,11 @@ AGENT_DOCSTRINGS = {
     "quality_gate": "Invokes the Quality Gate agent to check for over-engineering and complexity.",
     "service_engineer": "Invokes the Service Engineer agent to modify existing Go codebases.",
     "planner": "Invokes the Planner agent to create execution plans.",
+    "innovation_scout": (
+        "Invokes the Innovation Scout Agent (ADR-0001 Platform Intelligence Layer) to scan for adoptable "
+        "techniques/technologies and draft ADR proposals via the ADR store, pending human/CTO approval. "
+        "Returns a JSON InnovationScoutReport (proposals, narrative)."
+    ),
     "critic": (
         "Invokes the Critic agent to check another agent's claims against the evidence from its run. "
         "Returns a JSON CriticReport (claims with evidence, unsupported_count, passed, feedback)."

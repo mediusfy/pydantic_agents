@@ -148,6 +148,24 @@ class SecurityReport(BaseModel):
         return self
 
 
+class InnovationProposal(BaseModel):
+    """One draft ADR the innovation_scout agent wrote; mirrors what it persisted via ``propose_adr``."""
+
+    decision_id: str
+    title: str
+    summary: str
+
+
+class InnovationScoutReport(BaseModel):
+    """Structured output of the innovation_scout agent: what it drafted, in its own words. Drafts are proposals
+    only; none are auto-adopted (see ADR-0001's guardrails) — a human/CTO approves via the existing CTO gate
+    before any follow-on implementation ticket is created.
+    """
+
+    proposals: list[InnovationProposal] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+
+
 class PipelineState(BaseModel):
     run_id: str
     stage: str
