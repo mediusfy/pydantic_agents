@@ -188,4 +188,5 @@ async def test_startup_checks_run_off_the_event_loop():
     ):
         await health_snapshot(CTX)
 
-    assert threads and threads[0] is not threading.main_thread()
+    assert len(threads) == 1
+    assert threads[0] is not threading.main_thread()

@@ -39,4 +39,5 @@ def test_plan_remediations_empty_input_yields_no_plans():
 
 def test_allowlist_has_exactly_one_action_in_v1():
     # Documents the deliberately small v1 scope (ADR-0001); extending this is a code change, not a runtime one.
-    assert {ACTION_RESUME_INTERRUPTED_RUN} == ALLOWLISTED_ACTIONS
+    assert len(ALLOWLISTED_ACTIONS) == 1
+    assert ACTION_RESUME_INTERRUPTED_RUN in ALLOWLISTED_ACTIONS
