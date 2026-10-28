@@ -234,6 +234,10 @@ class SecurityReport(BaseModel):
         return self
 
 
+# Shared field description for the platform-intelligence agents' report narratives.
+_SCAN_DIGEST = "Short human-readable digest of the scan"
+
+
 class InnovationProposal(BaseModel):
     """One draft ADR the innovation_scout agent wrote; mirrors what it persisted via ``propose_adr``."""
 
@@ -249,7 +253,7 @@ class InnovationScoutReport(BaseModel):
     """
 
     proposals: list[InnovationProposal] = Field(default_factory=list)
-    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+    narrative: str = Field(default="", description=_SCAN_DIGEST)
 
 
 class ObserverFinding(BaseModel):
@@ -265,7 +269,7 @@ class ObserverReport(BaseModel):
     """Structured output of the observer agent: what it found, in its own words."""
 
     findings: list[ObserverFinding] = Field(default_factory=list)
-    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+    narrative: str = Field(default="", description=_SCAN_DIGEST)
 
 
 class RemediationRecord(BaseModel):
@@ -281,7 +285,7 @@ class SreAutopilotReport(BaseModel):
     """Structured output of the sre_autopilot agent: what it checked, fixed, and escalated."""
 
     records: list[RemediationRecord] = Field(default_factory=list)
-    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+    narrative: str = Field(default="", description=_SCAN_DIGEST)
 
 
 class PipelineState(BaseModel):
