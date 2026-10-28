@@ -12,6 +12,16 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/sre_autopilot.py` (AP-83, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`sre_autopilot_model`), tool category (`"sre_autopilot": ["security", "validation", "memory"]`), and
+  `run_sre_autopilot` MCP tool. Extends `core/healthcheck.py`'s checks to a repeatable health-scan path and adds
+  `pipeline_jobs.list_interrupted_runs()` (stored in-flight runs last written before this process started, the ones
+  `get_run` reports as interrupted, via a new `run_store.list_runs`). `core/sre_remediation.py` (pure, no I/O) classifies each detected issue
+  against a literal v1 allowlist of exactly one action — auto-resuming an interrupted pipeline run via the
+  existing `resume_pipeline_run` — and escalates everything else (startup-check failures) as an open
+  `platform_findings` row instead of acting (once per open issue; a refused resume is reported as escalated). ADR-0001 also named "retry one stuck broker task" as an allowlisted
+  action; dropped here because the event broker it targeted was removed from the codebase the same day (#60)
+  before this ticket was picked up.
 - `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
   runs test suites `test_gen` produced via `execute_test_suite` and returns a `TestRunReport` (pass/fail per
   acceptance-criterion id, coverage, unexecuted ids, `all_passed` derived in code),

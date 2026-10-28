@@ -250,6 +250,22 @@ class ObserverReport(BaseModel):
     narrative: str = Field(default="", description="Short human-readable digest of the scan")
 
 
+class RemediationRecord(BaseModel):
+    """One action the sre_autopilot agent took or escalated, from a single health/remediation scan."""
+
+    action: str | None = Field(default=None, description="Allowlisted action name, or null when escalated")
+    auto_remediated: bool
+    summary: str
+    finding_id: str | None = Field(default=None, description="platform_findings row id, when one was written")
+
+
+class SreAutopilotReport(BaseModel):
+    """Structured output of the sre_autopilot agent: what it checked, fixed, and escalated."""
+
+    records: list[RemediationRecord] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+
+
 class PipelineState(BaseModel):
     run_id: str
     stage: str
