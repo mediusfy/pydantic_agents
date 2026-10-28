@@ -474,6 +474,42 @@ class TestApplyResult:
         assert len(state.errors) == 1
         assert "missing owner/due_date" in state.errors[0]
 
+    @pytest.mark.parametrize(
+        "item",
+        [
+            {"id": "f1", "source_agent": "security", "severity": "SEVERE", "description": "x", "location": "a.go:1"},
+            {"id": "f1", "severity": "HIGH", "description": "x", "location": "a.go:1"},
+            "a.go:1 is broken",
+        ],
+    )
+    def test_findings_with_a_location_but_otherwise_invalid_reject_the_batch(self, fake_crewai, item):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("review/findings", json.dumps([item]))]))
+
+        assert state.feedback is None
+        assert len(state.errors) == 1
+        assert "invalid finding" in state.errors[0]
+
+    def test_findings_accept_lowercase_severity(self, fake_crewai):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        state = _state()
+        item = {
+            "id": "f1",
+            "source_agent": "security",
+            "severity": "critical",
+            "description": "leaked key",
+            "location": "config.go:3",
+            "owner": "security",
+            "due_date": "2026-10-30",
+        }
+
+        bridge._apply_result(state, SimpleNamespace(tasks_output=[_task_output("review/findings", json.dumps([item]))]))
+
+        assert state.errors == []
+        assert "[CRITICAL] config.go:3" in state.feedback
+
     def test_unnamed_tasks_fall_back_to_the_agent_role(self, fake_crewai):
         bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
         state = _state()

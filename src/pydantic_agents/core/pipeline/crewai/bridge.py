@@ -169,8 +169,9 @@ def _first_json_array(text: str) -> str | None:
 
 
 def _apply_findings(state: PipelineState, owner: str, output: str) -> None:
-    """Drop findings missing a file:line/resource id; reject the whole batch if any survivor lacks an owner or
-    due date (the consolidating review task is required to fill both in, never leave the gate to downstream)."""
+    """Drop findings missing a file:line/resource id; reject the whole batch if any other finding is invalid or
+    lacks an owner or due date (the consolidating review task is required to fill both in, never leave the gate to
+    downstream)."""
     payload = _first_json_array(output)
     if payload is None:
         state.errors.append(f"crewai {owner} findings: no JSON array found in output")
@@ -186,10 +187,17 @@ def _apply_findings(state: PipelineState, owner: str, output: str) -> None:
     kept: list[Finding] = []
     dropped = 0
     for item in raw_items:
+        # Only a missing location is a reason to drop; any other schema violation rejects the batch, so a real
+        # finding is never discarded under the "no location" count.
+        if isinstance(item, dict) and not str(item.get("location") or "").strip():
+            dropped += 1
+            continue
         try:
             kept.append(Finding.model_validate(item))
-        except ValidationError:
-            dropped += 1
+        except ValidationError as exc:
+            state.errors.append(f"crewai {owner} findings: rejected, invalid finding ({exc.error_count()} error(s))")
+            logger.warning("CrewAI %s findings rejected: invalid finding (%s)", owner, exc)
+            return
 
     missing = [f.id for f in kept if not f.owner or not f.due_date]
     if missing:
@@ -197,9 +205,7 @@ def _apply_findings(state: PipelineState, owner: str, output: str) -> None:
         logger.warning("CrewAI %s findings rejected: missing owner/due_date for %s", owner, missing)
         return
 
-    lines = [
-        f"- [{f.severity.value}] {f.location}: {f.description} (owner={f.owner}, due={f.due_date})" for f in kept
-    ]
+    lines = [f"- [{f.severity.value}] {f.location}: {f.description} (owner={f.owner}, due={f.due_date})" for f in kept]
     if dropped:
         lines.append(f"({dropped} finding(s) dropped for missing a file:line or resource id)")
     state.feedback = "\n".join(lines) if lines else "No findings."
