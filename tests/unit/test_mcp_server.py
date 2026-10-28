@@ -75,7 +75,7 @@ async def test_approve_cto_gate_approves_without_saving_when_no_content_given():
         patch("pydantic_agents.mcp_server.save_adr") as mock_save,
     ):
         mock_write.return_value.name = ".cto_approved"
-        result = await approve_cto_gate("proj", approved=True, adr_id="0002")
+        await approve_cto_gate("proj", approved=True, adr_id="0002")
 
     mock_save.assert_not_called()
 

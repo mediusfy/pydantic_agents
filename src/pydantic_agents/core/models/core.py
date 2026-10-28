@@ -323,6 +323,9 @@ class PipelineState(BaseModel):
     )
     approved: bool = Field(default=False)
     artifacts: list[Artifact] = Field(default_factory=list)
+    test_run_report: TestRunReport | None = Field(
+        default=None, description="QaCrew's final qa_executor report, after its bounded fix loop"
+    )
     feedback: str | None = None
     failure_report: FailureReport | None = None
     errors: list[str] = Field(default_factory=list)

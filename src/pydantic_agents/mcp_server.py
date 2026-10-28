@@ -394,9 +394,7 @@ async def resume_pipeline_run(run_id: str) -> str:
 
 
 @mcp.tool()
-async def approve_cto_gate(
-    project_name: str, approved: bool = True, adr_id: str = "", adr_content: str = ""
-) -> str:
+async def approve_cto_gate(project_name: str, approved: bool = True, adr_id: str = "", adr_content: str = "") -> str:
     """Approve (or reject) the CTO gate of a project's pipeline run that is waiting for approval.
 
     The gate polls for a marker file inside the server; this writes it, so an MCP caller can approve a run
