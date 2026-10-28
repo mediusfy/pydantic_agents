@@ -19,7 +19,7 @@ from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core import platform_findings, run_store
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.tool_assignments import AGENT_TOOL_CATEGORIES
-from tests.unit.db_stub import stub_database
+from tests.unit.db_stub import fetch_findings, insert_finding, stub_database
 
 CTX = MagicMock()
 
@@ -46,29 +46,14 @@ class _Conn:
 
     async def execute(self, sql, *args):
         if "INSERT INTO platform_findings" in sql:
-            finding_id, kind, severity, agent, summary, evidence = args
-            self.db[finding_id] = {
-                "id": finding_id,
-                "kind": kind,
-                "severity": severity,
-                "agent": agent,
-                "summary": summary,
-                "evidence": evidence,
-                "status": "open",
-                "_t": "f",
-            }
+            insert_finding(self.db, args)
 
     async def fetch(self, sql, *args):
         if "pipeline_runs" in sql:
             rows = sorted((r for r in self.db.values() if r["_t"] == "r"), key=lambda r: r["run_id"], reverse=True)
             (limit,) = args
             return rows[:limit]
-        rows = sorted((r for r in self.db.values() if r["_t"] == "f"), key=lambda r: r["id"], reverse=True)
-        *filters, limit = args
-        if "status =" in sql:
-            (status,) = filters
-            rows = [r for r in rows if r["status"] == status]
-        return rows[:limit]
+        return fetch_findings(self.db, sql, args)
 
 
 @pytest.fixture
