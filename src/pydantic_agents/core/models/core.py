@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from pydantic_agents.core.pipeline.context import ContextFrame
 
@@ -117,9 +117,21 @@ class Finding(BaseModel):
     source_agent: str = Field(description="Agent that raised the finding (e.g. security, devops, sre, finops)")
     severity: FindingSeverity
     description: str
-    location: str = Field(description="file:line or a resource id the finding applies to")
+    location: str = Field(min_length=1, description="file:line or a resource id the finding applies to")
     owner: str = Field(default="", description="Set by review when consolidating; empty until then")
     due_date: str = Field(default="", description="ISO date set by review when consolidating; empty until then")
+
+    @field_validator("severity", mode="before")
+    @classmethod
+    def _upper_severity(cls, value: Any) -> Any:
+        """Models write "critical" as often as "CRITICAL"; either must reach the CRITICAL gate."""
+        return value.strip().upper() if isinstance(value, str) else value
+
+    @field_validator("location", mode="before")
+    @classmethod
+    def _strip_location(cls, value: Any) -> Any:
+        """A blank location is no location: it must fail min_length, not pass as "   "."""
+        return value.strip() if isinstance(value, str) else value
 
 
 class AgentAdvice(BaseModel):
