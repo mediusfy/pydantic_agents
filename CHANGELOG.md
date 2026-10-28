@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `core/models/core.py`: `Finding` (typed, versioned, requires a `file:line` or resource id `location`),
+  `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
+  `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
+  forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
+  `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they

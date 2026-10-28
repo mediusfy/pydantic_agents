@@ -8,9 +8,13 @@ from pydantic import ValidationError
 from pydantic_agents.core.models.core import (
     AgentAdvice,
     Artifact,
+    CriterionResult,
+    Finding,
+    FindingSeverity,
     PipelineState,
     QualityGateResult,
     SecurityReport,
+    TestRunReport,
     UserStory,
 )
 from pydantic_agents.core.pipeline.config import PipelineConfig
@@ -18,6 +22,43 @@ from pydantic_agents.core.pipeline.config import PipelineConfig
 
 def test_agent_advice_defaults_to_not_approved():
     assert AgentAdvice().approved_to_proceed is False
+
+
+def _finding(severity: FindingSeverity) -> Finding:
+    return Finding(id="f1", source_agent="security", severity=severity, description="x", location="a.py:1")
+
+
+def test_agent_advice_blocks_approval_while_critical_finding_open():
+    advice = AgentAdvice(approved_to_proceed=True, findings=[_finding(FindingSeverity.CRITICAL)])
+    assert advice.approved_to_proceed is False
+
+
+def test_agent_advice_allows_approval_with_only_non_critical_findings():
+    advice = AgentAdvice(approved_to_proceed=True, findings=[_finding(FindingSeverity.HIGH)])
+    assert advice.approved_to_proceed is True
+
+
+def test_finding_requires_location():
+    with pytest.raises(ValidationError):
+        Finding(id="f1", source_agent="security", severity=FindingSeverity.LOW, description="x")
+
+
+def test_test_run_report_all_passed_requires_results_and_no_unexecuted():
+    assert TestRunReport().all_passed is False
+    passing = TestRunReport(criterion_results=[CriterionResult(criterion_id="c1", passed=True)])
+    assert passing.all_passed is True
+    with_failure = TestRunReport(
+        criterion_results=[
+            CriterionResult(criterion_id="c1", passed=True),
+            CriterionResult(criterion_id="c2", passed=False),
+        ]
+    )
+    assert with_failure.all_passed is False
+    with_unexecuted = TestRunReport(
+        criterion_results=[CriterionResult(criterion_id="c1", passed=True)],
+        unexecuted_criterion_ids=["c2"],
+    )
+    assert with_unexecuted.all_passed is False
 
 
 @pytest.mark.parametrize(
