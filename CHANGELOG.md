@@ -12,7 +12,8 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
-- `core/models/core.py`: `Finding` (typed, versioned, requires a `file:line` or resource id `location`),
+- `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
+  case-insensitive so a lowercase "critical" still reaches the gate),
   `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
   `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
   forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where

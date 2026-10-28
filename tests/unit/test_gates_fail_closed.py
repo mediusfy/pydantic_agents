@@ -43,6 +43,18 @@ def test_finding_requires_location():
         Finding(id="f1", source_agent="security", severity=FindingSeverity.LOW, description="x")
 
 
+def test_agent_advice_blocks_on_lowercase_critical():
+    finding = Finding(id="f1", source_agent="security", severity="critical", description="x", location="a.py:1")
+    assert finding.severity is FindingSeverity.CRITICAL
+    assert AgentAdvice(approved_to_proceed=True, findings=[finding]).approved_to_proceed is False
+
+
+@pytest.mark.parametrize("location", ["", "   "])
+def test_finding_rejects_blank_location(location):
+    with pytest.raises(ValidationError):
+        Finding(id="f1", source_agent="security", severity="LOW", description="x", location=location)
+
+
 def test_test_run_report_all_passed_requires_results_and_no_unexecuted():
     assert TestRunReport().all_passed is False
     passing = TestRunReport(criterion_results=[CriterionResult(criterion_id="c1", passed=True)])
