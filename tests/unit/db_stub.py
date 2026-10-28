@@ -39,7 +39,12 @@ class StubPool:
 def stub_database(
     monkeypatch: pytest.MonkeyPatch, module: ModuleType, conn_factory: Callable[[dict[str, Any]], Any]
 ) -> StubPool:
-    """Enable ``module`` (a database helper with ``_table_ready`` and ``vector_db``) against an in-memory pool."""
+    """Enable ``module`` against an in-memory pool.
+
+    ``module`` must be one of the best-effort database helpers: it needs a module-level ``_table_ready`` flag (reset
+    here so each test re-creates its table) and a ``vector_db`` import whose ``_get_pool`` is replaced. A module
+    without either fails at ``monkeypatch.setattr`` with an AttributeError, before any test runs against it.
+    """
     pool = StubPool(conn_factory)
     monkeypatch.setattr(settings, "database_url", "postgresql://stub/db")
     monkeypatch.setattr(module, "_table_ready", False)

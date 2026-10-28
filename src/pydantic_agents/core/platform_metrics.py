@@ -58,25 +58,27 @@ async def record_call(
     """Insert one row for an agent call. Never raises."""
     if not enabled():
         return
+
+    async def _op(conn: Any) -> None:
+        await _ensure_table(conn)
+        await conn.execute(
+            """
+            INSERT INTO platform_metrics
+                (id, agent, duration, success, input_tokens, output_tokens, cost_usd, verdict)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            f"pm_{uuid.uuid4().hex[:12]}",
+            agent,
+            duration,
+            success,
+            input_tokens,
+            output_tokens,
+            cost_usd,
+            verdict,
+        )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            await conn.execute(
-                """
-                INSERT INTO platform_metrics
-                    (id, agent, duration, success, input_tokens, output_tokens, cost_usd, verdict)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-                """,
-                f"pm_{uuid.uuid4().hex[:12]}",
-                agent,
-                duration,
-                success,
-                input_tokens,
-                output_tokens,
-                cost_usd,
-                verdict,
-            )
+        await vector_db.with_connection(_op)
     except Exception as exc:  # best-effort by design
         logger.warning("Could not persist platform metric for %s (%s: %s)", agent, type(exc).__name__, exc)
 
@@ -85,18 +87,20 @@ async def recent_calls(agent: str | None = None, *, limit: int = 100) -> list[di
     """The most recent rows, newest first, as plain dicts (ISO timestamps). Never raises; [] with no database."""
     if not enabled():
         return []
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        if agent is None:
+            return await conn.fetch("SELECT * FROM platform_metrics ORDER BY created_at DESC LIMIT $1", limit)
+        else:
+            return await conn.fetch(
+                "SELECT * FROM platform_metrics WHERE agent = $1 ORDER BY created_at DESC LIMIT $2",
+                agent,
+                limit,
+            )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            if agent is None:
-                rows = await conn.fetch("SELECT * FROM platform_metrics ORDER BY created_at DESC LIMIT $1", limit)
-            else:
-                rows = await conn.fetch(
-                    "SELECT * FROM platform_metrics WHERE agent = $1 ORDER BY created_at DESC LIMIT $2",
-                    agent,
-                    limit,
-                )
+        rows = await vector_db.with_connection(_op)
     except Exception as exc:
         logger.warning("Could not load platform metrics (%s: %s)", type(exc).__name__, exc)
         return []
