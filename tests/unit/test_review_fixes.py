@@ -430,31 +430,53 @@ class TestCheckpointFiles:
 
         assert "Corrupted checkpoint for stage 'ba': validator bug" in caplog.text
 
-    def test_a_vanished_legacy_file_with_no_target_is_an_error_that_is_retried(self, tmp_path, monkeypatch, caplog):
+    @staticmethod
+    def _legacy_dir_with_two_runs(tmp_path, monkeypatch):
+        """A project dir with one legacy file plus an unrelated current-format run; returns (repo, legacy path)."""
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
+        repo.save("run-other", "ba", PipelineState(run_id="run-other", stage="ba"))
+        legacy = tmp_path / "proj" / f"{TestCheckpointFiles.LEGACY_ID}_ba.json"
+        legacy.write_text(PipelineState(run_id=TestCheckpointFiles.LEGACY_ID, stage="ba").model_dump_json())
+        return repo, legacy
+
+    def test_legacy_migration_missing_source_propagates(self, tmp_path, monkeypatch):
         """FileNotFoundError is only "someone else renamed it" when the target exists; otherwise it propagates."""
         from pydantic_agents.core.adapters import state_repository
 
-        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
-        project_dir = tmp_path / "proj"
-        project_dir.mkdir()
-        legacy = project_dir / f"{self.LEGACY_ID}_ba.json"
-        legacy.write_text('{"run_id": "x", "stage": "ba"}')
-        repo = state_repository.LocalDiskStateRepository("proj")
+        repo, legacy = self._legacy_dir_with_two_runs(tmp_path, monkeypatch)
 
         def vanish(src, dst):
-            legacy.unlink()  # gone, and nothing at the target either
+            legacy.unlink()  # the source disappears under us and nothing appears at the target
             raise FileNotFoundError(src)
 
-        with patch.object(state_repository.os, "replace", side_effect=vanish):
-            with pytest.raises(FileNotFoundError):
-                repo._migrate_legacy_files()
-            legacy.write_text('{"run_id": "x", "stage": "ba"}')
-            with caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"):
-                assert repo.find_latest_run_id() is None  # the pass failed; nothing in the new form yet
-        assert "Could not migrate legacy checkpoint files" in caplog.text
+        with patch.object(state_repository.os, "replace", side_effect=vanish), pytest.raises(FileNotFoundError):
+            repo._migrate_legacy_files()
 
-        legacy.write_text('{"run_id": "x", "stage": "ba"}')
-        assert repo.find_latest_run_id() == self.LEGACY_ID  # retried once os.replace works again
+        # The unrelated run was left untouched by the failed pass.
+        assert (tmp_path / "proj" / "run-other__ba.json").exists()
+        assert repo.load("run-other", "ba") is not None
+
+    def test_legacy_migration_failure_is_retried_on_the_next_read(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters import state_repository
+
+        repo, legacy = self._legacy_dir_with_two_runs(tmp_path, monkeypatch)
+        with (
+            patch.object(state_repository.os, "replace", side_effect=FileNotFoundError("gone")),
+            caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"),
+        ):
+            # The pass fails (no target appeared), is logged, and the read answers from the files that are there.
+            assert repo.find_latest_run_id() == "run-other"
+        assert "Could not migrate legacy checkpoint files" in caplog.text
+        assert legacy.exists()
+
+        # os.replace works again: the next read migrates the legacy file (the newest) and the run loads.
+        assert repo.find_latest_run_id() == self.LEGACY_ID
+        assert not legacy.exists()
+        assert repo.load(self.LEGACY_ID, "ba") is not None
 
     def test_rename_done_by_another_instance_counts_as_migrated(self, tmp_path, monkeypatch, caplog):
         """Two instances on one directory: the loser of the rename race must not fail or warn."""
