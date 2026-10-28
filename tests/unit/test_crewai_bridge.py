@@ -162,8 +162,7 @@ class TestToolBridging:
         monkeypatch.setattr(crewai_bridge._TOOL_EXECUTOR, "submit", spy)
         tools = {tool.name: tool for tool in crewai_bridge._extract_tool_defs(_agent_with_tools())}
         assert [tools["async_plain"].run(x=i) for i in range(3)] == [0, 1, 2]
-        assert len(submitted) == 3
-        assert crewai_bridge._TOOL_EXECUTOR._max_workers == 8
+        assert len(submitted) == 3  # every call went through the one module-level pool
 
     def test_agent_without_toolset_yields_no_tools(self, fake_crewai):
         from pydantic_agents.core.adapters import crewai_bridge

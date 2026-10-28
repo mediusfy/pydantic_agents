@@ -2,6 +2,7 @@ import abc
 import json
 import logging
 import os
+import uuid
 
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.settings import settings
@@ -45,6 +46,31 @@ class LocalDiskStateRepository(StateRepositoryPort):
         self.project_name = project_name
         self.checkpoint_dir = os.path.join(str(settings.checkpoint_dir), project_name)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
+        self._migrate_legacy_files()
+
+    def _migrate_legacy_files(self) -> None:
+        """Rename checkpoints written before the ``__`` separator ("{uuid}_{stage}.json") to the current name.
+
+        ``load`` builds "{run_id}__{stage}.json", so without this rename a run started by an older version could be
+        found by ``find_latest_run_id`` but never resumed. Legacy run ids were UUIDs (no underscore), so the first
+        underscore is the separator. A file that already has "__" or whose prefix is not a UUID is left alone.
+        """
+        migrated = 0
+        for filename in os.listdir(self.checkpoint_dir):
+            if not filename.endswith(".json") or "__" in filename or "_" not in filename:
+                continue
+            run_id, _, rest = filename.partition("_")
+            try:
+                uuid.UUID(run_id)
+            except ValueError:
+                continue
+            target = os.path.join(self.checkpoint_dir, f"{run_id}__{rest}")
+            if os.path.exists(target):
+                continue
+            os.replace(os.path.join(self.checkpoint_dir, filename), target)
+            migrated += 1
+        if migrated:
+            logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
 
     def _get_filepath(self, run_id: str, stage: str) -> str:
         safe_stage = stage.replace("/", "_").replace(" ", "_")
@@ -101,18 +127,9 @@ class LocalDiskStateRepository(StateRepositoryPort):
             files = [f for f in os.listdir(self.checkpoint_dir) if f.endswith(".json")]
             if not files:
                 return None
-            # Only "{run_id}__{stage}.json" files are candidates. Checkpoints written before the double-underscore
-            # separator ("{uuid}_{stage}.json") cannot be loaded by ``load`` (it builds the new name), so they are
-            # not resumed; they are left in place and deleted by ``clear`` of their run id.
+            # Only "{run_id}__{stage}.json" files are candidates: that is the name ``load`` builds. Legacy files were
+            # renamed by _migrate_legacy_files; anything else without "__" is not a checkpoint of this repository.
             current = [f for f in files if "__" in f]
-            legacy = len(files) - len(current)
-            if legacy:
-                logger.warning(
-                    "%d legacy checkpoint file(s) in %s cannot be resumed (written before the '__' separator); "
-                    "runs started before this version restart from scratch. Remove them with clear(<run id>).",
-                    legacy,
-                    self.checkpoint_dir,
-                )
             if not current:
                 return None
             current.sort(key=lambda x: os.path.getmtime(os.path.join(self.checkpoint_dir, x)), reverse=True)

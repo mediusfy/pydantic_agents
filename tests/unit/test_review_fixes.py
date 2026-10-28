@@ -325,34 +325,61 @@ async def test_run_orchestration_pipeline_rejects_a_bad_project_name():
 
 
 class TestCheckpointFiles:
-    def test_legacy_single_underscore_checkpoints_are_not_resumed(self, tmp_path, monkeypatch):
-        """``load`` builds the "{run_id}__{stage}.json" name, so a legacy file could be found but never loaded."""
+    LEGACY_ID = "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70"
+
+    def test_legacy_single_underscore_checkpoints_are_migrated_and_resumable(self, tmp_path, monkeypatch, caplog):
+        """``load`` builds "{run_id}__{stage}.json"; a run checkpointed by an older version is renamed on open."""
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text(
+            PipelineState(run_id=self.LEGACY_ID, stage="ba").model_dump_json()
+        )
+        (project_dir / f"{self.LEGACY_ID}_advisory_stage.json").write_text(
+            PipelineState(run_id=self.LEGACY_ID, stage="advisory").model_dump_json()
+        )
+        (project_dir / "notes_for_humans.json").write_text("{}")  # not a UUID prefix: left alone
+
+        with caplog.at_level("INFO", logger="pydantic_agents.core.adapters.state_repository"):
+            repo = LocalDiskStateRepository("proj")
+
+        assert sorted(f.name for f in project_dir.iterdir()) == [
+            f"{self.LEGACY_ID}__advisory_stage.json",
+            f"{self.LEGACY_ID}__ba.json",
+            "notes_for_humans.json",
+        ]
+        assert "Migrated 2 legacy checkpoint file(s)" in caplog.text
+        assert repo.find_latest_run_id() == self.LEGACY_ID
+        assert repo.load(self.LEGACY_ID, "advisory_stage") is not None
+
+    def test_migration_never_overwrites_a_current_format_file(self, tmp_path, monkeypatch):
+        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        project_dir = tmp_path / "proj"
+        project_dir.mkdir()
+        (project_dir / f"{self.LEGACY_ID}_ba.json").write_text('{"old": true}')
+        (project_dir / f"{self.LEGACY_ID}__ba.json").write_text('{"new": true}')
+
+        LocalDiskStateRepository("proj")
+
+        assert (project_dir / f"{self.LEGACY_ID}__ba.json").read_text() == '{"new": true}'
+        assert (project_dir / f"{self.LEGACY_ID}_ba.json").exists()
+
+    def test_clear_removes_every_file_of_that_run(self, tmp_path, monkeypatch):
         from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
         from pydantic_agents.core.models.core import PipelineState
 
         monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
         repo = LocalDiskStateRepository("proj")
-        legacy = tmp_path / "proj" / "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70_ba.json"
-        legacy.write_text(PipelineState(run_id="legacy", stage="ba").model_dump_json())
-        assert repo.find_latest_run_id() is None
-
-        repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
-        legacy.touch()  # newer mtime than the current-format file, still ignored
-        assert repo.find_latest_run_id() == "run-new"
-        assert repo.load("run-new", "ba") is not None
-
-    def test_clear_removes_legacy_files_of_that_run(self, tmp_path, monkeypatch):
-        from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
-        from pydantic_agents.core.models.core import PipelineState
-
-        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
-        repo = LocalDiskStateRepository("proj")
-        old_id = "8d4c0d6e-1d6a-4b5e-9d1a-2f3e4c5b6a70"
         for stage in ("ba", "advisory"):
-            (tmp_path / "proj" / f"{old_id}_{stage}.json").write_text("{}")
+            (tmp_path / "proj" / f"{self.LEGACY_ID}_{stage}.json").write_text("{}")
         repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
 
-        repo.clear(old_id)
+        repo.clear(self.LEGACY_ID)
 
         assert sorted(f.name for f in (tmp_path / "proj").iterdir()) == ["run-new__ba.json"]
 

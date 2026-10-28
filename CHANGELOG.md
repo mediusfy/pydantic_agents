@@ -29,8 +29,8 @@ fresh **Unreleased** section above it.
 - Per-attempt checkpoints: `OrgitrationPipeline` saves `implementation.attempt<n>` after every implementation
   attempt and its gate, and a resume continues after the last saved attempt. The pipeline run id is the
   checkpoint id (`PipelineConfig.run_id`), so a resume continues its own run, not the project's newest file.
-  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are not
-  resumed (`find_latest_run_id` ignores them) and are removed by clearing their run id.
+  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are
+  renamed to the new form when the repository opens, so runs checkpointed by an older version still resume.
 - `run_orchestration_pipeline(project_name, requirement, blueprint="new_feature", framework="")` runs any
   blueprint (LangGraph, CrewAI, AutoGen), and `project_name` is validated as a plain name at the MCP boundary
   and in `PipelineConfig` (it becomes a directory under the output, checkpoint and approval roots).
