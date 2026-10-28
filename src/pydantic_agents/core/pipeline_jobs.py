@@ -170,6 +170,19 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     return stored
 
 
+def list_interrupted_runs() -> dict[str, dict[str, Any]]:
+    """In-process runs left ``pending``/``running``/waiting-on-CTO with no live task — the same "cut off by a
+    restart" condition ``get_run`` reports for a single id, scanned across every run this process knows about.
+    Used by ``sre_autopilot`` to find runs worth auto-resuming; does not consult the database, so a run known only
+    to another process (or from before this process's last restart) is not included."""
+    return {
+        run_id: run
+        for run_id, run in PIPELINE_RUNS.items()
+        if run.get("status") in ("pending", "running", STATUS_WAITING_CTO)
+        and (run.get("_task") is None or run["_task"].done())
+    }
+
+
 async def resume_pipeline_run(run_id: str) -> str | None:
     """Restart an interrupted or failed run under the same id, resuming from its checkpoints.
 

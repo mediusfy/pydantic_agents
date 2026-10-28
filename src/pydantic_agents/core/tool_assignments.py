@@ -27,6 +27,7 @@ AGENT_TOOL_CATEGORIES = {
     "crypto_oracle": ["web", "search", "memory", "finance", "news", "a2a"],
     "database": ["web", "search", "memory", "documentation", "a2a", "fs_read"],
     "observer": ["memory", "search"],
+    "sre_autopilot": ["security", "validation", "memory", "a2a"],
     "devops": ["web", "search", "config_validation", "memory", "documentation", "a2a", "fs_read"],
     "accountant": ["web", "search", "memory", "a2a"],
     "asymmetric_reviewer": ["web", "search", "memory", "a2a"],

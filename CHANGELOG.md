@@ -12,6 +12,15 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/sre_autopilot.py` (AP-83, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`sre_autopilot_model`), tool category (`"sre_autopilot": ["security", "validation", "memory", "a2a"]`), and
+  `run_sre_autopilot` MCP tool. Extends `core/healthcheck.py`'s checks to a repeatable health-scan path and adds
+  `pipeline_jobs.list_interrupted_runs()`. `core/sre_remediation.py` (pure, no I/O) classifies each detected issue
+  against a literal v1 allowlist of exactly one action — auto-resuming an interrupted pipeline run via the
+  existing `resume_pipeline_run` — and escalates everything else (startup-check failures) as an open
+  `platform_findings` row instead of acting. ADR-0001 also named "retry one stuck broker task" as an allowlisted
+  action; dropped here because the event broker it targeted was removed from the codebase the same day (#60)
+  before this ticket was picked up.
 - `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
   (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
   tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
