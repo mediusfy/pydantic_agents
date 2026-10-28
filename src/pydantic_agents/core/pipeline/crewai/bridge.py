@@ -1,9 +1,20 @@
+import asyncio
+import json
 import logging
 from typing import Any
 
-from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineState
+from pydantic import ValidationError
+
+from pydantic_agents.core.models.core import AgentAdvice, Artifact, FailureReport, PipelineState, ReviewResult
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
-from pydantic_agents.core.pipeline.crewai.crews import ResearchCrew, SdlcCrew, SecurityReviewCrew
+from pydantic_agents.core.pipeline.crewai.crews import (
+    ArchitectureReviewCrew,
+    AuditCrew,
+    QaCrew,
+    ResearchCrew,
+    SdlcCrew,
+    SecurityReviewCrew,
+)
 from pydantic_agents.core.session_recorder import recorder
 
 logger = logging.getLogger(__name__)
@@ -13,6 +24,9 @@ _CREW_MAP: dict[str, Any] = {
     "SdlcCrew": SdlcCrew,
     "ResearchCrew": ResearchCrew,
     "SecurityReviewCrew": SecurityReviewCrew,
+    "QaCrew": QaCrew,
+    "ArchitectureReviewCrew": ArchitectureReviewCrew,
+    "AuditCrew": AuditCrew,
 }
 
 
@@ -73,38 +87,135 @@ async def run_crewai_pipeline(
 
 
 async def _run_crew_async(crew: Any) -> Any:
-    import asyncio
-
     return await asyncio.to_thread(crew.kickoff)
 
 
+# ── Mapping crew output back onto the pipeline state ──────────────────────
+
+
+def _output_text(task_output: Any) -> str:
+    raw = getattr(task_output, "raw", None)
+    if isinstance(raw, str) and raw:
+        return raw
+    output = getattr(task_output, "output", None)
+    return str(output) if output is not None else str(task_output)
+
+
+def _role_of(task_output: Any) -> str:
+    agent = getattr(task_output, "agent", None)
+    if isinstance(agent, str):
+        return agent
+    return str(getattr(agent, "role", None) or getattr(agent, "name", None) or "")
+
+
+def _owner_and_kind(task_output: Any) -> tuple[str, str] | None:
+    """The ``<owner>/<kind>`` a crew task declared, or a guess from the agent role for tasks that did not."""
+    name = getattr(task_output, "name", None)
+    if isinstance(name, str) and "/" in name:
+        owner, _, kind = name.partition("/")
+        return owner, kind
+    role = _role_of(task_output).lower()
+    if not role:
+        return None
+    if "business analyst" in role or role == "ba":
+        return "ba", "note"
+    if "cto" in role:
+        return "cto", "note"
+    if "backend" in role:
+        return "backend", "artifact"
+    if "frontend" in role:
+        return "frontend", "artifact"
+    if "qa" in role or "test" in role:
+        return "test_eng", "artifact"
+    if "review" in role:
+        return "review", "verdict"
+    return role, "note"
+
+
 def _apply_result(state: PipelineState, result: Any) -> None:
-    tasks_output = getattr(result, "tasks_output", [])
-    for task_out in tasks_output:
-        agent_name = getattr(getattr(task_out, "agent", None), "name", "").lower()
-        output = str(task_out.output) if hasattr(task_out, "output") else str(task_out)
-        if "business analyst" in agent_name or agent_name == "ba":
-            state.advisory_results["ba"] = output
-        elif "cto" in agent_name:
-            state.advisory_results["cto"] = output
-        elif "backend" in agent_name:
-            state.artifacts.append(_artifact_from_output("backend", task_out))
-        elif "frontend" in agent_name:
-            state.artifacts.append(_artifact_from_output("frontend", task_out))
-        elif "qa" in agent_name or "test" in agent_name:
-            state.artifacts.append(_artifact_from_output("test_eng", task_out))
-        elif "review" in agent_name:
+    for task_out in getattr(result, "tasks_output", None) or []:
+        target = _owner_and_kind(task_out)
+        if target is None:
+            continue
+        owner, kind = target
+        output = _output_text(task_out)
+        if kind == "artifact":
+            _merge_artifact(state, _artifact_from_output(owner, output))
+        elif kind == "verdict":
+            _apply_verdict(state, output)
+        elif kind == "advice":
+            _apply_advice(state, owner, output)
+        elif kind == "feedback":
             state.feedback = output
-            state.approved = "approved" in output.lower() and "rejected" not in output.lower()
+        else:
+            state.advisory_results[owner] = output
 
 
-def _artifact_from_output(agent_name: str, task_output: Any) -> Artifact:
-    output = str(getattr(task_output, "output", task_output)) if hasattr(task_output, "output") else str(task_output)
+def _first_json_object(text: str) -> str | None:
+    """The first complete JSON object in ``text`` (models often wrap it in prose or a code fence)."""
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != "{":
+            continue
+        try:
+            value, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return text[idx:end]
+    return None
+
+
+def _parse_json_model(model: type[Any], text: str) -> tuple[Any | None, str | None]:
+    """Parse the first JSON object of ``text`` as ``model``; returns (instance, None) or (None, reason)."""
+    payload = _first_json_object(text)
+    if payload is None:
+        return None, f"no JSON object found in {model.__name__} output"
+    try:
+        return model.model_validate_json(payload), None
+    except ValidationError as exc:
+        return None, f"{model.__name__} output failed validation: {exc.errors()[0].get('msg', exc)}"
+
+
+def _apply_verdict(state: PipelineState, output: str) -> None:
+    verdict, reason = _parse_json_model(ReviewResult, output)
+    if verdict is None:
+        state.approved = False
+        state.feedback = output
+        state.errors.append(f"crewai review: {reason}")
+        logger.warning("CrewAI review verdict rejected: %s", reason)
+        return
+    state.approved = verdict.approved
+    state.feedback = "\n".join(verdict.feedback) if verdict.feedback else output
+
+
+def _apply_advice(state: PipelineState, owner: str, output: str) -> None:
+    state.advisory_results[owner] = output
+    advice, reason = _parse_json_model(AgentAdvice, output)
+    if advice is None:
+        state.cto_approved = False
+        state.errors.append(f"crewai {owner} advice: {reason}")
+        logger.warning("CrewAI %s advice rejected: %s", owner, reason)
+        return
+    state.cto_approved = advice.approved_to_proceed
+
+
+def _merge_artifact(state: PipelineState, artifact: Artifact) -> None:
+    """Keep one artifact per owner: a later task of the same owner (QaCrew's fix task after its test task) updates
+    the files it re-emits and adds the rest, instead of leaving two artifacts for consumers keyed by owner."""
+    for idx, existing in enumerate(state.artifacts):
+        if existing.agent_name == artifact.agent_name:
+            # A new instance, not an in-place update: an Artifact may already be referenced elsewhere.
+            state.artifacts[idx] = existing.model_copy(update={"files": {**existing.files, **artifact.files}})
+            return
+    state.artifacts.append(artifact)
+
+
+def _artifact_from_output(agent_name: str, output: str) -> Artifact:
     from pydantic_agents.core.utils import parse_code_blocks_to_files
 
-    files = parse_code_blocks_to_files(output)
     return Artifact(
         agent_name=agent_name,
-        files=files,
+        files=parse_code_blocks_to_files(output),
         metadata={"agent_name": agent_name},
     )

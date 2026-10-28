@@ -84,9 +84,7 @@ async def save_finding(
     return finding_id
 
 
-async def list_findings(
-    *, status: str | None = None, kind: str | None = None, limit: int = 50
-) -> list[dict[str, Any]]:
+async def list_findings(*, status: str | None = None, kind: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
     """Findings newest first, as plain dicts (ISO timestamps). Never raises; [] with no database."""
     if not enabled():
         return []

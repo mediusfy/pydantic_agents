@@ -42,6 +42,36 @@ providers:
     config:
       agent: accountant
       pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: ba
+    config:
+      agent: ba
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: cto
+    config:
+      agent: cto
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: backend
+    config:
+      agent: backend
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: quality_gate
+    config:
+      agent: quality_gate
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: service_engineer
+    config:
+      agent: service_engineer
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
+    label: critic
+    config:
+      agent: critic
+      pythonExecutable: .venv/bin/python
 
 defaultTest:
   options:
@@ -351,3 +381,152 @@ tests:
         value: >-
           Passes only if the response asks what is needed (such as destination, dates, items and currency) and does
           not invent a cost.
+
+  # --- pipeline agents (added 2026-10-27; none of the core SDLC agents had an eval before) ---
+
+  - description: ba - a requirement becomes stories with Gherkin, events and a bounded context
+    providers: [ba]
+    vars:
+      request: |
+        Requirements: customers place orders from a cart; when payment is captured the warehouse is told to
+        ship; a customer can cancel an unshipped order and gets a refund.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const stories = JSON.parse(output);
+          return Array.isArray(stories) && stories.length >= 2
+            && stories.every(s => /^[A-Z][A-Z0-9_]*-\d+$/.test(s.id))
+            && stories.every(s => /Given/.test(s.gherkin) && /When/.test(s.gherkin) && /Then/.test(s.gherkin))
+            && stories.every(s => s.event_triggers.length >= 1 && s.bounded_context);
+      - type: llm-rubric
+        value: Every story has a measurable acceptance criterion and the events are past-tense and namespaced.
+
+  - description: cto - an unscalable design is not approved and the blockers are concrete
+    providers: [cto]
+    vars:
+      request: |
+        Review these user stories and provide architectural advice:
+        - ORDERS-01: Place order. Given a cart When the customer checks out Then orders.OrderPlaced is emitted.
+          Implementation note from the team: every order write goes through one global mutex in the API
+          process, and the only database is a SQLite file on the API pod's local disk; we expect 5,000 orders
+          per minute at launch.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.approved_to_proceed === false && r.bottlenecks_identified.length >= 1;
+      - type: llm-rubric
+        value: The bottlenecks name the global mutex and the single-node SQLite store as the reasons.
+
+  - description: quality_gate - gold-plated code scores above the complexity ceiling and fails
+    providers: [quality_gate]
+    vars:
+      request: |
+        Perform quality gate check on these artifacts:
+        --- internal/greeting/greeting.go ---
+        package greeting
+        // GreeterStrategy abstracts the greeting algorithm so new greeting families can be plugged in.
+        type GreeterStrategy interface { Greet(name string) string }
+        type GreeterFactory interface { New(kind string) (GreeterStrategy, error) }
+        type GreeterRegistry struct { factories map[string]GreeterFactory }
+        func NewGreeterRegistry() *GreeterRegistry { return &GreeterRegistry{factories: map[string]GreeterFactory{}} }
+        func (r *GreeterRegistry) Register(kind string, f GreeterFactory) { r.factories[kind] = f }
+        type helloFactory struct{}
+        func (helloFactory) New(string) (GreeterStrategy, error) { return hello{}, nil }
+        type hello struct{}
+        func (hello) Greet(name string) string { return "hello " + name }
+        // The only caller: Greet("x") -> "hello x".
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === false && r.complexity_score > 60 && r.feedback.length >= 1;
+
+  - description: quality_gate - plain idiomatic code passes
+    providers: [quality_gate]
+    vars:
+      request: |
+        Perform quality gate check on these artifacts:
+        --- internal/greeting/greeting.go ---
+        package greeting
+        func Greet(name string) string { return "hello " + name }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.passed === true && r.complexity_score <= 60;
+
+  - description: backend - a story yields a compiling-looking hexagonal Go service with no placeholders
+    providers: [backend]
+    vars:
+      request: |
+        CTO ADVICE: keep it minimal, one HTTP handler, no message bus.
+        FULL GHERKIN: Given a product id When GET /products/{id} is called Then the product's name and price
+        are returned as JSON, and 404 when it does not exist.
+        TASK: Generate a complete Go backend for this user story using Hexagonal Architecture. Do not call any
+        tools; return the files directly.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const a = JSON.parse(output);
+          const names = Object.keys(a.files);
+          const bodies = Object.values(a.files).join("\n");
+          return names.some(n => n.endsWith(".go")) && names.some(n => n.endsWith("main.go"))
+            && !/TODO|placeholder|implement me/i.test(bodies) && /package main/.test(bodies);
+      - type: llm-rubric
+        value: The handler returns 404 for a missing product and the domain does not import the HTTP layer.
+
+  - description: service_engineer - returns only the changed files, with full contents
+    providers: [service_engineer]
+    vars:
+      request: |
+        Modify this codebase to add a GET /healthz handler that returns 200 "ok". Do not call any tools; the
+        only file is below, return it changed in full and nothing else.
+        --- cmd/server/main.go ---
+        package main
+
+        import (
+            "log/slog"
+            "net/http"
+        )
+
+        func main() {
+            mux := http.NewServeMux()
+            slog.Info("listening", "addr", ":8080")
+            _ = http.ListenAndServe(":8080", mux)
+        }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const a = JSON.parse(output);
+          const names = Object.keys(a.files);
+          return names.length === 1 && names[0].endsWith("main.go") && /healthz/.test(a.files[names[0]])
+            && /package main/.test(a.files[names[0]]);
+
+  - description: critic - an unsupported claim is flagged, a supported one is not
+    providers: [critic]
+    vars:
+      request: |
+        Claims made by the backend agent:
+        1. "run_go_build returned SUCCESS for all files."
+        2. "All handlers have OpenTelemetry spans."
+        Evidence (tool outputs from the run):
+        - run_go_build -> "SUCCESS: Code compiled successfully."
+        - read_file internal/adapters/handlers/order.go -> contains no import of go.opentelemetry.io and no
+          tracer.Start call.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          const byClaim = Object.fromEntries(r.claims.map(c => [c.claim, c.supported]));
+          const vals = r.claims.map(c => c.supported);
+          return r.claims.length === 2 && vals.filter(Boolean).length === 1 && r.passed === false
+            && r.unsupported_count === 1;
+

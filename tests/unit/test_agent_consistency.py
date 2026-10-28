@@ -25,7 +25,8 @@ from pydantic_agents.core.tools import registry as tools_registry
 AGENTS_DIR = Path(agents_pkg.__file__).parent
 # The lookahead skips the settings.resolve_model(...) method call.
 MODEL_FIELD = re.compile(r"settings\.(\w+_model)\b(?!\()")
-NON_AGENT_MODEL_FIELDS: set[str] = set()
+# Embedding and rerank models belong to vector_db, not to an agent.
+NON_AGENT_MODEL_FIELDS: set[str] = {"embedding_model", "rerank_model"}
 
 
 @pytest.fixture(scope="module", autouse=True)

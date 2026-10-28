@@ -7,6 +7,7 @@ import pytest
 
 from pydantic_agents.core import pipeline_jobs, run_store
 from pydantic_agents.core.cto_gate import write_approval
+from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.utils import PathTraversalError
 
@@ -119,7 +120,7 @@ async def test_unreachable_database_is_best_effort(monkeypatch):
 async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resumes):
     seen = {}
 
-    async def fake_submit(project, requirement, *, run_id=None, resume=False):
+    async def fake_submit(project, requirement, *, run_id=None, resume=False, blueprint="new_feature", framework=None):
         seen.update(project=project, requirement=requirement, run_id=run_id, resume=resume)
         return run_id
 
@@ -143,12 +144,84 @@ async def test_submit_persists_each_transition(pool, monkeypatch):
         async def execute(self):
             return None
 
-    monkeypatch.setattr(pipeline_jobs, "build_default_pipeline", lambda _c: _P())
+    monkeypatch.setattr(pipeline_jobs, "build_pipeline", lambda _c: _P())
     run_id = await pipeline_jobs.submit_pipeline_run("svc", "req")
     await pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]
     await asyncio.sleep(0)
     assert pool.db[run_id]["status"] == "completed"
     assert pool.db[run_id]["completed_at"] is not None
+
+
+@pytest.mark.parametrize(
+    ("state", "status", "error_contains"),
+    [
+        (PipelineState(run_id="r", stage="merge", approved=True), "completed", None),
+        (
+            PipelineState(
+                run_id="r",
+                stage="ba",
+                failure_report=FailureReport(source="ba", error_type="blocked", trace="no stories"),
+            ),
+            "failed",
+            "ba: no stories",
+        ),
+        (PipelineState(run_id="r", stage="quality_gate"), "failed", "without approval"),
+    ],
+    ids=["approved", "blocked", "retries-exhausted"],
+)
+async def test_the_status_follows_the_pipeline_s_final_state(pool, monkeypatch, state, status, error_contains):
+    class _P:
+        async def execute(self):
+            return state
+
+    monkeypatch.setattr(pipeline_jobs, "build_pipeline", lambda _c: _P())
+    run_id = await pipeline_jobs.submit_pipeline_run("svc", "req")
+    await pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]
+    await asyncio.sleep(0)
+    assert pool.db[run_id]["status"] == status
+    if error_contains:
+        assert error_contains in pool.db[run_id]["error"]
+
+
+async def test_the_run_id_blueprint_and_framework_reach_the_pipeline_config(pool, monkeypatch):
+    seen = {}
+
+    class _P:
+        async def execute(self):
+            return None
+
+    def build(config):
+        seen.update(run_id=config.run_id, blueprint=config.blueprint, framework=config.framework)
+        return _P()
+
+    monkeypatch.setattr(pipeline_jobs, "build_pipeline", build)
+    run_id = await pipeline_jobs.submit_pipeline_run("svc", "req", blueprint="langgraph_quick")
+    await pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]
+    assert seen == {"run_id": run_id, "blueprint": "langgraph_quick", "framework": "langgraph"}
+
+
+async def test_the_cto_gate_reports_that_it_is_waiting(pool, monkeypatch, tmp_path):
+    from pydantic_agents.core import cto_gate
+    from pydantic_agents.core.limits import run_id_var
+
+    monkeypatch.setattr(settings, "output_dir", tmp_path)
+    monkeypatch.delenv("ORCHESTRATION_CTO_OVERRIDE", raising=False)
+    pipeline_jobs.PIPELINE_RUNS["pipe_bbbbbbbbbbbb"] = _run("running")
+    statuses = []
+
+    async def poll(_filepath, poll_interval=10.0, timeout_seconds=3600.0):
+        statuses.append(pipeline_jobs.PIPELINE_RUNS["pipe_bbbbbbbbbbbb"]["status"])
+        return True
+
+    monkeypatch.setattr(cto_gate, "_poll_for_file_approval", poll)
+    token = run_id_var.set("pipe_bbbbbbbbbbbb")
+    try:
+        state = PipelineState(run_id="r", stage="advisory", cto_approved=False)
+        assert await cto_gate.apply(state, project="svc") is True
+    finally:
+        run_id_var.reset(token)
+    assert statuses == [pipeline_jobs.STATUS_WAITING_CTO]
+    assert pipeline_jobs.PIPELINE_RUNS["pipe_bbbbbbbbbbbb"]["status"] == "running"
 
 
 @pytest.mark.parametrize(
@@ -221,7 +294,7 @@ async def test_cancelled_run_is_persisted_as_cancelled(pool, monkeypatch):
             started.set()
             await asyncio.sleep(30)
 
-    monkeypatch.setattr(pipeline_jobs, "build_default_pipeline", lambda _c: _Slow())
+    monkeypatch.setattr(pipeline_jobs, "build_pipeline", lambda _c: _Slow())
     run_id = await pipeline_jobs.submit_pipeline_run("svc", "req")
     await started.wait()
     task = pipeline_jobs.PIPELINE_RUNS[run_id]["_task"]

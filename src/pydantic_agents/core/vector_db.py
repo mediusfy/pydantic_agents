@@ -3,11 +3,32 @@
 Replaces the previous ChromaDB-backed VectorDBManager with direct SQL
 INSERT / SELECT using pgvector's <=> (cosine distance) operator.
 
-Collection names map to pgvector tables, each containing:
-  - id        TEXT PRIMARY KEY
-  - metadata  JSONB (any scalar-level metadata)
-  - embedding vector(384)  — all-MiniLM-L6-v2 produces 384-dim vectors
-  - content   TEXT
+Collection names map to pgvector tables ``v_<collection>``, each containing:
+  - id          TEXT PRIMARY KEY
+  - metadata    JSONB (any scalar-level metadata)
+  - embedding   vector(<settings.embedding_dim>)
+  - content     TEXT
+  - content_tsv tsvector generated from ``content`` (GIN-indexed, for hybrid search)
+
+Embeddings come from ``settings.embedding_provider``:
+  - ``local``   runs sentence-transformers in-process (``settings.embedding_model``,
+                default ``all-MiniLM-L6-v2`` = 384 dims). The async paths run the
+                model in a worker thread so the event loop is never blocked.
+  - ``litellm`` POSTs the texts to the LiteLLM proxy's OpenAI-compatible
+                ``/embeddings`` endpoint (connection taken from
+                ``core.models.factory._litellm_connection``).
+
+Switching the provider, the embedding model or ``embedding_dim`` changes the
+vector space, so every collection must be re-seeded afterwards (drop the
+``v_<collection>`` tables and run the seed scripts again). When the configured
+dimension differs from an existing table's column, ``_ensure_table`` raises
+``ConfigurationError`` instead of writing incompatible vectors.
+
+Retrieval is hybrid by default (``settings.retrieval_hybrid``): the top
+candidates by cosine distance and by Postgres full-text rank are fused with
+reciprocal rank fusion. With ``settings.rerank_model`` set (litellm provider
+only) the fused candidates are reordered by the proxy's ``/rerank`` endpoint;
+rerank failures fall back to the fused order and never raise.
 
 All heavy dependencies (asyncpg, numpy, sentence-transformers, langchain)
 are imported lazily — importing this module never fails.  Runtime paths
@@ -23,7 +44,7 @@ import re
 import threading
 from typing import Any
 
-from pydantic_agents.core.exceptions import OrgitrationDependencyError
+from pydantic_agents.core.exceptions import ConfigurationError, OrgitrationDependencyError
 from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -31,15 +52,23 @@ logger = logging.getLogger(__name__)
 # Metadata filter keys are interpolated into SQL, so they must be plain identifiers.
 _METADATA_KEY = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 
+# Reciprocal rank fusion constant (Cormack et al. 2009); 60 is the conventional value.
+_RRF_K = 60
+# Timeout for the LiteLLM /embeddings and /rerank calls.
+_LITELLM_TIMEOUT_SECONDS = 30.0
+
 # ── Embedding ──────────────────────────────────────────────────────
 
 _embeddings: Any = None
 
 
 def _require_vector_deps():
-    """Import numpy lazily; raise ``OrgitrationDependencyError`` if missing.  asyncpg is a core dep."""
-    _missing = []
+    """Import numpy lazily; raise ``OrgitrationDependencyError`` if missing.  asyncpg is a core dep.
 
+    The ``litellm`` embedding provider needs neither numpy nor sentence-transformers.
+    """
+    if settings.embedding_provider == "litellm":
+        return
     try:
         import numpy as _  # noqa: F401
     except ImportError as exc:
@@ -49,7 +78,7 @@ def _require_vector_deps():
 
 
 def _get_embeddings():
-    """Lazy-load HuggingFace embeddings (same model as before, 384-dim)."""
+    """Lazy-load the local sentence-transformers model named by ``settings.embedding_model``."""
     global _embeddings
     if _embeddings is None:
         try:
@@ -59,8 +88,58 @@ def _get_embeddings():
                 "vector_db requires sentence-transformers.  Install with:  pip install pydantic-agents[vector]"
             ) from exc
 
-        _embeddings = SentenceTransformer("all-MiniLM-L6-v2")
+        _embeddings = SentenceTransformer(settings.embedding_model)
     return _embeddings
+
+
+def _litellm_connection() -> tuple[str, str]:
+    """Base URL (ending in /v1) and API key of the LiteLLM proxy; imported lazily to keep this module light."""
+    from pydantic_agents.core.models.factory import _litellm_connection as _connection
+
+    return _connection(settings.embedding_model)
+
+
+async def _litellm_post(path: str, body: dict[str, Any]) -> Any:
+    """POST ``body`` to ``{base_url}{path}`` on the LiteLLM proxy and return the decoded JSON."""
+    import httpx
+
+    base_url, api_key = _litellm_connection()
+    async with httpx.AsyncClient(timeout=_LITELLM_TIMEOUT_SECONDS) as client:
+        response = await client.post(
+            f"{base_url}{path}",
+            json=body,
+            headers={"Authorization": f"Bearer {api_key}"},
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+async def _litellm_embed(texts: list[str]) -> list[list[float]]:
+    """Embed ``texts`` in one OpenAI-compatible ``/embeddings`` call through the LiteLLM proxy."""
+    payload = await _litellm_post("/embeddings", {"model": settings.embedding_model, "input": list(texts)})
+    data = sorted(payload["data"], key=lambda item: item.get("index", 0))
+    vectors = [[float(x) for x in item["embedding"]] for item in data]
+    if len(vectors) != len(texts):
+        raise ConfigurationError(
+            f"LiteLLM /embeddings returned {len(vectors)} vectors for {len(texts)} inputs "
+            f"(model {settings.embedding_model!r})"
+        )
+    return vectors
+
+
+async def _embed_texts(texts: list[str]) -> list[list[float]]:
+    """Embed ``texts`` with the configured provider without blocking the event loop.
+
+    The local model is CPU-bound, so it runs in a worker thread; the litellm provider is
+    a single batched HTTP call.
+    """
+    if settings.embedding_provider == "litellm":
+        return await _litellm_embed(texts)
+    return await asyncio.to_thread(lambda: [_to_embedding(text) for text in texts])
+
+
+def _vector_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(str(x) for x in embedding) + "]"
 
 
 # ── pgvector helpers ───────────────────────────────────────────────
@@ -141,9 +220,15 @@ async def _get_pool():
 
 
 async def _ensure_table(collection_name: str):
-    """CREATE TABLE IF NOT EXISTS for the named collection, with pgvector extension."""
+    """CREATE TABLE IF NOT EXISTS for the named collection, with pgvector extension.
+
+    Also adds the generated ``content_tsv`` column and its GIN index used by hybrid
+    search, and raises ``ConfigurationError`` when an existing table's vector column
+    does not match ``settings.embedding_dim`` (the operator must re-seed).
+    """
     if collection_name in _initialized_tables:
         return
+    dim = int(settings.embedding_dim)
     pool = await _get_pool()
     async with pool.acquire() as conn:
         await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
@@ -152,11 +237,26 @@ async def _ensure_table(collection_name: str):
             CREATE TABLE IF NOT EXISTS v_{collection_name} (
                 id        TEXT PRIMARY KEY,
                 metadata  JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-                embedding vector(384) NOT NULL,
+                embedding vector({dim}) NOT NULL,
                 content   TEXT NOT NULL
             )
             """
         )
+        # pgvector stores the declared dimension as the column's typmod (-1 when unconstrained).
+        existing_dim = await conn.fetchval(
+            """
+            SELECT atttypmod FROM pg_attribute
+            WHERE attrelid = $1::regclass AND attname = 'embedding' AND NOT attisdropped
+            """,
+            f"v_{collection_name}",
+        )
+        if existing_dim is not None and int(existing_dim) > 0 and int(existing_dim) != dim:
+            raise ConfigurationError(
+                f"Collection {collection_name!r} stores {int(existing_dim)}-dim vectors but EMBEDDING_DIM={dim} "
+                f"(provider {settings.embedding_provider!r}, model {settings.embedding_model!r}). "
+                f"Switching the embedding provider, model or dimension requires re-seeding: drop table "
+                f"v_{collection_name} and run the seed scripts again."
+            )
         # Index for cosine-distance (<=>) search — ivfflat with cosine distance
         await conn.execute(
             f"""
@@ -166,11 +266,29 @@ async def _ensure_table(collection_name: str):
             WITH (lists = 100)
             """
         )
+        # Full-text column + index for the lexical half of hybrid search.
+        await conn.execute(
+            f"""
+            ALTER TABLE v_{collection_name}
+            ADD COLUMN IF NOT EXISTS content_tsv tsvector
+            GENERATED ALWAYS AS (to_tsvector('english', content)) STORED
+            """
+        )
+        await conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{collection_name}_tsv
+            ON v_{collection_name}
+            USING gin (content_tsv)
+            """
+        )
     _initialized_tables.add(collection_name)
 
 
 def _to_embedding(text: str) -> list[float]:
-    """Return a 384-dim embedding vector for the given text."""
+    """Return the local model's embedding vector for ``text`` (synchronous, CPU-bound).
+
+    Async callers go through ``_embed_texts`` so this never runs on the event loop.
+    """
     import numpy as np
 
     model = _get_embeddings()
@@ -178,6 +296,40 @@ def _to_embedding(text: str) -> list[float]:
     if isinstance(vec, np.ndarray):
         return vec.tolist()
     return list(vec)
+
+
+def _rrf_fuse(rankings: list[list[str]], k: int = _RRF_K) -> list[str]:
+    """Reciprocal rank fusion: score(doc) = sum over rankings of 1 / (k + rank), rank starting at 1.
+
+    Ties keep first-appearance order (the first ranking wins), so the result is deterministic.
+    """
+    scores: dict[str, float] = {}
+    for ranking in rankings:
+        for rank, doc in enumerate(ranking, start=1):
+            scores[doc] = scores.get(doc, 0.0) + 1.0 / (k + rank)
+    return sorted(scores, key=lambda doc: scores[doc], reverse=True)
+
+
+async def _rerank(query: str, documents: list[str], n_results: int) -> list[str]:
+    """Reorder ``documents`` with the proxy's ``/rerank`` endpoint; on any failure keep the given order.
+
+    Only active when ``settings.rerank_model`` is set and the provider is ``litellm``.
+    """
+    if not documents or not settings.rerank_model or settings.embedding_provider != "litellm":
+        return documents[:n_results]
+    try:
+        payload = await _litellm_post(
+            "/rerank",
+            {"model": settings.rerank_model, "query": query, "documents": documents, "top_n": n_results},
+        )
+        results = sorted(payload["results"], key=lambda item: float(item["relevance_score"]), reverse=True)
+        ordered = [documents[int(item["index"])] for item in results if 0 <= int(item["index"]) < len(documents)]
+    except Exception as exc:  # rerank is best-effort and must never break retrieval
+        logger.warning("Rerank via %r failed, keeping fused order: %s", settings.rerank_model, exc)
+        return documents[:n_results]
+    if not ordered:
+        return documents[:n_results]
+    return ordered[:n_results]
 
 
 # ── Public interface (same API as old Chroma-based VectorDBManager) ─
@@ -207,10 +359,10 @@ class VectorDBManager:
             _require_vector_deps()
             await _ensure_table(collection_name)
             pool = await _get_pool()
+            embeddings = await _embed_texts(list(documents)) if documents else []
             async with pool.acquire() as conn:
-                for doc_text, meta, doc_id in zip(documents, metadatas, ids, strict=True):
-                    embedding = _to_embedding(doc_text)
-                    embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+                for doc_text, meta, doc_id, embedding in zip(documents, metadatas, ids, embeddings, strict=True):
+                    embedding_str = _vector_literal(embedding)
                     await conn.execute(
                         f"""
                         INSERT INTO v_{collection_name} (id, metadata, embedding, content)
@@ -265,10 +417,12 @@ class VectorDBManager:
         try:
             _require_vector_deps()
             await _ensure_table(collection_name)
-            embedding = _to_embedding(query)
-            embedding_str = "[" + ",".join(str(x) for x in embedding) + "]"
+            (embedding,) = await _embed_texts([query])
+            embedding_str = _vector_literal(embedding)
             pool = await _get_pool()
-            # A None value matches rows that lack the key (e.g. entries written before it was recorded).
+            # Both candidate queries take ($1 = query vector / query text, $2 = LIMIT, $3.. = metadata values),
+            # so one clause list serves both. A None value matches rows that lack the key (e.g. entries
+            # written before it was recorded).
             clauses: list[str] = []
             params: list[str] = []
             for key, value in conditions.items():
@@ -277,9 +431,11 @@ class VectorDBManager:
                 else:
                     params.append(value)
                     clauses.append(f"metadata->>'{key}' = ${len(params) + 2}")
+            hybrid = bool(settings.retrieval_hybrid)
+            limit = max(20, 4 * n_results) if hybrid else n_results
             where = f"WHERE {' AND '.join(clauses)}\n" if clauses else ""
             async with pool.acquire() as conn:
-                rows = await conn.fetch(
+                vector_rows = await conn.fetch(
                     f"""
                     SELECT content
                     FROM v_{collection_name}
@@ -287,13 +443,32 @@ class VectorDBManager:
                     LIMIT $2
                     """,
                     embedding_str,
-                    n_results,
+                    limit,
                     *params,
                 )
-                return [row["content"] for row in rows]
+                by_vector = [row["content"] for row in vector_rows]
+                if not hybrid:
+                    return by_vector[:n_results]
+                text_clauses = [*clauses, "content_tsv @@ plainto_tsquery('english', $1)"]
+                text_rows = await conn.fetch(
+                    f"""
+                    SELECT content
+                    FROM v_{collection_name}
+                    WHERE {" AND ".join(text_clauses)}
+                    ORDER BY ts_rank_cd(content_tsv, plainto_tsquery('english', $1)) DESC
+                    LIMIT $2
+                    """,
+                    query,
+                    limit,
+                    *params,
+                )
+                by_text = [row["content"] for row in text_rows]
+            fused = _rrf_fuse([by_vector, by_text])
+            return await _rerank(query, fused, n_results)
         except OrgitrationDependencyError as exc:
+            # Return nothing rather than an explanatory string: callers paste results straight into prompts.
             logger.warning("Vector DB search called but vector dependencies are not installed: %s", exc)
-            return ["Vector DB not available — install heavy dependencies (sentence-transformers, asyncpg, pgvector)"]
+            return []
 
     def search(self, collection_name: str, query: str, n_results: int = 3, project: str | None = None) -> list[str]:
         """Synchronous convenience wrapper (avoids event-loop deadlock).

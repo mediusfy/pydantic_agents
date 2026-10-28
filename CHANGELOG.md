@@ -17,8 +17,131 @@ fresh **Unreleased** section above it.
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
   (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
   JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
+- `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
+  (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
+  an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they
+  used to call `Agent.run` directly and skipped every guard.
+- Langfuse OTLP export (`core/observability.py`): with `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and
+  `LANGFUSE_SECRET_KEY` set, the whole in-process span tree is exported to `{host}/api/public/otel`, tagged with
+  `langfuse.session.id` = the run id; the httpx instrumentation's `traceparent` lets LiteLLM's generations attach
+  under the agent span. Before this the agents pod (no Logfire token) dropped every in-process span.
+- Every MCP agent call gets its own run id (`call_<hex>`), so its model calls are one Langfuse session; the
+  `run_<agent>` tools take an optional `project` argument that scopes context retrieval to one seeded project.
+- `core/verifier.py`: deterministic build, vet and test with the real Go toolchain (`verify_artifacts` for
+  generated services, `verify_tree` for an existing codebase with the changes overlaid on a copy). The quality
+  gate stage runs it before any model judges the code and feeds its report to the security, quality-gate and
+  review agents; `modify_existing_code` does the same and retries on a failed build.
+- Per-attempt checkpoints: `OrgitrationPipeline` saves `implementation.attempt<n>` after every implementation
+  attempt and its gate, and a resume continues after the last saved attempt. The pipeline run id is the
+  checkpoint id (`PipelineConfig.run_id`), so a resume continues its own run, not the project's newest file.
+  Checkpoint files are named `{run_id}__{stage}.json`; files in the earlier `{uuid}_{stage}.json` form are
+  renamed to the new form when the repository opens, so runs checkpointed by an older version still resume.
+- `run_orchestration_pipeline(project_name, requirement, blueprint="new_feature", framework="")` runs any
+  blueprint (LangGraph, CrewAI, AutoGen), and `project_name` is validated as a plain name at the MCP boundary
+  and in `PipelineConfig` (it becomes a directory under the output, checkpoint and approval roots).
+- Run status `waiting_cto_approval` while the CTO gate polls for a decision (`pipeline_jobs.set_run_status`).
+- `ReviewResult` withdraws an approval whose `risk_level` is HIGH or CRITICAL or whose `security_score` is below
+  70, and says so in `feedback`.
+- Five agents: `critic` (checks an agent's claims against the evidence of its run; `CriticReport` with
+  `unsupported_count`/`passed` derived in code), `api_contract` (OpenAPI/proto vs handlers and frontend types;
+  `ContractReport`), `observability_engineer` (spans, RED metrics, slog, probes; emits alert rules and a review),
+  `finops` (LiteLLM spend per model and key via the new `litellm_spend_report` tool; `CostReport` with the total
+  computed in code) and `release_manager` (changelog fragment, version note, PR body with the `agent-ws` marker and
+  the attribution line). Settings fields `critic_model`, `api_contract_model`, `observability_engineer_model`,
+  `finops_model`, `release_manager_model`.
+- Three CrewAI crews with blueprints: `crew_qa` (BA criteria → Go/Playwright tests → fixes → sign-off, keyed by
+  criterion id), `crew_architecture_review` (BA, security, database and SRE findings merged by the CTO into an
+  `AgentAdvice`, blocked while a CRITICAL finding is open) and `crew_audit` (secrets/OWASP, CI and container
+  hardening, runtime findings consolidated into an owned, dated table).
+- Configurable embedding provider for the vector store (`EMBEDDING_PROVIDER=local|litellm`, `EMBEDDING_MODEL`,
+  `EMBEDDING_DIM`): `litellm` embeds through the proxy's `/embeddings` endpoint in one batched call. Switching the
+  provider, model or dimension changes the vector space and requires re-seeding every collection; a dimension
+  mismatch against an existing table raises `ConfigurationError` instead of inserting incompatible vectors.
+- Hybrid retrieval (`RETRIEVAL_HYBRID`, default on): pgvector cosine candidates and Postgres full-text candidates
+  (generated `content_tsv` column plus GIN index) fused with reciprocal rank fusion; optional `RERANK_MODEL`
+  reorders them through the proxy's `/rerank` endpoint and falls back to the fused order on any error.
+- Promptfoo cases for the pipeline agents `ba`, `cto`, `quality_gate`, `backend`, `service_engineer` and
+  `critic` (none of the core agents had an eval); not yet run live.
+- `tests/unit/test_review_fixes.py`: regression tests for every finding below (concurrent recorder spans, the
+  guarded run path, shared delegation budgets, the review verdict, context scoping, the LangGraph thread id, plan
+  data flow, project-name validation, Langfuse export, the verifier).
 
 ### Changed
+- `context_engine.retrieve_context` is `async`, takes `project`, caps the query at 1,000 characters (the embedding
+  model reads about 256 word pieces) and never returns the store's own unavailability notice as a snippet. The
+  stages query with the requirement and story titles, not the artifact dump, and pass `config.project`.
+- The quality gate stage reviews artifacts in batches that fit the 80k-character prompt budget instead of
+  truncating the dump and judging what was left; the SRE agent receives the requirement, stories, services and
+  CTO advice (it used to get a fixed one-line prompt); structural validation and verification run first.
+- `OrgitrationPipeline.execute` returns the final `PipelineState` and stops after BA when there are no stories
+  and after advisory when the CTO did not approve (`failure_report` says why). `pipeline_jobs` derives the status
+  from that state: `completed` only when approved, `failed` with the reason otherwise. It used to report
+  `completed` whenever `execute()` returned.
+- `PipelineState.cto_approved` defaults to `False`, and the LangGraph `route_after_advisory` also stops on
+  `errors`, so a crashed advisory stage no longer proceeds to implementation.
+- `_GraphPipelineWrapper.execute` passes `configurable.thread_id` (the run id); a graph compiled with a
+  checkpointer (`resume=True`) used to raise.
+- The implementation stage runs each story's tests against every source file of the story (a suite that touches
+  two files compiles now), treats a suite that could not run (toolchain, module setup, timeout) as a failure
+  instead of a pass, re-runs the frontend and database agents on a retry after a gate rejection (only the backend
+  after a test failure), and orders every prompt with the run-wide blocks first (repository context, local
+  guidelines, CTO advice) and the story last so a provider-side prefix cache can reuse them.
+- `execute_test_suite` is built on `run_test_suite(files, test_files) -> TestRunResult` (`passed`, `output`,
+  `error`); the tool keeps its string contract.
+- `SessionRecorder.record_span` yields its own record (`RecordingSpan`) instead of sharing one `_current` slot:
+  concurrent spans (advisory, per-story implementation) used to overwrite each other and lose records.
+- `delegate_to_agent` passes the caller's `usage` through `instrumented_query` and `registry.query`, so a
+  delegation tree spends one run's caps instead of a fresh 40 requests and 2M tokens per node.
+- `review`, `security` and `quality_gate` lose the `a2a` tool category: a verifier cannot delegate to the agent
+  it judges.
+- `plan_and_execute` appends the results of a task's dependencies to its prompt and skips a task whose
+  dependency failed; the planner runs through `registry.run`.
+- The sandbox root for model-driven file tools is a context variable (`core/utils.py::sandbox_root_var`) set by
+  `run_existing_code_pipeline` for its own task; the process-wide `ORCHESTRATION_CODEBASE_ROOT` is only the
+  server default. Two concurrent pipelines on different codebases no longer share or widen each other's root.
+- `modify_existing_code` writes the changed files and tests under `generated-app/<codebase>/<run>/` and reports
+  the path and the verification result; the files used to be discarded after the summary. An approved review's
+  remarks are no longer appended to the errors the next attempt is told to fix.
+- `_sync_memory_after_pipeline` only runs with `MEMORY_BRIDGE_SYNC=true` (default off): it wrote activity logs
+  into every Claude Code agent's memory directory on the workstation after each run.
+- `core/limits.py::run_model_settings` sends `max_tokens` (`AGENT_MAX_OUTPUT_TOKENS`, 16384) with every call and
+  the Langfuse session tags inside a run; `factory._make_chat_model` gives the OpenAI client a per-request httpx
+  timeout (`AGENT_HTTP_TIMEOUT_SECONDS`, 300 s, connect 10 s).
+- The JSONL telemetry line is written once per call, by the provider; `instrumented_query` and
+  `run_agent_by_name` no longer write a second one (`live_trace` double-counted every pipeline call).
+- `PipelineConfig` adopts the blueprint's framework when none is given (a `crewai` blueprint used to build the
+  legacy pipeline). Checkpoint files are named `<run_id>__<stage>.json` (run ids may contain `_`); the old
+  single-underscore UUID files are still read.
+- CrewAI bridge: pydantic_ai tools are actually bridged (the toolset dict was iterated by key), `RunContext` tools
+  are skipped, async tools run correctly, and the CrewAI LLM is built as `openai/<model>` against the LiteLLM proxy
+  instead of a bare model name the litellm SDK rejects. Every crew takes the `PipelineState` (`ResearchCrew` and
+  `SecurityReviewCrew` expected strings), hierarchical crews set a `manager_llm`, and the review gate parses a
+  `ReviewResult` JSON verdict instead of substring-matching "approved" (which approved "not approved").
+  A crew's artifact tasks merge into one artifact per owner (a later task's files replace the same paths), and
+  bridged tool calls share one bounded thread pool instead of starting a pool per call.
+- Local sentence-transformers embedding runs in a worker thread in the async paths; `vector_db.search` returns
+  `[]` (with a logged warning) when the vector extras are missing, instead of an explanatory string that callers
+  pasted into prompts.
+- `.env.example`, README and `.ai/guidance/architecture.md` describe the Langfuse export, the run guards, the
+  verifier, the per-attempt checkpoints, the honest run status and the new settings.
+
+### Fixed
+
+- Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
+  renamed to the current name before the first read of a project's repository, so runs checkpointed by that
+  version resume instead of restarting. The rename runs before the first read, is retried on a later read if it
+  failed, and tolerates a second instance renaming the same file first. Files that are neither form are listed in
+  one warning and ignored.
+- A checkpoint file that is valid JSON but not a `PipelineState` is treated as corrupt (logged, `load` returns
+  `None`) instead of raising a validation error out of the resume path.
+
+### Removed
+- The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,
+  `wait_for_task` and `task_context`: tasks were submitted but nothing consumed them, so `wait_for_task` always
+  timed out.
+- `RedisIrisMemory` and the `REDIS_IRIS_*` settings: both methods were stubs.
+
+### Changed (earlier)
 - CI installs with `uv sync --frozen --no-build --no-install-project` and runs tools with `uv run --no-build --no-sync` (Sonar
   S8541): only prebuilt wheels are installed, so no dependency build script runs, and the project is used from `src`
   (`PYTHONPATH=src` for the test and smoke jobs). The image's `useradd` shares a `RUN` with the project install (S7031).

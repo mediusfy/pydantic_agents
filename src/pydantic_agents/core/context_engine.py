@@ -13,7 +13,8 @@ Knowledge domains:
   - conventions: Coding conventions and standards
   - project: Project-specific context
 
-The engine uses the existing vector_db module for storage and retrieval.
+Retrieval is asynchronous (the embedding and the database query run off the event loop) and scoped to one
+project when the caller names one; without a project every seeded project is searched.
 """
 
 import logging
@@ -44,22 +45,38 @@ AGENT_CONTEXT_DOMAINS: dict[str, list[str]] = {
     "cto": ["adrs", "architecture"],
     "ba": ["architecture", "project"],
     "planner": ["adrs", "architecture", "project"],
+    "critic": ["conventions"],
+    "api_contract": ["architecture", "conventions"],
+    "observability_engineer": ["adrs", "architecture", "conventions"],
+    "finops": ["project"],
+    "release_manager": ["conventions", "project"],
     # Travel agents get architecture-only (generic)
     "holiday_planner": ["project"],
     "region_analyzer": ["project"],
     "asymmetric_reviewer": ["project"],
 }
 
+# Longest query the embedding model can use: MiniLM reads about 256 word pieces, so a longer query is judged
+# by its opening alone. Callers should pass the requirement or story titles, never an artifact dump.
+MAX_QUERY_CHARS = 1_000
 
-def _search_domain(domain: str, agent_name: str, request: str, top_k: int) -> list[str]:
-    """The non-empty text snippets one knowledge domain returns for a request; a failing search yields none."""
+_UNAVAILABLE_MARKER = "Vector DB not available"
+
+
+def _usable(snippet: Any) -> bool:
+    """A snippet worth putting in a prompt: non-empty text that is not the store's own unavailability notice."""
+    return isinstance(snippet, str) and bool(snippet.strip()) and _UNAVAILABLE_MARKER not in snippet
+
+
+async def _search_domain(domain: str, agent_name: str, request: str, top_k: int, project: str | None) -> list[str]:
+    """The usable text snippets one knowledge domain returns for a request; a failing search yields none."""
     with logfire.span("context_engine.retrieve", domain=domain, agent_name=agent_name, _level="debug"):
         try:
-            results = vector_db.search(domain, request, n_results=top_k)
+            results = await vector_db.async_search(domain, request[:MAX_QUERY_CHARS], n_results=top_k, project=project)
         except Exception as e:
             logger.debug("Context retrieval failed for domain '%s': %s", domain, e)
             return []
-    return [snippet for snippet in results or [] if isinstance(snippet, str) and snippet.strip()]
+    return [snippet for snippet in results or [] if _usable(snippet)]
 
 
 def _unique_snippets(snippets: list[str]) -> list[str]:
@@ -74,19 +91,20 @@ def _unique_snippets(snippets: list[str]) -> list[str]:
     return unique
 
 
-def retrieve_context(agent_name: str, request: str, top_k: int = 3) -> str:
+async def retrieve_context(agent_name: str, request: str, top_k: int = 3, project: str | None = None) -> str:
     """Retrieve relevant context snippets from all knowledge domains for a given agent.
 
     Args:
         agent_name: The agent requesting context.
-        request: The prompt/request text to match against.
-        top_k: Max results per domain.
+        request: The prompt/request text to match against (only its first MAX_QUERY_CHARS are used).
+        top_k: Max results per domain, and in total.
+        project: Restrict to documents seeded under this project name; None searches every project.
 
     Returns:
         Formatted context string, or empty string if nothing relevant found.
     """
     domains = AGENT_CONTEXT_DOMAINS.get(agent_name, ["architecture", "project"])
-    all_snippets = [s for domain in domains for s in _search_domain(domain, agent_name, request, top_k)]
+    all_snippets = [s for domain in domains for s in await _search_domain(domain, agent_name, request, top_k, project)]
 
     if not all_snippets:
         return ""

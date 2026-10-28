@@ -1,37 +1,39 @@
 """Entry point for modifying EXISTING Go codebases.
 
-REFINED ARCHITECTURE: Autonomous Remediation Loop + Parallel Verification Gates
+REFINED ARCHITECTURE: Autonomous Remediation Loop + Verification Gates
 
-Pipeline: service_engineer → [parallel: quality_gate + code_reviewer] → auto-remediation (up to 3 retries)
-  Instead of one-way sequential, we run:
-  1. service_engineer — implements the change
+Pipeline: service_engineer → test_eng → verifier → [parallel: quality_gate + code_reviewer] → auto-remediation
+  1. service_engineer — implements the change (reads the codebase through sandboxed tools)
   2. test_eng — generates tests
-  3. Parallel: quality_gate (deterministic: lint, test, build)
-          + code_reviewer (heuristic: logic, architecture, security)
-  4. If either gate fails → auto-route back to service_engineer with specific error context
-  5. Max 3 retries, then escalate to Lead Orchestrator with full failure report
+  3. verifier — deterministic: go build / go vet / go test on a copy of the codebase with the changes overlaid
+  4. Parallel: quality_gate (over-engineering) + code_reviewer (logic, architecture, security), both reading
+     the verifier's report
+  5. If anything fails → auto-route back to service_engineer with the specific error context
+  6. Max 3 retries, then escalate to the caller with the full failure report
 
-This keeps the Lead Orchestrator out of the loop until the code actually passes all gates.
+The changed files are written under generated-app/<codebase name>/ (``ExistingCodeResult.output_dir``); nothing is
+applied to the codebase itself. Every agent call goes through ``registry.run`` (permit, timeout, retry, usage caps,
+trace tags), and the sandbox root is a context variable, so concurrent pipelines on different codebases are
+isolated.
 """
 
 import asyncio
-import contextlib
 import logging
 import os
 import time
 import uuid
 from collections.abc import Awaitable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, TypeVar
 
 import logfire
 
 from pydantic_agents.core.adapters.stage_events import StageEventRecorderPort, build_stage_event_recorder
-from pydantic_agents.core.limits import usage_limits
 from pydantic_agents.core.models.core import Artifact
 from pydantic_agents.core.registry import registry
-from pydantic_agents.core.telemetry import telemetry
-from pydantic_agents.core.utils import format_artifacts
+from pydantic_agents.core.utils import format_artifacts, sandbox_root_var
+from pydantic_agents.core.verifier import VerificationReport, verify_artifacts, verify_tree
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +57,8 @@ class ExistingCodeResult:
     errors: list[str] = field(default_factory=list)
     retries_used: int = 0
     run_id: str = ""
+    verification: str = ""
+    output_dir: str = ""
 
 
 async def _run_stage(
@@ -63,30 +67,21 @@ async def _run_stage(
     prompt: str,
     span_attrs: dict | None = None,
 ) -> tuple[Any, bool]:
-    """Run a single pipeline stage with Logfire span + JSONL telemetry.
+    """Run a single pipeline stage inside a span, through the registry (permit, timeout, retry, telemetry).
 
     Returns:
-        (result, success) — result is the agent output or None, success is a bool.
+        (result, success) — result is the agent run result, success is True (a failure raises).
     """
     span_attrs = span_attrs or {}
-    agent = registry.get(agent_name)
-    start = time.time()
-    success = False
-    try:
-        with logfire.span(
-            f"existing_code.{stage_name}",
-            agent_name=agent_name,
-            prompt_length=len(prompt),
-            **span_attrs,
-            _level="info",
-        ):
-            result = await agent.run(prompt, usage_limits=usage_limits(agent_name))
-            success = True
-            return result, success
-    finally:
-        duration = time.time() - start
-        with contextlib.suppress(Exception):
-            await telemetry.log_call(agent_name, duration, success, metadata=span_attrs)
+    with logfire.span(
+        f"existing_code.{stage_name}",
+        agent_name=agent_name,
+        prompt_length=len(prompt),
+        **span_attrs,
+        _level="info",
+    ):
+        result = await registry.run(agent_name, prompt)
+        return result, True
 
 
 async def _timed(coro: Awaitable[_T]) -> tuple[_T, int]:
@@ -96,14 +91,14 @@ async def _timed(coro: Awaitable[_T]) -> tuple[_T, int]:
     return value, int((time.time() - start) * 1000)
 
 
-async def _run_quality_gate(artifacts: list[Artifact]) -> tuple[bool, int, list[str]]:
-    """Run the quality gate (deterministic: lint, test, build)."""
+async def _run_quality_gate(artifacts: list[Artifact], verification: str = "") -> tuple[bool, int, list[str]]:
+    """Run the quality gate agent (over-engineering, premature abstraction) over the changes and the verifier report."""
     preview = format_artifacts(artifacts, max_chars=30_000, include_agent_header=False)
     prompt = (
         f"Perform a quality gate check on these code changes. "
         f"Check for over-engineering, premature abstraction, "
         f"reinventing the wheel, and unnecessary complexity.\n\n"
-        f"{preview}"
+        f"{preview}\n\n{verification}"
     )
     try:
         result, _ = await _run_stage("quality_gate", "quality_gate", prompt, {"artifact_count": len(artifacts)})
@@ -114,13 +109,13 @@ async def _run_quality_gate(artifacts: list[Artifact]) -> tuple[bool, int, list[
         return False, 0, [f"Quality Gate error: {e}"]
 
 
-async def _run_code_review(artifacts: list[Artifact]) -> tuple[bool, str, list[str]]:
-    """Run the code review (heuristic: logic, architecture, security)."""
+async def _run_code_review(artifacts: list[Artifact], verification: str = "") -> tuple[bool, str, list[str]]:
+    """Run the code review (heuristic: logic, architecture, security) over the changes and the verifier's report."""
     preview = format_artifacts(artifacts, max_chars=40_000, include_agent_header=False)
     prompt = (
         f"Review these code changes for production readiness. "
         f"Check for correctness, security issues, architecture fit, "
-        f"and CODING_STANDARDS compliance.\n\n{preview}"
+        f"and CODING_STANDARDS compliance.\n\n{preview}\n\n{verification}"
     )
     try:
         result, _ = await _run_stage("review", "review", prompt, {"artifact_count": len(artifacts)})
@@ -262,7 +257,8 @@ def _apply_review_outcome(
     recorder.record(
         result.run_id, "review", attempt, "approved" if approved else "rejected", duration_ms, f"risk={risk}"
     )
-    result.errors.extend(feedback)
+    if not approved:
+        result.errors.extend(feedback)  # an approved review's remarks are not errors for the next attempt
     return approved, feedback
 
 
@@ -284,12 +280,12 @@ async def _run_gates(
         _level="info",
     ):
         quality = (
-            _timed(_run_quality_gate(result.artifacts))
+            _timed(_run_quality_gate(result.artifacts, result.verification))
             if run_quality_gate
             else _timed(asyncio.sleep(0, result=(True, 0, [])))
         )
         review = (
-            _timed(_run_code_review(result.artifacts))
+            _timed(_run_code_review(result.artifacts, result.verification))
             if run_review
             else _timed(asyncio.sleep(0, result=(True, "low", [])))
         )
@@ -307,6 +303,33 @@ class _PipelineOptions:
     run_tests: bool
     run_quality_gate: bool
     run_review: bool
+
+
+async def _run_verifier(
+    result: ExistingCodeResult, recorder: StageEventRecorderPort, attempt: int, codebase: str
+) -> list[str]:
+    """Build, vet and test the changes with the real toolchain; returns the failures (empty when they pass or the
+    check could not apply, e.g. no Go code)."""
+    changed: dict[str, str] = {}
+    for art in result.artifacts:
+        changed.update(art.files or {})
+    start = time.time()
+    try:
+        report: VerificationReport = (
+            await verify_tree(codebase, changed) if codebase else await verify_artifacts(result.artifacts)
+        )
+    except Exception as e:  # the verifier is defensive, but a bug in it must not end the run
+        logger.warning("Verifier failed on attempt %d: %s", attempt, e)
+        _record(recorder, result, "verifier", attempt, "error", start, str(e))
+        result.verification = f"VERIFICATION: error ({e})"
+        return []
+    result.verification = report.as_prompt()
+    if report.skipped:
+        _record(recorder, result, "verifier", attempt, "skipped", start, report.skipped)
+        return []
+    failures = report.failures()
+    _record(recorder, result, "verifier", attempt, "passed" if report.passed else "failed", start, "; ".join(failures))
+    return failures
 
 
 async def _run_attempt(
@@ -335,8 +358,15 @@ async def _run_attempt(
     # ── Stage 2: Test Engineer (if enabled) ────────────────────────
     test_failures = await _run_test_engineer(result, recorder, attempt) if options.run_tests else []
 
-    # ── Stage 3: Parallel Verification Gates ───────────────────────
+    # ── Stage 3: deterministic verification (build / vet / test) ──
+    verify_failures = await _run_verifier(result, recorder, attempt, options.codebase_path)
+    test_failures = test_failures + verify_failures
+
+    # ── Stage 4: Parallel LLM Gates ────────────────────────────────
     if not options.run_quality_gate and not options.run_review:
+        if test_failures:
+            result.errors.extend(err for err in test_failures if err not in result.errors)
+            return False
         result.passed = True
         _record(recorder, result, "pipeline", attempt, "passed", eng_start, "gates disabled")
         return True
@@ -362,7 +392,9 @@ async def _run_attempt(
         return True
 
     # Append gate errors to result errors for next attempt context
-    result.errors.extend(err for err in dict.fromkeys(qg_feedback + cv_feedback) if err not in result.errors)
+    result.errors.extend(
+        err for err in dict.fromkeys(verify_failures + qg_feedback + cv_feedback) if err not in result.errors
+    )
 
     if attempt < MAX_RETRIES:
         logger.info("Gates failed — auto-remediation attempt %d/%d", attempt + 1, MAX_RETRIES)
@@ -405,27 +437,49 @@ async def run_existing_code_pipeline(
     logger.info("=== Existing Code Pipeline (Autonomous Remediation Loop) ===")
     logger.info("Change: %s", change_description)
 
-    if codebase_path:
-        os.environ["ORCHESTRATION_CODEBASE_ROOT"] = os.path.realpath(codebase_path)
-    else:
-        os.environ.pop("ORCHESTRATION_CODEBASE_ROOT", None)
+    # The sandbox root is per task: a concurrent pipeline on another codebase keeps its own.
+    from pydantic_agents.core.limits import run_id_var
 
-    for attempt in range(MAX_RETRIES + 1):
-        if await _run_attempt(result, recorder, attempt, options):
-            return result
+    root_token = sandbox_root_var.set(Path(os.path.realpath(codebase_path)) if codebase_path else None)
+    run_token = run_id_var.set(run_id_var.get() or f"modify_{result.run_id[:12]}")
+    try:
+        for attempt in range(MAX_RETRIES + 1):
+            if await _run_attempt(result, recorder, attempt, options):
+                _write_result(result, project or "existing-code")
+                return result
 
-    _sync_memory_after_pipeline()
+        _sync_memory_after_pipeline()
 
-    # All retries exhausted
-    result.passed = False
-    result.retries_used = MAX_RETRIES
-    recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
-    logger.error(
-        "Pipeline failed after %d retries. Errors: %s",
-        MAX_RETRIES,
-        result.errors,
-    )
-    return result
+        # All retries exhausted
+        result.passed = False
+        result.retries_used = MAX_RETRIES
+        recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
+        logger.error(
+            "Pipeline failed after %d retries. Errors: %s",
+            MAX_RETRIES,
+            result.errors,
+        )
+        _write_result(result, project or "existing-code")
+        return result
+    finally:
+        run_id_var.reset(run_token)
+        sandbox_root_var.reset(root_token)
+
+
+def _write_result(result: ExistingCodeResult, project: str) -> None:
+    """Write the changed files and tests under the output directory; the caller gets the path in the result."""
+    if not any(art.files for art in result.artifacts):
+        return
+    from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter
+    from pydantic_agents.core.settings import settings
+
+    output_dir = Path(settings.output_dir) / project / result.run_id[:8]
+    try:
+        ArtifactStorageAdapter(str(output_dir)).write_artifacts(result.artifacts)
+        result.output_dir = str(output_dir)
+    except Exception as e:  # the pipeline result stands even if the disk write fails
+        logger.warning("Could not write the changed files to %s: %s", output_dir, e)
+        result.errors.append(f"Could not write the changed files to {output_dir}: {e}")
 
 
 def _bullet_section(title: str, items: list[str]) -> list[str]:
@@ -442,6 +496,8 @@ def format_result_summary(result: ExistingCodeResult) -> str:
         f"**Attempts**: {result.retries_used + 1} / {MAX_RETRIES + 1}",
         *_bullet_section("\n**Changed files**:", result.changed_files),
         *_bullet_section("\n**Test files**:", result.test_files),
+        *([f"\n**Written to**: {result.output_dir}"] if result.output_dir else []),
+        *([f"\n**Verification**:\n{result.verification}"] if result.verification else []),
         *_bullet_section(f"\n**Quality Gate**: score={result.quality_gate_score}", result.quality_gate_feedback),
         f"\n**Review**: {'approved ✅' if result.passed else 'rejected 🛑'} (risk: {result.review_risk})",
         # Show only the last 5 errors to avoid noise
@@ -454,7 +510,11 @@ def format_result_summary(result: ExistingCodeResult) -> str:
 
 
 def _sync_memory_after_pipeline() -> None:
-    """Auto-sync pipeline results to Claude Code and Antigravity memory."""
+    """Auto-sync pipeline results to Claude Code and Antigravity memory, when MEMORY_BRIDGE_SYNC is on."""
+    from pydantic_agents.core.settings import settings
+
+    if not settings.memory_bridge_sync:
+        return
     _logger = logging.getLogger(__name__)
     try:
         from pydantic_agents.core.memory_bridge import sync_memory_to_claude

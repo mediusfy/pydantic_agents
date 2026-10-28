@@ -15,9 +15,9 @@ Short map for agents. The README has the longer description, and [docs/turso-age
 ## One agent call through MCP
 
 1. Importing `mcp_server.py` configures observability, registers every agent, and creates one `run_<name>` MCP tool per registered agent.
-2. `run_agent_by_name` gets the agent from the registry; the first `get` attaches its tools by category (`tool_assignments.py` → `tools/registry.py::apply_tools`).
-3. `context_engine.retrieve_context` prepends up to three snippets from the vector store (ADRs, architecture, conventions) to the request.
-4. The agent runs with `usage_limits(agent_name)` (40 requests, 60 for `backend`, `frontend` and `service_engineer`, 2 M tokens; `core/limits.py`) and its `deps_factory`; output is stringified. Failures become `AgentExecutionError`; telemetry is logged best-effort.
+2. `run_agent_by_name` mints a per-call run id (`run_id_var`), then `context_engine.retrieve_context` (async; scoped to the optional `project` argument) prepends up to three snippets from the vector store (ADRs, architecture, conventions) to the request.
+3. `registry.run(name, prompt)` is the one way an agent runs: the first call attaches its tools by category (`tool_assignments.py` → `tools/registry.py::apply_tools`), resolves `deps_factory`, and hands off to `PydanticAIAgentProvider.run_agent`, which applies the concurrency permit, `usage_limits(agent_name)` (40 requests, 60 for `backend`, `frontend` and `service_engineer`, 2 M tokens; `core/limits.py`), the timeout, the transport retry, `max_tokens` and the Langfuse session tags, inside an `agent.run` span. Nothing else calls `Agent.run`.
+4. Output is stringified. Failures become `AgentExecutionError`; the provider writes the one telemetry line per call.
 
 ## Model routing
 
@@ -27,7 +27,9 @@ Short map for agents. The README has the longer description, and [docs/turso-age
 
 - `core/pipeline/config.py` defines blueprints, `Framework` (`legacy`, `langgraph`, `crewai`, `autogen`, `composite`) and stages (`ba`, `advisory`, `implementation`, `quality_gate`, `merge`).
 - `core/pipeline/factory.py::build_pipeline` dispatches by framework; `crewai` and `autogen` need their extras. The legacy `OrgitrationPipeline` (`core/pipeline/orchestrator.py`) runs `core/stages/*` in order.
-- MCP tools `run_orchestration_pipeline`, `check_pipeline_status`, `resume_pipeline_run` and `cancel_pipeline_run` run pipelines as asyncio tasks (`core/pipeline_jobs.py`). Run records are also written to a `pipeline_runs` table in the pgvector database (`core/run_store.py`, best-effort), so a restart leaves an `interrupted` record that `resume_pipeline_run` can continue. `approve_cto_gate` writes the marker the CTO gate (`core/cto_gate.py`) waits for; the gate reads its content, so `false` rejects. `submit_async_task`, `check_task_status` and `wait_for_task` use the in-process event broker and are not persisted.
+- MCP tools `run_orchestration_pipeline` (with `blueprint` and `framework`), `check_pipeline_status`, `resume_pipeline_run` and `cancel_pipeline_run` run pipelines as asyncio tasks (`core/pipeline_jobs.py`). The final status comes from the pipeline's final `PipelineState` (`completed` only when approved; `failed` with the failure report otherwise; `waiting_cto_approval` while the gate polls). Run records are also written to a `pipeline_runs` table in the pgvector database (`core/run_store.py`, best-effort), so a restart leaves an `interrupted` record that `resume_pipeline_run` can continue. `approve_cto_gate` writes the marker the CTO gate (`core/cto_gate.py`) waits for; the gate reads its content, so `false` rejects.
+- `OrgitrationPipeline.execute` stops after BA when there are no stories and after advisory when the CTO did not approve; it checkpoints every stage and every implementation attempt under the run id, and returns the final state.
+- The quality gate stage runs `core/verifier.py` (go build / vet / test with the real toolchain) before any model judges the code, gives the SRE agent the requirement and stories, and reviews artifacts in batches under the prompt budget instead of truncating. `modify_existing_code` runs the same verifier on a copy of the codebase with the changes overlaid, and writes the changed files under `generated-app/<codebase>/<run>/`.
 - Checkpoints and stage events go through `core/adapters/state_repository.py`: disk JSON files by default, or an embedded Turso database with `STATE_BACKEND=turso` (needs the `turso` extra). One process should own a project's `state.db`.
 
 ## Modules worth knowing
@@ -36,7 +38,9 @@ Short map for agents. The README has the longer description, and [docs/turso-age
 - Registry and tools: `core/registry.py`, `core/tool_assignments.py`, `core/tools/*.py`.
 - Context and memory: `core/context_engine.py`, `core/vector_db.py` (pgvector; needs the `vector` extra), `core/memory.py`, `core/memory_bridge.py` (syncs with local agent-memory directories under the user's home).
 - Output: `core/writer.py`, `core/adapters/workspace.py`, `core/utils.py` (`safe_path_join`).
-- Observability: `core/observability.py`, `core/telemetry.py`, `core/session_recorder.py`, `core/live_trace.py`, `core/event_broker.py`.
+- Verification: `core/verifier.py` (deterministic build/vet/test; the `qa_executor` of the suite), `core/tools/test_tools.py`.
+- Observability: `core/observability.py` (Langfuse OTLP and Logfire export), `core/telemetry.py`, `core/session_recorder.py`, `core/live_trace.py`.
+- Sandbox: `core/utils.py::sandbox_root_var` (the codebase root of the current pipeline, a context variable; `ORCHESTRATION_CODEBASE_ROOT` is only the server-wide default).
 
 ## Build and release
 

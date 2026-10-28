@@ -165,16 +165,22 @@ the database down, runs are tracked in memory only).
 - `check_pipeline_status(run_id)` reads memory, then the database. A run that was in flight when the
   server restarted shows as `interrupted`.
 - `resume_pipeline_run(run_id)` restarts an interrupted, failed or cancelled run under the same id
-  with `resume=True`, which reuses the project's latest checkpoint. It refuses a run whose task is
+  with `resume=True`. The run id is also the checkpoint id, so a resume continues that run's own
+  checkpoints (every stage, and every implementation attempt). It refuses a run whose task is
   still alive. Resume only helps if the checkpoints survived: `CHECKPOINT_DIR` has no volume in the
   chart yet (see the next section), so after a pod restart a resumed run mostly starts over.
 - `cancel_pipeline_run(run_id)` cancels the task; the record is saved as `cancelled`.
+- The final status follows the pipeline's final state: `completed` only when the gates approved,
+  `failed` with the reason when BA produced no stories, the CTO rejected, verification or a gate
+  rejected every attempt, or the run raised. While the CTO gate polls for a decision the status is
+  `waiting_cto_approval`.
 - The CTO gate waits for a `.cto_approved` marker in the project's output directory when the CTO
   does not approve on its own. `approve_cto_gate(project_name, approved)` writes it, so a caller
   outside the pod can approve (`true`) or reject (`false`) a run; the gate reads the content, so a
   rejection stops the run. `ORCHESTRATION_CTO_OVERRIDE=true` bypasses the gate.
-- `submit_async_task`, `check_task_status` and `wait_for_task` are a separate mechanism (the
-  in-process event broker) and are not persisted.
+- `run_orchestration_pipeline` takes a `blueprint` (`new_feature` by default; `crew_qa`,
+  `crew_architecture_review`, `crew_audit`, `langgraph_full`, ...) and an optional `framework`;
+  `project_name` must be a plain name (letters, digits, `_`, `.`, `-`).
 
 ### Checkpoint state backend (`STATE_BACKEND`)
 
@@ -215,10 +221,30 @@ Prerequisites and caveats for enabling it in the cluster:
 - Migrated from the retired `mediusfy/agents` repo (archived 2026-10-14); its `agents-run_<name>`
   tools are replaced by `pydantic_agents-run_<name>`.
 
+## Observability
+
+Spans are exported wherever credentials exist (`core/observability.py`):
+
+- **Langfuse** (the cluster's trace store): set `LANGFUSE_HOST`, `LANGFUSE_PUBLIC_KEY` and
+  `LANGFUSE_SECRET_KEY` on the pod. The in-process tree (`mcp.run_agent` / `pipeline.<stage>` →
+  `agent.run` → pydantic-ai model and tool spans) goes to `{LANGFUSE_HOST}/api/public/otel`, tagged
+  with `langfuse.session.id` = the run id (a pipeline run, or one MCP call). The httpx
+  instrumentation injects `traceparent` into the LiteLLM request, which the proxy's `langfuse_otel`
+  callback attaches to, so LiteLLM's generation sits under the agent span. Verify once per
+  deployment that the generation's parent is the `agent.run` span; if it is not, the fallback is
+  `metadata.trace_id` in `core/limits.py::run_model_settings`.
+- **Logfire cloud**: `LOGFIRE_TOKEN`.
+- `telemetry.jsonl` (one line per agent call, written by the provider only) and
+  `session_trace.jsonl` (one record per pipeline span, concurrency-safe) stay for local tailing
+  (`python -m pydantic_agents.core.live_trace`).
+
+The model client has a per-request `httpx` timeout (`AGENT_HTTP_TIMEOUT_SECONDS`, 300 s) and every
+call carries `max_tokens` (`AGENT_MAX_OUTPUT_TOKENS`, 16384).
+
 ## Known improvement areas (carried over from extraction review)
 
-This was extracted as-is; the following were identified during review and are **not**
-yet fixed here — tracked for follow-up:
+This was extracted as-is; the following were identified during review. Items 4 and 6–9 are still
+open; the 2026-10-27 architecture review fixed the rest (see `CHANGELOG.md`):
 
 1. ~~Prompts promise tools that don't exist~~ — **correction**: tools are attached lazily by
    category via `registry.get()` → `_lazy_init` → `apply_tools` (see Architecture above), not
@@ -232,11 +258,9 @@ yet fixed here — tracked for follow-up:
 3. ~~`"pytest" in sys.modules` test-detection hack in `factory.py`~~ — **fixed**: removed.
 4. **Hardcoded fallback URL** `https://litellm-proxy.run.app` in `factory.py` — should
    fail loudly if `LITELLM_CLOUD_URL` is unset in a cloud environment instead of guessing.
-5. **No HTTP timeout on the LiteLLM client, no agent-level traces** — run limits, a per-run
-   timeout and a retry policy now exist in `core/limits.py`, but `OpenAIProvider` still has no
-   explicit `httpx` timeout, and Logfire only exports spans when `LOGFIRE_TOKEN` is set (the chart
-   sets none), so agent and tool spans are dropped. LiteLLM's Langfuse traces carry the run id as
-   the session.
+5. ~~No HTTP timeout on the LiteLLM client, no agent-level traces~~ — **fixed**: the client has
+   a per-request timeout, and spans are exported to Langfuse over OTLP when the Langfuse keys are
+   set (see "Observability" above).
 6. **~150 lines of duplicated `Agent(...)` boilerplate** across ~20 agent files — extract
    a shared `make_agent(model_setting, prompt, output_type, deps_type=None, retries=5)`
    factory.

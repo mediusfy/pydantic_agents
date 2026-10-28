@@ -90,9 +90,7 @@ async def recent_calls(agent: str | None = None, *, limit: int = 100) -> list[di
         async with pool.acquire() as conn:
             await _ensure_table(conn)
             if agent is None:
-                rows = await conn.fetch(
-                    "SELECT * FROM platform_metrics ORDER BY created_at DESC LIMIT $1", limit
-                )
+                rows = await conn.fetch("SELECT * FROM platform_metrics ORDER BY created_at DESC LIMIT $1", limit)
             else:
                 rows = await conn.fetch(
                     "SELECT * FROM platform_metrics WHERE agent = $1 ORDER BY created_at DESC LIMIT $2",

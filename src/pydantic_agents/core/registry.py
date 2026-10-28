@@ -1,6 +1,4 @@
-import contextlib
 import logging
-import time
 from collections.abc import Callable
 from typing import Any
 
@@ -15,7 +13,6 @@ from pydantic_agents.core.exceptions import (
 from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.settings import settings
-from pydantic_agents.core.telemetry import telemetry
 from pydantic_agents.core.utils import serialize_output
 
 logger = logging.getLogger(__name__)
@@ -139,6 +136,46 @@ class AgentRegistry:
             raise AmbiguousCapabilityError(capability, owners)
         return owners[0]
 
+    async def run(
+        self,
+        name: str,
+        prompt: str,
+        deps: Any = None,
+        timeout_seconds: float | None = None,
+        usage: Any = None,
+    ) -> Any:
+        """Run a registered agent by name and return the pydantic_ai run result.
+
+        This is the one way to run an agent: it attaches the agent's tools, resolves its ``deps_factory`` when the
+        caller passes no deps, attributes tool activity to the agent, and goes through the provider (permit,
+        timeout, retry, usage caps, trace tags). ``usage`` lets a nested call share its caller's budget.
+
+        Raises ``AgentNotFoundError`` for an unknown name; run failures propagate as raised by pydantic_ai.
+        """
+        agent_tuple = self._agents.get(name)
+        if agent_tuple is None:
+            raise AgentNotFoundError(f"Agent '{name}' not registered")
+        agent = self.get(name)
+        _agent, _caps, deps_factory, _post_hook = agent_tuple
+        resolved_deps = deps
+        if resolved_deps is None and callable(deps_factory):
+            resolved_deps = deps_factory()
+
+        # Tools such as log_activity attribute their work to the running agent via this context.
+        token = current_run_context.set({**(current_run_context.get() or {}), "agent_name": name})
+        try:
+            return await self._provider.run_agent(
+                semaphore=llm_semaphore(),
+                agent_name=name,
+                agent=agent,
+                prompt=prompt,
+                deps=resolved_deps,
+                timeout_seconds=timeout_seconds or settings.agent_timeout_seconds,
+                usage=usage,
+            )
+        finally:
+            current_run_context.reset(token)
+
     async def query(
         self,
         capability: str,
@@ -146,37 +183,21 @@ class AgentRegistry:
         timeout_seconds: float | None = None,
         deps: dict | None = None,
         owner: str | None = None,
+        usage: Any = None,
     ) -> str:
         """Query an agent by capability, returning its response as a string.
 
         Pass ``owner=<agent_name>`` to pin a specific agent when a capability has
         multiple providers; otherwise an ambiguous capability raises
-        :class:`AmbiguousCapabilityError`.
+        :class:`AmbiguousCapabilityError`. ``usage`` shares the caller's budget with the callee.
 
         Raises :class:`AgentNotFoundError` if no agent (or no matching agent) claims
         the capability, :class:`AmbiguousCapabilityError` on unpinned overlap, and
         :class:`AgentExecutionError` if the agent run itself fails.
         """
         agent_name = self._resolve_owner(capability, owner)
-        agent, _caps, deps_factory, _post_hook = self._agents[agent_name]
         try:
-            resolved_deps = deps or None
-            if deps_factory and not deps:
-                resolved_deps = deps_factory() if callable(deps_factory) else None
-
-            # Tools such as log_activity attribute their work to the running agent via this context.
-            token = current_run_context.set({**(current_run_context.get() or {}), "agent_name": agent_name})
-            try:
-                result = await self._provider.run_agent(
-                    semaphore=llm_semaphore(),
-                    agent_name=agent_name,
-                    agent=agent,
-                    prompt=prompt,
-                    deps=resolved_deps,
-                    timeout_seconds=timeout_seconds or settings.agent_timeout_seconds,
-                )
-            finally:
-                current_run_context.reset(token)
+            result = await self.run(agent_name, prompt, deps=deps or None, timeout_seconds=timeout_seconds, usage=usage)
             return serialize_output(result)
         except TimeoutError as e:
             raise AgentExecutionError(
@@ -195,17 +216,14 @@ async def instrumented_query(
     timeout_seconds: float | None = None,
     delegation_depth: int = 0,
     owner: str | None = None,
+    usage: Any = None,
 ) -> str:
-    """Query an agent by capability with full Logfire + JSONL telemetry instrumentation.
+    """Query an agent by capability inside a named span.
 
-    This is the recommended entry point for MCP tools and pipeline stages.
-    It wraps registry.query() with:
-    - A Logfire span recording the capability, agent name, and timing
-    - telemetry.track() for JSONL telemetry
-    - Error attribution to the right agent
-    - Delegation depth propagation to prevent infinite delegation loops
-    - Optional ``owner`` pin so pipelines can target a specific agent when a
-      capability has multiple providers.
+    This is the recommended entry point for MCP tools and pipeline stages. It wraps ``registry.query()`` with a
+    span recording the capability and the agent that will run, propagates the delegation depth so nested
+    delegation stops at ``MAX_DELEGATION_DEPTH``, and pins ``owner`` when a capability has several providers.
+    The JSONL telemetry entry is written once, by the provider, so this layer adds none.
     """
     # Resolve up-front so the span attribute is the *actual* agent that will run,
     # not the speculative owners[0]. If resolution fails, the exception surfaces
@@ -218,34 +236,18 @@ async def instrumented_query(
         **(attributes or {}),
     }
 
-    start = time.time()
-    success = False
-
     # Propagate delegation depth into context so the callee inherits the counter.
-    # Defensive `or {}` belt-and-suspenders the ContextVar default — once
-    # session_recorder.current_run_context defaults to {}, this is a no-op, but
-    # it also protects against a caller deliberately setting None.
     ctx_data = current_run_context.get() or {}
     token = None
     if delegation_depth > 0:
-        token = current_run_context.set(
-            {
-                **ctx_data,
-                "delegation_depth": delegation_depth,
-            }
-        )
+        token = current_run_context.set({**ctx_data, "delegation_depth": delegation_depth})
 
     try:
         with logfire.span(span_name, **span_attrs, _level="info"):
-            result = await registry.query(capability, prompt, timeout_seconds=timeout_seconds, owner=owner)
-            success = True
-            return result
+            return await registry.query(capability, prompt, timeout_seconds=timeout_seconds, owner=owner, usage=usage)
     finally:
         if token is not None:
             current_run_context.reset(token)
-        duration = time.time() - start
-        with contextlib.suppress(Exception):
-            await telemetry.log_call(agent_name, duration, success, metadata=span_attrs)
 
 
 registry = AgentRegistry()

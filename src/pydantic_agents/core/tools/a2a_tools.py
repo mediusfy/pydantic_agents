@@ -87,6 +87,7 @@ async def delegate_to_agent(
     }
 
     try:
+        # The callee shares the caller's usage budget: a delegation tree spends one run's caps, not one per node.
         return await instrumented_query(
             capability=capability,
             prompt=full_prompt,
@@ -94,6 +95,7 @@ async def delegate_to_agent(
             attributes=attrs,
             delegation_depth=current_depth + 1,
             owner=owner,
+            usage=getattr(ctx, "usage", None),
         )
     except AmbiguousCapabilityError as e:
         # Surface the candidate owners back to the LLM so it can retry with

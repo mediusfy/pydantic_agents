@@ -17,7 +17,7 @@ import pytest
 
 from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository
 from pydantic_agents.core.checkpoint import CheckpointManager
-from pydantic_agents.core.memory import RedisIrisMemory, VectorMemory, create_memory_backend, get_memory_backend
+from pydantic_agents.core.memory import VectorMemory, create_memory_backend, get_memory_backend
 from pydantic_agents.core.models.core import (
     AgentAdvice,
     Artifact,
@@ -92,7 +92,7 @@ class TestPipelineStageDataFlow:
             result = await stage.run(state, config)
 
         assert len(result.user_stories) == 0
-        assert result.stage == "init"
+        assert result.stage == "ba"  # the stage ran; the orchestrator stops the run on the empty list
 
     @pytest.mark.asyncio
     async def test_advisory_stage_merges_cto_and_ux_results(self, tmp_path, monkeypatch):
@@ -480,6 +480,11 @@ class TestAgentRegistrationIntegration:
             "quality_gate",
             "service_engineer",
             "planner",
+            "critic",
+            "api_contract",
+            "observability_engineer",
+            "finops",
+            "release_manager",
         ]
         for name in expected_agents:
             assert name in registry._agents, f"Agent '{name}' not registered"
@@ -510,7 +515,7 @@ class TestAgentRegistrationIntegration:
 
         register_all_agents()
 
-        assert len(registry.list_agents()) == 27
+        assert len(registry.list_agents()) == 32
 
     def test_capability_index_is_populated(self):
         """Each agent's capabilities must be in the index.
@@ -723,10 +728,14 @@ class TestExistingCodePipelineIntegration:
     """Verifies the existing-code modification pipeline chains correctly."""
 
     @pytest.mark.asyncio
-    async def test_pipeline_returns_result_without_errors(self):
+    async def test_pipeline_returns_result_without_errors(self, tmp_path, monkeypatch):
         """run_existing_code_pipeline with mocked agents must return a valid ExistingCodeResult."""
         from pydantic_agents.core.existing_code_handler import run_existing_code_pipeline
 
+        # The result is written under settings.output_dir; keep it out of the repository's generated-app/.
+        from pydantic_agents.core.settings import settings
+
+        monkeypatch.setattr(settings, "output_dir", tmp_path / "out")
         eng_result = MagicMock()
         eng_result.output = Artifact(
             agent_name="service_engineer",
@@ -750,6 +759,9 @@ class TestExistingCodePipelineIntegration:
         assert result.changed_files == ["internal/handler.go"]
         assert len(result.artifacts) == 1
         assert result.errors == []
+        assert result.output_dir is not None
+        assert Path(result.output_dir).is_relative_to(tmp_path / "out")
+        assert (Path(result.output_dir) / "service_engineer" / "internal" / "handler.go").exists()
 
     @pytest.mark.asyncio
     async def test_pipeline_propagates_engineer_error(self):
@@ -782,44 +794,14 @@ class TestExistingCodePipelineIntegration:
 class TestMemoryBackendSelection:
     """Verifies the memory backend is selected correctly based on configuration."""
 
-    def test_default_backend_is_vectormemory(self, monkeypatch):
-        """Without REDIS_IRIS_TOKEN, create_memory_backend returns VectorMemory."""
-        monkeypatch.setattr("pydantic_agents.core.memory.settings.redis_iris_token", None)
+    def test_default_backend_is_vectormemory(self):
+        """create_memory_backend returns the pgvector-backed VectorMemory."""
         backend = create_memory_backend()
         assert isinstance(backend, VectorMemory)
-
-    def test_redis_backend_import_error_when_package_missing(self):
-        """RedisIrisMemory methods raise ImportError when redis-agent-memory is not installed."""
-        mem = RedisIrisMemory(server_url="x", store_id="x", api_key="x")
-
-        import asyncio
-        import builtins
-
-        real_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "redis_agent_memory":
-                raise ModuleNotFoundError("No module named 'redis_agent_memory'")
-            return real_import(name, *args, **kwargs)
-
-        add_memory = mem.add_memory("test")
-        with (
-            patch("builtins.__import__", side_effect=mock_import),
-            pytest.raises(ModuleNotFoundError, match="redis.agent.memory"),
-        ):
-            asyncio.run(add_memory)
-
-    def test_fallback_on_redis_iris_init_failure(self, monkeypatch):
-        """When Redis IRIS init fails, create_memory_backend falls back to VectorMemory."""
-        monkeypatch.setattr("pydantic_agents.core.memory.settings.redis_iris_token", "fake-key")
-        with patch("pydantic_agents.core.memory.RedisIrisMemory.__init__", side_effect=Exception("API unreachable")):
-            backend = create_memory_backend()
-            assert isinstance(backend, VectorMemory)
 
     def test_get_memory_backend_lazy_init(self, monkeypatch):
         """get_memory_backend must return the same instance on repeated calls."""
         monkeypatch.setattr("pydantic_agents.core.memory._memory_backend", None)
-        monkeypatch.setattr("pydantic_agents.core.memory.settings.redis_iris_token", None)
         first = get_memory_backend()
         second = get_memory_backend()
         assert first is second
@@ -846,6 +828,9 @@ class TestMemoryBackendSelection:
             def __init__(self, table_prefix: str = "v_"):
                 self._prefix = table_prefix
 
+            async def fetchval(self, query: str, *args, **kwargs):
+                return None  # no existing vector column: the dimension check passes
+
             async def execute(self, query: str, *args, **kwargs):
                 # DDL: CREATE EXTENSION, CREATE TABLE, CREATE INDEX — no-op
                 stripped = query.strip().upper()
@@ -866,6 +851,8 @@ class TestMemoryBackendSelection:
 
             async def fetch(self, query: str, *args, **kwargs):
                 # e.g. "SELECT content FROM v_xxx ORDER BY embedding <=> $1::vector LIMIT $2"
+                if "plainto_tsquery" in query:
+                    return []  # the full-text half of a hybrid search: this mock has no text index
                 parts = query.split()
                 from_idx = next(i for i, p in enumerate(parts) if p.upper() == "FROM")
                 table_name = parts[from_idx + 1]

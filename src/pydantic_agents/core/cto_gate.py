@@ -15,6 +15,7 @@ from pydantic_agents.core.models.core import PipelineState
 logger = logging.getLogger(__name__)
 
 _APPROVAL_FILE = ".cto_approved"
+STATUS_WAITING_CTO = "waiting_cto_approval"
 _APPROVAL_FILE_PATH: Path | None = None
 
 
@@ -122,7 +123,24 @@ async def apply(state: PipelineState, project: str = "default", timeout_seconds:
         filepath,
         timeout_seconds,
     )
+    await _report_status(STATUS_WAITING_CTO)
     approved = await _poll_for_file_approval(filepath, timeout_seconds=timeout_seconds)
+    await _report_status("running")
     if not approved:
         logger.error("CTO approval not received within timeout. Pipeline will stop.")
     return approved
+
+
+async def _report_status(status: str) -> None:
+    """Show the wait in the run's status (a poll of check_pipeline_status says why nothing is happening)."""
+    from pydantic_agents.core.limits import run_id_var
+
+    run_id = run_id_var.get()
+    if run_id is None:
+        return
+    try:
+        from pydantic_agents.core.pipeline_jobs import set_run_status
+
+        await set_run_status(run_id, status)
+    except Exception as e:  # best-effort, like the run store itself
+        logger.debug("Could not report status %s for run %s: %s", status, run_id, e)
