@@ -116,6 +116,40 @@ async def list_runs(statuses: tuple[str, ...], *, updated_before: datetime, limi
     return out
 
 
+async def recent_requirements(limit: int = 50) -> list[dict[str, Any]]:
+    """Recent requirements across pipeline runs (run_id, project, requirement, status, completed_at), newest
+    first, as plain dicts (ISO timestamps). Read-only, for the `product_strategist` agent's requirement-history
+    signal (ADR-0001 / AP-82). Never raises; [] with no database or on error.
+    """
+    if not enabled():
+        return []
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        return await conn.fetch(
+            """
+            SELECT run_id, project, requirement, status, completed_at
+            FROM pipeline_runs
+            WHERE requirement IS NOT NULL
+            ORDER BY completed_at DESC NULLS LAST
+            LIMIT $1
+            """,
+            limit,
+        )
+
+    try:
+        rows = await vector_db.with_connection(_op)
+    except Exception as exc:
+        logger.warning("Could not load recent requirements (%s: %s)", type(exc).__name__, exc)
+        return []
+    out = []
+    for row in rows:
+        item = dict(row)
+        item["completed_at"] = item["completed_at"].isoformat() if item.get("completed_at") else None
+        out.append(item)
+    return out
+
+
 async def load_run(run_id: str) -> dict[str, Any] | None:
     """The stored run as a ``PIPELINE_RUNS``-shaped dict (ISO timestamps), or None. Never raises."""
     if not enabled():

@@ -51,6 +51,15 @@ fresh **Unreleased** section above it.
   enforces the ADR rule in code: findings missing a `file:line`/resource id are dropped, and the whole batch is
   rejected (fail-closed, like the existing review/advice gates) if any other finding is invalid or a surviving
   finding is missing an owner or due date (KAN-491, part of epic KAN-482).
+- `agents/product_strategist.py` (AP-82, ADR-0001 Platform Intelligence Layer): registered agent with a
+  settings field (`product_strategist_model`), tool category (`"product_strategist": ["memory"]` —
+  deliberately narrower than the ADR's literal `web, search, memory, documentation`: `documentation` grants
+  `update_documentation`, a real filesystem write, and `a2a` would let it delegate to agents that write, either
+  of which would contradict AP-82's "no direct writes to the repo" acceptance criterion), and `run_product_strategist` MCP tool. Fully read-only — its two tools (`recent_requirements`, backed
+  by a new `run_store.recent_requirements()` read query over `pipeline_runs`, and `open_findings`, backed by the
+  existing `platform_findings.list_findings()`) are its only inputs, and it has no write tool at all. Output is a
+  `ProductStrategistReport` (proposals + narrative) — a written report for human/CTO review, never code or a
+  ticket.
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path

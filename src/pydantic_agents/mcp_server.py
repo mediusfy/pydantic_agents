@@ -167,6 +167,11 @@ AGENT_DOCSTRINGS = {
         "regressions, flaky agents and latency drift, and persist any findings to platform_findings. "
         "Returns a JSON ObserverReport (findings, narrative)."
     ),
+    "product_strategist": (
+        "Invokes the Product Strategist Agent (ADR-0001 Platform Intelligence Layer) to mine requirement history "
+        "and open platform_findings for customer-facing product/capability proposals. Read-only: never writes "
+        "code or tickets. Returns a JSON ProductStrategistReport (proposals, narrative)."
+    ),
     "critic": (
         "Invokes the Critic agent to check another agent's claims against the evidence from its run. "
         "Returns a JSON CriticReport (claims with evidence, unsupported_count, passed, feedback)."

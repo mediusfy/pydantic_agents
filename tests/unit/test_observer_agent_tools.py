@@ -8,7 +8,7 @@ import pytest
 
 from pydantic_agents.agents.observer import open_findings, recent_metrics, scan_for_findings
 from pydantic_agents.core import platform_findings, platform_metrics
-from tests.unit.db_stub import stub_database
+from tests.unit.db_stub import fetch_findings, insert_finding, stub_database
 
 CTX = MagicMock()
 
@@ -26,29 +26,14 @@ class _Conn:
             row_id, agent, duration, success, *_rest = args
             self.db[row_id] = {"id": row_id, "agent": agent, "duration": duration, "success": success, "_t": "m"}
         elif "INSERT INTO platform_findings" in sql:
-            finding_id, kind, severity, agent, summary, evidence = args
-            self.db[finding_id] = {
-                "id": finding_id,
-                "kind": kind,
-                "severity": severity,
-                "agent": agent,
-                "summary": summary,
-                "evidence": evidence,
-                "status": "open",
-                "_t": "f",
-            }
+            insert_finding(self.db, args)
 
     async def fetch(self, sql, *args):
         if "platform_metrics" in sql:
             rows = sorted((r for r in self.db.values() if r["_t"] == "m"), key=lambda r: r["id"], reverse=True)
             (limit,) = args
             return rows[:limit]
-        rows = sorted((r for r in self.db.values() if r["_t"] == "f"), key=lambda r: r["id"], reverse=True)
-        *filters, limit = args
-        if "status =" in sql:
-            (status,) = filters
-            rows = [r for r in rows if r["status"] == status]
-        return rows[:limit]
+        return fetch_findings(self.db, sql, args)
 
 
 @pytest.fixture

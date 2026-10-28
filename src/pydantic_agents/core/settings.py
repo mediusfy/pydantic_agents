@@ -85,6 +85,7 @@ class Settings(BaseSettings):
     qa_executor_model: str = "deepseek-v4-pro"
     observer_model: str = "deepseek-v4-pro"
     sre_autopilot_model: str = "deepseek-v4-pro"
+    product_strategist_model: str = "deepseek-v4-pro"
     critic_model: str = "deepseek-v4-pro"
     api_contract_model: str = "deepseek-v4-pro"
     observability_engineer_model: str = "deepseek-v4-pro"

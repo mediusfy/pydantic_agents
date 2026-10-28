@@ -54,3 +54,28 @@ def stub_database(
 
     monkeypatch.setattr(module.vector_db, "_get_pool", get_pool)
     return pool
+
+
+def insert_finding(db: dict[str, Any], args: tuple[Any, ...]) -> None:
+    """Store a ``platform_findings`` INSERT's arguments as an open row (tagged ``_t="f"``) in a shared ``db``."""
+    finding_id, kind, severity, agent, summary, evidence = args
+    db[finding_id] = {
+        "id": finding_id,
+        "kind": kind,
+        "severity": severity,
+        "agent": agent,
+        "summary": summary,
+        "evidence": evidence,
+        "status": "open",
+        "_t": "f",
+    }
+
+
+def fetch_findings(db: dict[str, Any], sql: str, args: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """Answer ``platform_findings.list_findings``' SELECT (optional status filter, then limit), newest id first."""
+    rows = sorted((r for r in db.values() if r["_t"] == "f"), key=lambda r: r["id"], reverse=True)
+    *filters, limit = args
+    if "status =" in sql:
+        (status,) = filters
+        rows = [r for r in rows if r["status"] == status]
+    return rows[:limit]

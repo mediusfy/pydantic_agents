@@ -30,6 +30,7 @@ AGENT_TOOL_CATEGORIES = {
     "innovation_scout": ["web", "search", "memory", "documentation"],
     "observer": ["memory", "search"],
     "sre_autopilot": ["security", "validation", "memory"],
+    "product_strategist": ["memory"],
     "devops": ["web", "search", "config_validation", "memory", "documentation", "a2a", "fs_read"],
     "accountant": ["web", "search", "memory", "a2a"],
     "asymmetric_reviewer": ["web", "search", "memory", "a2a"],
