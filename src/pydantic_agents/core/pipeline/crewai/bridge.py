@@ -5,7 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from pydantic_agents.core.models.core import AgentAdvice, Artifact, FailureReport, PipelineState, ReviewResult
+from pydantic_agents.core.models.core import AgentAdvice, Artifact, FailureReport, Finding, PipelineState, ReviewResult
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.pipeline.crewai.crews import (
     ArchitectureReviewCrew,
@@ -147,8 +147,68 @@ def _apply_result(state: PipelineState, result: Any) -> None:
             _apply_advice(state, owner, output)
         elif kind == "feedback":
             state.feedback = output
+        elif kind == "findings":
+            _apply_findings(state, owner, output)
         else:
             state.advisory_results[owner] = output
+
+
+def _first_json_array(text: str) -> str | None:
+    """The first complete JSON array in ``text`` (models often wrap it in prose or a code fence)."""
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(text):
+        if char != "[":
+            continue
+        try:
+            value, end = decoder.raw_decode(text, idx)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, list):
+            return text[idx:end]
+    return None
+
+
+def _apply_findings(state: PipelineState, owner: str, output: str) -> None:
+    """Drop findings missing a file:line/resource id; reject the whole batch if any other finding is invalid or
+    lacks an owner or due date (the consolidating review task is required to fill both in, never leave the gate to
+    downstream)."""
+    payload = _first_json_array(output)
+    if payload is None:
+        state.errors.append(f"crewai {owner} findings: no JSON array found in output")
+        logger.warning("CrewAI %s findings rejected: no JSON array found", owner)
+        return
+    try:
+        raw_items = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        state.errors.append(f"crewai {owner} findings: invalid JSON ({exc})")
+        logger.warning("CrewAI %s findings rejected: invalid JSON (%s)", owner, exc)
+        return
+
+    kept: list[Finding] = []
+    dropped = 0
+    for item in raw_items:
+        # Only a missing location is a reason to drop; any other schema violation rejects the batch, so a real
+        # finding is never discarded under the "no location" count.
+        if isinstance(item, dict) and not str(item.get("location") or "").strip():
+            dropped += 1
+            continue
+        try:
+            kept.append(Finding.model_validate(item))
+        except ValidationError as exc:
+            state.errors.append(f"crewai {owner} findings: rejected, invalid finding ({exc.error_count()} error(s))")
+            logger.warning("CrewAI %s findings rejected: invalid finding (%s)", owner, exc)
+            return
+
+    missing = [f.id for f in kept if not f.owner or not f.due_date]
+    if missing:
+        state.errors.append(f"crewai {owner} findings: rejected, missing owner/due_date for {missing}")
+        logger.warning("CrewAI %s findings rejected: missing owner/due_date for %s", owner, missing)
+        return
+
+    lines = [f"- [{f.severity.value}] {f.location}: {f.description} (owner={f.owner}, due={f.due_date})" for f in kept]
+    if dropped:
+        lines.append(f"({dropped} finding(s) dropped for missing a file:line or resource id)")
+    state.feedback = "\n".join(lines) if lines else "No findings."
 
 
 def _first_json_object(text: str) -> str | None:

@@ -18,6 +18,11 @@ fresh **Unreleased** section above it.
   `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
   forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
   `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
+- `AuditCrew`'s consolidation task (`core/pipeline/crewai/crews.py`) now outputs a JSON array of `Finding`
+  objects instead of free-text markdown, and the bridge's new `_apply_findings` (`core/pipeline/crewai/bridge.py`)
+  enforces the ADR rule in code: findings missing a `file:line`/resource id are dropped, and the whole batch is
+  rejected (fail-closed, like the existing review/advice gates) if any other finding is invalid or a surviving
+  finding is missing an owner or due date (KAN-491, part of epic KAN-482).
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
