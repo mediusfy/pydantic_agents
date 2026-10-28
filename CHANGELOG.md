@@ -13,7 +13,8 @@ fresh **Unreleased** section above it.
 
 ### Added
 - `agents/qa_executor.py` (`qa_executor` agent, capability `qa_executor`/`test_execution`, `qa_executor_model` setting):
-  runs test suites `test_gen` produced via `execute_test_suite` and reports pass/fail per acceptance-criterion id,
+  runs test suites `test_gen` produced via `execute_test_suite` and returns a `TestRunReport` (pass/fail per
+  acceptance-criterion id, coverage, unexecuted ids, `all_passed` derived in code),
   without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
 - `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
   case-insensitive so a lowercase "critical" still reaches the gate),
