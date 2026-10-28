@@ -41,6 +41,9 @@ PIPELINE_RUNS: dict[str, dict[str, Any]] = {}
 _RUN_ID = re.compile(r"pipe_[0-9a-f]{12}")
 
 STATUS_WAITING_CTO = "waiting_cto_approval"
+_IN_FLIGHT = ("pending", "running", STATUS_WAITING_CTO)
+# A stored in-flight row last written before this moment was cut off by a restart: no task of this process owns it.
+PROCESS_STARTED_AT = datetime.now(UTC)
 
 
 async def set_run_status(run_id: str, status: str, **fields: Any) -> None:
@@ -164,23 +167,24 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     if run is not None:
         return run
     stored = await run_store.load_run(run_id)
-    if stored is not None and stored["status"] in ("pending", "running", STATUS_WAITING_CTO):
+    if stored is not None and stored["status"] in _IN_FLIGHT:
         stored["status"] = "interrupted"
         stored["error"] = "The server restarted while this run was in flight. Use resume_pipeline_run to continue it."
     return stored
 
 
-def list_interrupted_runs() -> dict[str, dict[str, Any]]:
-    """In-process runs left ``pending``/``running``/waiting-on-CTO with no live task — the same "cut off by a
-    restart" condition ``get_run`` reports for a single id, scanned across every run this process knows about.
-    Used by ``sre_autopilot`` to find runs worth auto-resuming; does not consult the database, so a run known only
-    to another process (or from before this process's last restart) is not included."""
-    return {
-        run_id: run
-        for run_id, run in PIPELINE_RUNS.items()
-        if run.get("status") in ("pending", "running", STATUS_WAITING_CTO)
-        and (run.get("_task") is None or run["_task"].done())
-    }
+async def list_interrupted_runs(limit: int = 20) -> dict[str, dict[str, Any]]:
+    """Runs ``get_run`` would report as ``interrupted``: still pending/running/waiting-on-CTO in the database, last
+    written before this process started, and unknown to this process's ``PIPELINE_RUNS``. Used by
+    ``sre_autopilot`` to find runs worth auto-resuming. Like ``get_run``'s report, this assumes one server process
+    per database: a row another live process is still running would also look interrupted here."""
+    stored = await run_store.list_runs(_IN_FLIGHT, updated_before=PROCESS_STARTED_AT, limit=limit)
+    interrupted: dict[str, dict[str, Any]] = {}
+    for run in stored:
+        run_id = run.pop("run_id")
+        if run_id not in PIPELINE_RUNS:
+            interrupted[run_id] = {**run, "status": "interrupted"}
+    return interrupted
 
 
 async def resume_pipeline_run(run_id: str) -> str | None:

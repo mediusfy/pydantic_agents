@@ -9,7 +9,9 @@ database) always escalates as an open ``platform_findings`` row, since none of t
 fix. Nothing outside the allowlist is ever acted on automatically.
 """
 
+import asyncio
 import json
+import logging
 from typing import Any
 
 from pydantic_ai import Agent, RunContext
@@ -19,6 +21,8 @@ from pydantic_agents.core.models.core import SreAutopilotReport
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.sre_remediation import plan_remediations
+
+logger = logging.getLogger(__name__)
 
 sre_autopilot_prompt = """You are the SRE Autopilot Agent: a continuous health-check loop for this platform's
 own infrastructure (not user code).
@@ -52,8 +56,8 @@ sre_autopilot_agent = Agent(
 @sre_autopilot_agent.tool
 async def health_snapshot(ctx: RunContext[Any]) -> str:
     """Current startup-check errors and interrupted pipeline runs, as JSON."""
-    errors = healthcheck.run_startup_checks()
-    interrupted = pipeline_jobs.list_interrupted_runs()
+    errors = await _startup_check_errors()
+    interrupted = await pipeline_jobs.list_interrupted_runs()
     return json.dumps({"startup_check_errors": errors, "interrupted_runs": interrupted}, default=str)
 
 
@@ -61,18 +65,43 @@ async def health_snapshot(ctx: RunContext[Any]) -> str:
 async def scan_and_remediate(ctx: RunContext[Any]) -> str:
     """Detect issues, auto-resume any allowlisted interrupted pipeline run, and persist every other issue as an
     open platform_findings row. Returns one line per action taken (or 'No issues.' when nothing was found)."""
-    errors = healthcheck.run_startup_checks()
-    interrupted = pipeline_jobs.list_interrupted_runs()
+    errors = await _startup_check_errors()
+    interrupted = await pipeline_jobs.list_interrupted_runs()
     plans = plan_remediations(startup_check_errors=errors, interrupted_runs=interrupted)
+    # Scheduled scans see a lasting misconfiguration every time; one open finding for it is enough.
+    already_open = {
+        row.get("summary") for row in await platform_findings.list_findings(status="open", kind="health", limit=500)
+    }
 
     lines: list[str] = []
     for plan in plans:
-        finding_id = await platform_findings.save_finding(
-            plan.kind, plan.severity, plan.summary, agent=plan.agent, evidence=plan.evidence
-        )
         if plan.auto_remediable and plan.run_id is not None:
-            await pipeline_jobs.resume_pipeline_run(plan.run_id)
-            lines.append(f"[auto-remediated] {plan.summary} (finding_id={finding_id})")
+            finding_id = await platform_findings.save_finding(
+                plan.kind, plan.severity, plan.summary, agent=plan.agent, evidence=plan.evidence
+            )
+            if await _resume(plan.run_id):
+                lines.append(f"[auto-remediated] {plan.summary} (finding_id={finding_id})")
+            else:
+                lines.append(f"[escalated] {plan.summary}, but the resume was refused (finding_id={finding_id})")
+        elif plan.summary in already_open:
+            lines.append(f"[escalated] {plan.summary} (already open, not re-recorded)")
         else:
+            finding_id = await platform_findings.save_finding(
+                plan.kind, plan.severity, plan.summary, agent=plan.agent, evidence=plan.evidence
+            )
             lines.append(f"[escalated] {plan.summary} (finding_id={finding_id})")
     return "\n".join(lines) if lines else "No issues."
+
+
+async def _startup_check_errors() -> list[str]:
+    """``run_startup_checks`` in a worker thread: on the event loop its database check skips itself (it needs
+    ``asyncio.run``), so an unreachable database would never be reported."""
+    return await asyncio.to_thread(healthcheck.run_startup_checks)
+
+
+async def _resume(run_id: str) -> bool:
+    try:
+        return await pipeline_jobs.resume_pipeline_run(run_id) is not None
+    except (ValueError, RuntimeError) as exc:
+        logger.warning("sre_autopilot could not resume %s (%s: %s)", run_id, type(exc).__name__, exc)
+        return False
