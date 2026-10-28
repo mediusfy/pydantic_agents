@@ -12,6 +12,14 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agents/innovation_scout.py` (AP-81, ADR-0001 Platform Intelligence Layer): registered agent with a settings
+  field (`innovation_scout_model`), tool category (`"innovation_scout": ["web", "search", "memory",
+  "documentation"]`), and `run_innovation_scout` MCP tool. Its own tools search past ADRs (`search_existing_adrs`)
+  and persist a draft ADR (`propose_adr`, status: proposed, id prefixed `draft-` so a draft can never overwrite
+  an existing ADR) to the ADR store. Read-only with respect to the rest
+  of the platform other than that one draft-write path; drafts are never auto-adopted — any follow-on
+  implementation work still requires an explicit human/CTO approval through the existing CTO approval gate
+  (`core/cto_gate.py`, `approve_cto_gate`), which this agent has no code path to bypass.
 - `agents/sre_autopilot.py` (AP-83, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
   (`sre_autopilot_model`), tool category (`"sre_autopilot": ["security", "validation", "memory"]`), and
   `run_sre_autopilot` MCP tool. Extends `core/healthcheck.py`'s checks to a repeatable health-scan path and adds

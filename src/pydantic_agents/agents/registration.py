@@ -91,11 +91,13 @@ def _register_sdlc_agents() -> None:
 
 def _register_platform_intelligence_agents() -> None:
     """Register the Platform Intelligence Layer agents (ADR-0001 / AP-77)."""
+    from pydantic_agents.agents.innovation_scout import innovation_scout_agent
     from pydantic_agents.agents.observer import observer_agent
     from pydantic_agents.agents.sre_autopilot import sre_autopilot_agent
 
     registry.register("observer", observer_agent, ["observer", "platform_observability"])
     registry.register("sre_autopilot", sre_autopilot_agent, ["sre_autopilot", "platform_health"])
+    registry.register("innovation_scout", innovation_scout_agent, ["innovation_scout", "platform_intelligence"])
 
 
 def _register_utility_agents() -> None:
