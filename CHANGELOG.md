@@ -124,7 +124,11 @@ fresh **Unreleased** section above it.
 
 - Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
   renamed to the current name before the first read of a project's repository, so runs checkpointed by that
-  version resume instead of restarting. Files that are neither form are counted in one warning and ignored.
+  version resume instead of restarting. The rename runs before the first read, is retried on a later read if it
+  failed, and tolerates a second instance renaming the same file first. Files that are neither form are listed in
+  one warning and ignored.
+- A checkpoint file that is valid JSON but not a `PipelineState` is treated as corrupt (logged, `load` returns
+  `None`) instead of raising a validation error out of the resume path.
 
 ### Removed
 - The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,

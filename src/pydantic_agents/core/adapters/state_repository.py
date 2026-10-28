@@ -54,7 +54,8 @@ class LocalDiskStateRepository(StateRepositoryPort):
     def _ensure_migrated(self) -> None:
         """Before a read: rename legacy "{uuid}_{stage}.json" checkpoints to the "{run_id}__{stage}.json" name
         ``load`` builds, so runs started by an older version resume. Runs until one pass succeeds (a failed pass is
-        retried on the next read, warned about once), never raises, and is serialised per instance.
+        retried on the next read, warned about once per instance), never raises, and is serialised per instance;
+        two instances on one directory both pass because a rename the other did first counts as done.
         """
         if self._migrated:
             return
@@ -76,12 +77,15 @@ class LocalDiskStateRepository(StateRepositoryPort):
         if migrated:
             logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
         if unrecognised:
+            names = sorted(unrecognised)
             logger.warning(
-                "%d .json file(s) in %s are not checkpoints (no '__' and no UUID run id) and are ignored",
-                len(unrecognised),
+                "%d .json file(s) in %s are not checkpoints (no '__' and no UUID run id) and are ignored: %s%s",
+                len(names),
                 self.checkpoint_dir,
+                ", ".join(names[:3]),
+                f" (+{len(names) - 3} more at DEBUG)" if len(names) > 3 else "",
             )
-            logger.debug("Ignored files in %s: %s", self.checkpoint_dir, ", ".join(sorted(unrecognised)))
+            logger.debug("Ignored files in %s: %s", self.checkpoint_dir, ", ".join(names))
 
     def _migrate_legacy_files(self) -> tuple[int, list[str]]:
         """Legacy run ids were always UUIDs (no underscore), so the first underscore is the separator and the stage
@@ -103,7 +107,12 @@ class LocalDiskStateRepository(StateRepositoryPort):
             target = os.path.join(self.checkpoint_dir, f"{run_id}__{rest}")
             if os.path.exists(target):
                 continue
-            os.replace(os.path.join(self.checkpoint_dir, filename), target)
+            try:
+                os.replace(os.path.join(self.checkpoint_dir, filename), target)
+            except FileNotFoundError:
+                # Another instance on the same directory renamed it between our listdir and replace.
+                if not os.path.exists(target):
+                    raise
             migrated += 1
         return migrated, unrecognised
 
@@ -139,7 +148,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
                 return PipelineState.model_validate(data)
             except AttributeError:
                 return PipelineState.parse_obj(data)
-        except (json.JSONDecodeError, KeyError, TypeError) as e:
+        except (ValueError, KeyError, TypeError) as e:  # JSONDecodeError and pydantic's ValidationError are ValueErrors
             logger.warning(f"Corrupted checkpoint for stage '{stage}': {e}")
             return None
 
