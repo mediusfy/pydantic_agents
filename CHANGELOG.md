@@ -120,6 +120,12 @@ fresh **Unreleased** section above it.
 - `.env.example`, README and `.ai/guidance/architecture.md` describe the Langfuse export, the run guards, the
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
 
+### Fixed
+
+- Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
+  renamed to the current name before the first read of a project's repository, so runs checkpointed by that
+  version resume instead of restarting. Files that are neither form are reported once and ignored.
+
 ### Removed
 - The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,
   `wait_for_task` and `task_context`: tasks were submitted but nothing consumed them, so `wait_for_task` always

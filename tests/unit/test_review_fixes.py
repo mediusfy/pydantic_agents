@@ -341,10 +341,12 @@ class TestCheckpointFiles:
         (project_dir / f"{self.LEGACY_ID}_advisory_stage.json").write_text(
             PipelineState(run_id=self.LEGACY_ID, stage="advisory").model_dump_json()
         )
-        (project_dir / "notes_for_humans.json").write_text("{}")  # not a UUID prefix: left alone
+        (project_dir / "notes_for_humans.json").write_text("{}")  # not a UUID prefix: left alone, reported
 
+        repo = LocalDiskStateRepository("proj")
+        assert (project_dir / f"{self.LEGACY_ID}_ba.json").exists()  # construction does no I/O beyond mkdir
         with caplog.at_level("INFO", logger="pydantic_agents.core.adapters.state_repository"):
-            repo = LocalDiskStateRepository("proj")
+            assert repo.find_latest_run_id() == self.LEGACY_ID
 
         assert sorted(f.name for f in project_dir.iterdir()) == [
             f"{self.LEGACY_ID}__advisory_stage.json",
@@ -352,8 +354,26 @@ class TestCheckpointFiles:
             "notes_for_humans.json",
         ]
         assert "Migrated 2 legacy checkpoint file(s)" in caplog.text
-        assert repo.find_latest_run_id() == self.LEGACY_ID
-        assert repo.load(self.LEGACY_ID, "advisory_stage") is not None
+        assert "1 .json file(s) in" in caplog.text
+        assert "notes_for_humans.json" in caplog.text
+        assert repo.load(self.LEGACY_ID, "advisory_stage") is not None  # underscores in the stage round-trip
+        assert repo.exists(self.LEGACY_ID, "ba")
+
+    def test_migration_failure_is_logged_and_reads_continue(self, tmp_path, monkeypatch, caplog):
+        from pydantic_agents.core.adapters import state_repository
+        from pydantic_agents.core.models.core import PipelineState
+
+        monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.checkpoint_dir", str(tmp_path))
+        repo = state_repository.LocalDiskStateRepository("proj")
+        repo.save("run-new", "ba", PipelineState(run_id="run-new", stage="ba"))
+        (tmp_path / "proj" / f"{self.LEGACY_ID}_ba.json").write_text("{}")
+        monkeypatch.setattr(state_repository.os, "replace", MagicMock(side_effect=PermissionError("read-only")))
+
+        with caplog.at_level("WARNING", logger="pydantic_agents.core.adapters.state_repository"):
+            assert repo.find_latest_run_id() == "run-new"
+
+        assert "Could not migrate legacy checkpoint files" in caplog.text
+        assert repo.load("run-new", "ba") is not None
 
     def test_migration_never_overwrites_a_current_format_file(self, tmp_path, monkeypatch):
         from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository

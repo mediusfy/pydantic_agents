@@ -46,31 +46,58 @@ class LocalDiskStateRepository(StateRepositoryPort):
         self.project_name = project_name
         self.checkpoint_dir = os.path.join(str(settings.checkpoint_dir), project_name)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
-        self._migrate_legacy_files()
+        self._migrated = False
 
-    def _migrate_legacy_files(self) -> None:
-        """Rename checkpoints written before the ``__`` separator ("{uuid}_{stage}.json") to the current name.
+    def _ensure_migrated(self) -> None:
+        """Once per repository, before the first read: rename legacy checkpoint files to the current name.
 
-        ``load`` builds "{run_id}__{stage}.json", so without this rename a run started by an older version could be
-        found by ``find_latest_run_id`` but never resumed. Legacy run ids were UUIDs (no underscore), so the first
-        underscore is the separator. A file that already has "__" or whose prefix is not a UUID is left alone.
+        Checkpoints written before the ``__`` separator were "{uuid}_{stage}.json"; ``load`` builds
+        "{run_id}__{stage}.json", so without the rename a run started by an older version could be found by
+        ``find_latest_run_id`` but never resumed. Legacy run ids were always UUIDs (no underscore), so the first
+        underscore is the separator; the stage part may contain underscores and is kept whole. A file that already
+        has "__", or whose prefix is not a UUID, is left alone, and such a leftover is reported once. The rename is
+        lazy (not in ``__init__``) and never raises: a read-only or odd directory logs a warning and reads proceed.
         """
+        if self._migrated:
+            return
+        self._migrated = True
+        try:
+            migrated, unrecognised = self._migrate_legacy_files()
+        except OSError as e:
+            logger.warning("Could not migrate legacy checkpoint files in %s: %s", self.checkpoint_dir, e)
+            return
+        if migrated:
+            logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
+        if unrecognised:
+            logger.warning(
+                "%d .json file(s) in %s are not checkpoints of this repository (no '__' and no UUID run id) and "
+                "are ignored: %s",
+                len(unrecognised),
+                self.checkpoint_dir,
+                ", ".join(sorted(unrecognised)[:5]),
+            )
+
+    def _migrate_legacy_files(self) -> tuple[int, list[str]]:
         migrated = 0
+        unrecognised: list[str] = []
         for filename in os.listdir(self.checkpoint_dir):
-            if not filename.endswith(".json") or "__" in filename or "_" not in filename:
+            if not filename.endswith(".json") or "__" in filename:
                 continue
-            run_id, _, rest = filename.partition("_")
+            run_id, sep, rest = filename.partition("_")
             try:
                 uuid.UUID(run_id)
             except ValueError:
+                unrecognised.append(filename)
+                continue
+            if not sep:
+                unrecognised.append(filename)
                 continue
             target = os.path.join(self.checkpoint_dir, f"{run_id}__{rest}")
             if os.path.exists(target):
                 continue
             os.replace(os.path.join(self.checkpoint_dir, filename), target)
             migrated += 1
-        if migrated:
-            logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
+        return migrated, unrecognised
 
     def _get_filepath(self, run_id: str, stage: str) -> str:
         safe_stage = stage.replace("/", "_").replace(" ", "_")
@@ -93,6 +120,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
         logger.info(f"State saved to disk: stage='{stage}' at {os.path.relpath(filepath)}")
 
     def load(self, run_id: str, stage: str) -> PipelineState | None:
+        self._ensure_migrated()
         filepath = self._get_filepath(run_id, stage)
         if not os.path.exists(filepath):
             return None
@@ -108,6 +136,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
             return None
 
     def exists(self, run_id: str, stage: str) -> bool:
+        self._ensure_migrated()
         return os.path.exists(self._get_filepath(run_id, stage))
 
     def clear(self, run_id: str) -> None:
@@ -123,6 +152,7 @@ class LocalDiskStateRepository(StateRepositoryPort):
     def find_latest_run_id(self) -> str | None:
         if not os.path.isdir(self.checkpoint_dir):
             return None
+        self._ensure_migrated()
         try:
             files = [f for f in os.listdir(self.checkpoint_dir) if f.endswith(".json")]
             if not files:
