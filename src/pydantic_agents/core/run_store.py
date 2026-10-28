@@ -56,30 +56,32 @@ async def save_run(run_id: str, run: dict[str, Any]) -> None:
     """Upsert the persistable fields of a run. Never raises."""
     if not enabled():
         return
+
+    async def _op(conn: Any) -> None:
+        await _ensure_table(conn)
+        await conn.execute(
+            """
+            INSERT INTO pipeline_runs
+                (run_id, status, project, requirement, result, error, started_at, completed_at, elapsed_seconds)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            ON CONFLICT (run_id) DO UPDATE SET
+                status = EXCLUDED.status, result = EXCLUDED.result, error = EXCLUDED.error,
+                completed_at = EXCLUDED.completed_at, elapsed_seconds = EXCLUDED.elapsed_seconds,
+                updated_at = now()
+            """,
+            run_id,
+            run.get("status"),
+            run.get("project"),
+            run.get("requirement"),
+            run.get("result"),
+            run.get("error"),
+            _ts(run.get("started_at")),
+            _ts(run.get("completed_at")),
+            run.get("elapsed_seconds"),
+        )
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            await conn.execute(
-                """
-                INSERT INTO pipeline_runs
-                    (run_id, status, project, requirement, result, error, started_at, completed_at, elapsed_seconds)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (run_id) DO UPDATE SET
-                    status = EXCLUDED.status, result = EXCLUDED.result, error = EXCLUDED.error,
-                    completed_at = EXCLUDED.completed_at, elapsed_seconds = EXCLUDED.elapsed_seconds,
-                    updated_at = now()
-                """,
-                run_id,
-                run.get("status"),
-                run.get("project"),
-                run.get("requirement"),
-                run.get("result"),
-                run.get("error"),
-                _ts(run.get("started_at")),
-                _ts(run.get("completed_at")),
-                run.get("elapsed_seconds"),
-            )
+        await vector_db.with_connection(_op)
     except Exception as exc:  # best-effort by design
         logger.warning("Could not persist pipeline run %s (%s: %s)", run_id, type(exc).__name__, exc)
 
@@ -120,11 +122,13 @@ async def load_run(run_id: str) -> dict[str, Any] | None:
     """The stored run as a ``PIPELINE_RUNS``-shaped dict (ISO timestamps), or None. Never raises."""
     if not enabled():
         return None
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        return await conn.fetchrow("SELECT * FROM pipeline_runs WHERE run_id = $1", run_id)
+
     try:
-        pool = await vector_db._get_pool()
-        async with pool.acquire() as conn:
-            await _ensure_table(conn)
-            row = await conn.fetchrow("SELECT * FROM pipeline_runs WHERE run_id = $1", run_id)
+        row = await vector_db.with_connection(_op)
     except Exception as exc:
         logger.warning("Could not load pipeline run %s (%s: %s)", run_id, type(exc).__name__, exc)
         return None
