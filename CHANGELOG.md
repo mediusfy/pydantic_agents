@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
+  case-insensitive so a lowercase "critical" still reaches the gate),
+  `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
+  `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
+  forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
+  `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
