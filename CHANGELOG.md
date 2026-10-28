@@ -124,7 +124,7 @@ fresh **Unreleased** section above it.
 
 - Checkpoint files written by a version before the `{run_id}__{stage}.json` name (`{uuid}_{stage}.json`) are
   renamed to the current name before the first read of a project's repository, so runs checkpointed by that
-  version resume instead of restarting. Files that are neither form are reported once and ignored.
+  version resume instead of restarting. Files that are neither form are counted in one warning and ignored.
 
 ### Removed
 - The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,

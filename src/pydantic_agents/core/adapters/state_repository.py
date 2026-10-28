@@ -2,6 +2,7 @@ import abc
 import json
 import logging
 import os
+import threading
 import uuid
 
 from pydantic_agents.core.models.core import PipelineState
@@ -47,37 +48,44 @@ class LocalDiskStateRepository(StateRepositoryPort):
         self.checkpoint_dir = os.path.join(str(settings.checkpoint_dir), project_name)
         os.makedirs(self.checkpoint_dir, exist_ok=True)
         self._migrated = False
+        self._migration_warned = False
+        self._migration_lock = threading.Lock()
 
     def _ensure_migrated(self) -> None:
-        """Once per repository, before the first read: rename legacy checkpoint files to the current name.
-
-        Checkpoints written before the ``__`` separator were "{uuid}_{stage}.json"; ``load`` builds
-        "{run_id}__{stage}.json", so without the rename a run started by an older version could be found by
-        ``find_latest_run_id`` but never resumed. Legacy run ids were always UUIDs (no underscore), so the first
-        underscore is the separator; the stage part may contain underscores and is kept whole. A file that already
-        has "__", or whose prefix is not a UUID, is left alone, and such a leftover is reported once. The rename is
-        lazy (not in ``__init__``) and never raises: a read-only or odd directory logs a warning and reads proceed.
+        """Before a read: rename legacy "{uuid}_{stage}.json" checkpoints to the "{run_id}__{stage}.json" name
+        ``load`` builds, so runs started by an older version resume. Runs until one pass succeeds (a failed pass is
+        retried on the next read, warned about once), never raises, and is serialised per instance.
         """
         if self._migrated:
             return
-        self._migrated = True
-        try:
-            migrated, unrecognised = self._migrate_legacy_files()
-        except OSError as e:
-            logger.warning("Could not migrate legacy checkpoint files in %s: %s", self.checkpoint_dir, e)
-            return
+        with self._migration_lock:
+            if self._migrated:
+                return
+            try:
+                migrated, unrecognised = self._migrate_legacy_files()
+            except OSError as e:
+                if not self._migration_warned:
+                    self._migration_warned = True
+                    logger.warning(
+                        "Could not migrate legacy checkpoint files in %s (will retry on the next read): %s",
+                        self.checkpoint_dir,
+                        e,
+                    )
+                return
+            self._migrated = True
         if migrated:
             logger.info("Migrated %d legacy checkpoint file(s) in %s to the '__' name", migrated, self.checkpoint_dir)
         if unrecognised:
             logger.warning(
-                "%d .json file(s) in %s are not checkpoints of this repository (no '__' and no UUID run id) and "
-                "are ignored: %s",
+                "%d .json file(s) in %s are not checkpoints (no '__' and no UUID run id) and are ignored",
                 len(unrecognised),
                 self.checkpoint_dir,
-                ", ".join(sorted(unrecognised)[:5]),
             )
+            logger.debug("Ignored files in %s: %s", self.checkpoint_dir, ", ".join(sorted(unrecognised)))
 
     def _migrate_legacy_files(self) -> tuple[int, list[str]]:
+        """Legacy run ids were always UUIDs (no underscore), so the first underscore is the separator and the stage
+        part, which may contain underscores, is kept whole. Returns (renamed count, files that are neither form)."""
         migrated = 0
         unrecognised: list[str] = []
         for filename in os.listdir(self.checkpoint_dir):
