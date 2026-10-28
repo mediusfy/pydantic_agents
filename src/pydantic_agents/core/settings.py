@@ -81,6 +81,7 @@ class Settings(BaseSettings):
     planner_model: str = "deepseek-v4-pro"
     quality_gate_model: str = "deepseek-v4-pro"
     service_engineer_model: str = "deepseek-v4-pro"
+    product_strategist_model: str = "deepseek-v4-pro"
     critic_model: str = "deepseek-v4-pro"
     api_contract_model: str = "deepseek-v4-pro"
     observability_engineer_model: str = "deepseek-v4-pro"

@@ -157,6 +157,11 @@ AGENT_DOCSTRINGS = {
     "quality_gate": "Invokes the Quality Gate agent to check for over-engineering and complexity.",
     "service_engineer": "Invokes the Service Engineer agent to modify existing Go codebases.",
     "planner": "Invokes the Planner agent to create execution plans.",
+    "product_strategist": (
+        "Invokes the Product Strategist Agent (ADR-0001 Platform Intelligence Layer) to mine requirement history "
+        "and open platform_findings for customer-facing product/capability proposals. Read-only: never writes "
+        "code or tickets. Returns a JSON ProductStrategistReport (proposals, narrative)."
+    ),
     "critic": (
         "Invokes the Critic agent to check another agent's claims against the evidence from its run. "
         "Returns a JSON CriticReport (claims with evidence, unsupported_count, passed, feedback)."

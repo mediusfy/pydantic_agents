@@ -148,6 +148,23 @@ class SecurityReport(BaseModel):
         return self
 
 
+class ProductProposal(BaseModel):
+    """One customer-facing product/capability idea the product_strategist agent surfaced."""
+
+    title: str
+    rationale: str
+    evidence: list[str] = Field(default_factory=list, description="Requirement text or finding summaries cited")
+
+
+class ProductStrategistReport(BaseModel):
+    """Structured output of the product_strategist agent: a written proposal report, never code or tickets.
+    A human/CTO reviews and decides what (if anything) to act on (ADR-0001's guardrails).
+    """
+
+    proposals: list[ProductProposal] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the analysis")
+
+
 class PipelineState(BaseModel):
     run_id: str
     stage: str

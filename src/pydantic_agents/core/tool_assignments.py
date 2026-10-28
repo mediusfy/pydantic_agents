@@ -26,6 +26,7 @@ AGENT_TOOL_CATEGORIES = {
     "market_shark": ["web", "search", "memory", "a2a", "finance"],
     "crypto_oracle": ["web", "search", "memory", "finance", "news", "a2a"],
     "database": ["web", "search", "memory", "documentation", "a2a", "fs_read"],
+    "product_strategist": ["memory", "a2a"],
     "devops": ["web", "search", "config_validation", "memory", "documentation", "a2a", "fs_read"],
     "accountant": ["web", "search", "memory", "a2a"],
     "asymmetric_reviewer": ["web", "search", "memory", "a2a"],

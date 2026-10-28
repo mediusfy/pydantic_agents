@@ -32,6 +32,7 @@ def register_all_agents() -> None:
 
     _register_sdlc_agents()
     _register_utility_agents()
+    _register_platform_intelligence_agents()
 
     _registered = True
 
@@ -84,6 +85,13 @@ def _register_sdlc_agents() -> None:
     registry.register("observability_engineer", observability_engineer_agent, ["observability", "alerting"])
     registry.register("finops", finops_agent, ["finops", "cost"])
     registry.register("release_manager", release_manager_agent, ["release", "changelog"])
+
+
+def _register_platform_intelligence_agents() -> None:
+    """Register the Platform Intelligence Layer agents (ADR-0001 / AP-77)."""
+    from pydantic_agents.agents.product_strategist import product_strategist_agent
+
+    registry.register("product_strategist", product_strategist_agent, ["product_strategist", "platform_intelligence"])
 
 
 def _register_utility_agents() -> None:
