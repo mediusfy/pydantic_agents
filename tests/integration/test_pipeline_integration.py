@@ -515,7 +515,7 @@ class TestAgentRegistrationIntegration:
 
         register_all_agents()
 
-        assert len(registry.list_agents()) == 33
+        assert len(registry.list_agents()) == 34
 
     def test_capability_index_is_populated(self):
         """Each agent's capabilities must be in the index.

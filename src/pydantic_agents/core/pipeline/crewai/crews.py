@@ -22,13 +22,13 @@ from typing import Any
 from crewai import Crew, Process, Task
 
 from pydantic_agents.core.adapters.crewai_bridge import as_crewai_agent, build_crewai_llm
-from pydantic_agents.core.models.core import AgentAdvice, PipelineState, ReviewResult
+from pydantic_agents.core.models.core import AgentAdvice, Finding, PipelineState, ReviewResult
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.utils import format_artifacts
 
 logger = logging.getLogger(__name__)
 
-TASK_KINDS = ("artifact", "verdict", "advice", "feedback", "note")
+TASK_KINDS = ("artifact", "verdict", "advice", "feedback", "findings", "note")
 
 
 def _task_name(owner: str, kind: str) -> str:
@@ -56,6 +56,21 @@ REVIEW_VERDICT_OUTPUT = _json_contract(
 CTO_ADVICE_OUTPUT = _json_contract(
     AgentAdvice,
     "Architecture advice. approved_to_proceed must be false while any CRITICAL finding is open.",
+)
+
+
+def _json_array_contract(item_model: type[Any], preamble: str) -> str:
+    item_schema = json.dumps(item_model.model_json_schema(), separators=(",", ":"))
+    return (
+        f"{preamble} Reply with exactly one JSON array and nothing else (no prose, no code fence), each element "
+        f"validating against this JSON schema: {item_schema}"
+    )
+
+
+AUDIT_FINDINGS_OUTPUT = _json_array_contract(
+    Finding,
+    "The consolidated findings, one array element per finding, with id, source_agent, severity, description, "
+    "location set and owner/due_date filled in now that you are consolidating.",
 )
 
 
@@ -409,15 +424,14 @@ class AuditCrew:
             name=_task_name("sre", "note"),
         )
         consolidate_task = _make_task(
-            "Consolidate the security, CI/container and runtime findings into one table with the columns "
-            "id, severity, location, finding, owner, due date. Drop every finding that has neither a file:line "
-            "reference nor a resource id. Owners are the responsible agent roles (security, devops, sre, "
-            "backend, frontend); due dates are ISO dates relative to today, sooner for higher severity.",
+            "Consolidate the security, CI/container and runtime findings into one list. Drop every finding that "
+            "has neither a file:line reference nor a resource id. Owners are the responsible agent roles "
+            "(security, devops, sre, backend, frontend); due dates are ISO dates relative to today, sooner for "
+            "higher severity. Every finding you keep must have both an owner and a due date set.",
             reviewer,
-            "A markdown findings table (id, severity, location, finding, owner, due date) followed by the count "
-            "of findings dropped for lacking a location",
+            AUDIT_FINDINGS_OUTPUT,
             [secrets_task, ci_task, runtime_task],
-            name=_task_name("review", "feedback"),
+            name=_task_name("review", "findings"),
         )
 
         return Crew(

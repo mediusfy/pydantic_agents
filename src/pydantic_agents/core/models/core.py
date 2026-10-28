@@ -234,6 +234,22 @@ class SecurityReport(BaseModel):
         return self
 
 
+class ObserverFinding(BaseModel):
+    """One cross-run signal the observer agent surfaced; mirrors a `platform_findings` row."""
+
+    kind: str = Field(description="regression, flaky, pattern, or health")
+    severity: str = Field(description="low, medium, high, or critical")
+    agent: str | None = Field(default=None, description="Affected agent name, when the finding is agent-specific")
+    summary: str
+
+
+class ObserverReport(BaseModel):
+    """Structured output of the observer agent: what it found, in its own words."""
+
+    findings: list[ObserverFinding] = Field(default_factory=list)
+    narrative: str = Field(default="", description="Short human-readable digest of the scan")
+
+
 class PipelineState(BaseModel):
     run_id: str
     stage: str

@@ -16,12 +16,23 @@ fresh **Unreleased** section above it.
   runs test suites `test_gen` produced via `execute_test_suite` and returns a `TestRunReport` (pass/fail per
   acceptance-criterion id, coverage, unexecuted ids, `all_passed` derived in code),
   without writing or fixing tests itself. Part of the QA Engineer pipeline (KAN-482/KAN-483).
+- `agents/observer.py` (AP-80, ADR-0001 Platform Intelligence Layer): registered agent with a settings field
+  (`observer_model`), tool category (`"observer": ["memory", "search"]`), and `run_observer` MCP tool. Its own
+  tools read `platform_metrics`/open `platform_findings` and deterministically detect regressions, flaky agents,
+  and latency drift (`core/observer_analysis.py`, pure functions, no I/O), persisting each as an open
+  `platform_findings` row via `save_finding`, skipping a finding whose kind and agent already have an open row so
+  scheduled scans do not pile up duplicates. Read-only with respect to the rest of the platform.
 - `core/models/core.py`: `Finding` (typed, versioned, requires a non-blank `file:line` or resource id `location`; severity is
   case-insensitive so a lowercase "critical" still reaches the gate),
   `TestRunReport`/`CriterionResult` (versioned test-execution report keyed by acceptance-criterion id, with
   `all_passed` derived from the results and any unexecuted ids), and `AgentAdvice.findings` — `AgentAdvice` now
   forces `approved_to_proceed=False` in code while any CRITICAL finding is open, closing the gap where
   `ArchitectureReviewCrew`'s CTO gate relied on the prompt alone (KAN-485, part of epic KAN-482).
+- `AuditCrew`'s consolidation task (`core/pipeline/crewai/crews.py`) now outputs a JSON array of `Finding`
+  objects instead of free-text markdown, and the bridge's new `_apply_findings` (`core/pipeline/crewai/bridge.py`)
+  enforces the ADR rule in code: findings missing a `file:line`/resource id are dropped, and the whole batch is
+  rejected (fail-closed, like the existing review/advice gates) if any other finding is invalid or a surviving
+  finding is missing an owner or due date (KAN-491, part of epic KAN-482).
 - `core/platform_metrics.py` (`platform_metrics` table) and `core/platform_findings.py` (`platform_findings` table,
   `save_finding`/`list_findings`): best-effort pgvector persistence for ADR-0001's Platform Intelligence Layer
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
