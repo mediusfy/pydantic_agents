@@ -65,6 +65,12 @@ fresh **Unreleased** section above it.
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
   (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
   JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
+- `QaCrew` now runs qa_executor/go_test in a bounded fix loop (`settings.qa_max_fix_rounds`, default 2) instead
+  of a single unconditional fix step: `qa_executor` reports a `TestRunReport` after every round, `go_test` is
+  retried only on the failing/unexecuted criterion ids, and review's sign-off runs regardless but `state.approved`
+  is forced false in code if the final report isn't `all_passed` with coverage at or above
+  `settings.qa_min_coverage_percent` (default 80%), closing the gap where the retry was unbounded and ungated
+  (KAN-487, part of epic KAN-482).
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they

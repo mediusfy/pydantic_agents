@@ -5,7 +5,15 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from pydantic_agents.core.models.core import AgentAdvice, Artifact, FailureReport, Finding, PipelineState, ReviewResult
+from pydantic_agents.core.models.core import (
+    AgentAdvice,
+    Artifact,
+    FailureReport,
+    Finding,
+    PipelineState,
+    ReviewResult,
+    TestRunReport,
+)
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.pipeline.crewai.crews import (
     ArchitectureReviewCrew,
@@ -16,6 +24,7 @@ from pydantic_agents.core.pipeline.crewai.crews import (
     SecurityReviewCrew,
 )
 from pydantic_agents.core.session_recorder import recorder
+from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -60,10 +69,14 @@ async def run_crewai_pipeline(
             from pydantic_agents.core.pipeline.context import ContextFrame
 
             logger.info("Running %s...", crew_class_name)
-            crew = crew_cls().build(state)
-            result = await _run_crew_async(crew)
-            rec.set_output({"crew": crew_class_name, "result": str(result)[:500]})
-            _apply_result(state, result)
+            if crew_class_name == "QaCrew":
+                summary = await _run_qa_crew_with_retry(state)
+                rec.set_output({"crew": crew_class_name, "result": summary[:500]})
+            else:
+                crew = crew_cls().build(state)
+                result = await _run_crew_async(crew)
+                rec.set_output({"crew": crew_class_name, "result": str(result)[:500]})
+                _apply_result(state, result)
 
             files: list[str] = []
             for art in state.artifacts or []:
@@ -88,6 +101,78 @@ async def run_crewai_pipeline(
 
 async def _run_crew_async(crew: Any) -> Any:
     return await asyncio.to_thread(crew.kickoff)
+
+
+async def _run_qa_crew_with_retry(state: PipelineState) -> str:
+    """QaCrew's bounded fix loop (KAN-487).
+
+    ``Process.sequential`` runs each task exactly once, so the retry can't live inside one ``Crew``: this runs a
+    bounded sequence of single-purpose crews instead, re-running ``qa_executor``/``go_test`` up to
+    ``settings.qa_max_fix_rounds`` times before the review sign-off runs regardless. The final ``TestRunReport``
+    (not the reviewer's own verdict) gates ``state.approved``: a reviewer can't approve what the test run itself
+    still says is failing or under the coverage floor.
+    """
+    qa = QaCrew()
+
+    tests_result = await _run_crew_async(qa.build_tests(state))
+    tests_outputs = list(getattr(tests_result, "tasks_output", None) or [])
+    for task_out in tests_outputs:
+        target = _owner_and_kind(task_out)
+        if target and target[1] == "artifact":
+            _merge_artifact(state, _artifact_from_output(target[0], _output_text(task_out)))
+    tests_output = _output_text(tests_outputs[-1]) if tests_outputs else ""
+
+    report = TestRunReport()
+    report_parsed = False
+    for round_num in range(settings.qa_max_fix_rounds + 1):
+        exec_result = await _run_crew_async(qa.build_execution(tests_output))
+        exec_outputs = list(getattr(exec_result, "tasks_output", None) or [])
+        raw_report = _output_text(exec_outputs[0]) if exec_outputs else ""
+        parsed, reason = _parse_json_model(TestRunReport, raw_report)
+        if parsed is None:
+            state.errors.append(f"crewai qa_executor: {reason}")
+            logger.warning("QaCrew execution report rejected on round %d: %s", round_num, reason)
+            report = TestRunReport()
+            report_parsed = False
+            # qa_executor's output didn't parse, not the tests failing: a fix round would hand go_test a
+            # meaningless empty failing-id list, so stop retrying and let the fail-closed gate below block.
+            break
+        report = parsed
+        report_parsed = True
+        state.test_run_report = report
+        gate_met = report.all_passed and report.coverage_percent >= settings.qa_min_coverage_percent
+        if gate_met or round_num >= settings.qa_max_fix_rounds:
+            break
+
+        fix_result = await _run_crew_async(qa.build_fix(tests_output, report))
+        fix_outputs = list(getattr(fix_result, "tasks_output", None) or [])
+        if fix_outputs:
+            fix_text = _output_text(fix_outputs[0])
+            _merge_artifact(state, _artifact_from_output("test_eng", fix_text))
+            tests_output = fix_text
+    state.test_run_report = report
+
+    signoff_result = await _run_crew_async(qa.build_signoff(tests_output, report))
+    signoff_outputs = list(getattr(signoff_result, "tasks_output", None) or [])
+    if signoff_outputs:
+        _apply_verdict(state, _output_text(signoff_outputs[0]))
+
+    gate_met = report.all_passed and report.coverage_percent >= settings.qa_min_coverage_percent
+    if not gate_met:
+        state.approved = False
+        if not report_parsed:
+            reason = "qa_executor's test-execution report did not parse"
+        elif not report.all_passed:
+            reason = "test run still failing"
+        else:
+            reason = f"coverage {report.coverage_percent}% below floor {settings.qa_min_coverage_percent}%"
+        msg = f"crewai QaCrew: fix loop exhausted after {settings.qa_max_fix_rounds} round(s), {reason}"
+        state.errors.append(msg)
+
+    return (
+        f"QaCrew finished: all_passed={report.all_passed} coverage={report.coverage_percent} "
+        f"approved={state.approved}"
+    )
 
 
 # ── Mapping crew output back onto the pipeline state ──────────────────────
