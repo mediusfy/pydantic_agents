@@ -32,11 +32,11 @@ Model routing is provider-agnostic via `Settings.resolve_model()` in
   a session and a trace name.
 
 Agents are registered into a shared `AgentRegistry` (`pydantic_agents/core/registry.py`) via
-`pydantic_agents/agents/registration.py`. **Tools are attached lazily, not via `@agent.tool`
-decorators in the agent files**: `registry.get(name)` triggers `AgentRegistry._lazy_init`,
+`pydantic_agents/agents/registration.py`. **Shared tools are attached lazily by category**:
+`registry.get(name)` triggers `AgentRegistry._lazy_init`,
 which looks up `AGENT_TOOL_CATEGORIES[name]` in `tool_assignments.py` and calls
 `core/tools/registry.py::apply_tools`, which attaches every tool in `core/tools/*.py` whose
-category matches. E.g. `crypto_oracle` gets category `finance`/`news`, which is how it ends up
+category matches (and a few agents also define role-specific tools with `@<name>_agent.tool`). E.g. `crypto_oracle` gets category `finance`/`news`, which is how it ends up
 with `search_news`/market-data tools even though `crypto_oracle.py` itself has no `@agent.tool`
 decorators. This is how the parent monorepo exposes agents as MCP tools
 (`mcp__litellm__agents-run_<name>`).
@@ -58,7 +58,7 @@ src/pydantic_agents/
       factory.py           # create_model(): routes model specs through LiteLLM/native providers
   agents/
     registration.py
-    (17 SDLC agents: cto, ba, backend, frontend, test_eng, security, ...)
+    (24 SDLC + 4 platform intelligence agents: cto, ba, backend, frontend, test_eng, security, ...)
     non_technical/         # 9 utility agents (weather, accountant, crypto_oracle, ...)
 ```
 
@@ -190,7 +190,7 @@ database instead (design and rationale: `docs/turso-agent-databases-plan.md`).
 
 | Setting | Values | Default | Effect |
 |---|---|---|---|
-| `STATE_BACKEND` | `disk`, `turso` | `disk` | `disk`: one JSON file per `{run_id}_{stage}` under `CHECKPOINT_DIR/<project>/`. `turso`: a single `CHECKPOINT_DIR/<project>/state.db` holding `pipeline_checkpoints` and `pipeline_stage_events`. |
+| `STATE_BACKEND` | `disk`, `turso` | `disk` | `disk`: one JSON file per `{run_id}__{stage}` under `CHECKPOINT_DIR/<project>/`. `turso`: a single `CHECKPOINT_DIR/<project>/state.db` holding `pipeline_checkpoints` and `pipeline_stage_events`. |
 | `CHECKPOINT_DIR` | path | `./.claw-checkpoints` | Parent directory for either backend. |
 
 Prerequisites and caveats for enabling it in the cluster:
@@ -267,10 +267,10 @@ open; the 2026-10-27 architecture review fixed the rest (see `CHANGELOG.md`):
 7. **Module-level singleton agents** (`cto_agent`, `ba_agent`, ...) instantiated at import
    time make test isolation/mocking harder — consider exposing `build_<name>_agent()`
    constructors alongside the default singleton.
-8. **Inconsistent `deps_factory` usage in `registration.py`** — utility agents require a
-   `deps_factory` lambda, SDLC agents never pass one even when they declare `deps_type`.
-9. **Two manual touch points to add one new agent**: a `settings.py` field and a
-   `registration.py` entry — no validation keeps these in sync.
+8. ~~**Inconsistent `deps_factory` usage in `registration.py`**~~ — **fixed**: all SDLC agents that declare
+   `deps_type` (`cto`, `backend`, `review`, `database`, `devops`, `security`) register a default `deps_factory`.
+9. ~~**Two manual touch points to add one new agent**~~ — **fixed**: `tests/unit/test_agent_consistency.py`
+   cross-checks `settings.py`, `registration.py`, and `tool_assignments.py`.
 
 ## Relationship to pydantic_ai + LiteLLM
 

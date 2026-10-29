@@ -1,10 +1,12 @@
 from dataclasses import dataclass
+from typing import Any
 
 from pydantic_ai import Agent, RunContext
 
 from pydantic_agents.core.models.core import AgentAdvice
 from pydantic_agents.core.models.factory import create_model
 from pydantic_agents.core.settings import settings
+from pydantic_agents.core.vector_db import vector_db
 
 
 @dataclass
@@ -68,3 +70,12 @@ def _org_context(ctx: RunContext[OrgContext | None]) -> str:
         f"- Compliance tier: {org.compliance_tier}\n"
         f"- Monthly cloud budget (USD): {org.monthly_cloud_budget:,.2f}"
     )
+
+
+@cto_agent.tool
+async def search_existing_adrs(ctx: RunContext[Any], query: str, n_results: int = 5) -> str:
+    """Search past Architecture Decision Records (ADRs) for related context before approving an architecture."""
+    results = await vector_db.async_search("adrs", query, n_results=max(1, min(n_results, 20)))
+    if not results:
+        return f"No ADRs found for query: {query}"
+    return "Found past architectural context:\n" + "\n---\n".join(results)

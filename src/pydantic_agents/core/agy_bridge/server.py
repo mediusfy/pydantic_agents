@@ -85,6 +85,9 @@ async def _respond_to(command: str) -> None:
     """Run one JSON command and print its response; invalid JSON is reported as an error line."""
     try:
         cmd_data = json.loads(command)
+        if not isinstance(cmd_data, dict):
+            _emit({"error": "command must be a JSON object"})
+            return
         response = await _handle_command(cmd_data)
         if "id" in cmd_data:
             response["id"] = cmd_data["id"]

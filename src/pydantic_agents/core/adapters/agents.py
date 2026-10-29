@@ -57,6 +57,9 @@ class PydanticAIAgentProvider(AgentProviderPort):
         async def _run_with_retry():
             kwargs: dict[str, Any] = {"usage_limits": usage_limits(agent_name)}
             if (ms := run_model_settings(agent_name)) is not None:
+                agent_ms = getattr(agent, "_model_settings", None)
+                if isinstance(agent_ms, dict) and "max_tokens" in agent_ms:
+                    ms = {**ms, "max_tokens": agent_ms["max_tokens"]}  # type: ignore[assignment]
                 kwargs["model_settings"] = ms
             if deps is not None:
                 kwargs["deps"] = deps

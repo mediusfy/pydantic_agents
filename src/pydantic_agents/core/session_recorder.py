@@ -68,6 +68,8 @@ class AgentRunRecord:
         d = asdict(self)
         # Truncate prompt to keep files manageable
         d["prompt_truncated"] = len(d["prompt"]) > 100_000
+        if d["prompt_truncated"]:
+            d["prompt"] = d["prompt"][:100_000]
         return d
 
     def set_output(self, output: Any, success: bool = True) -> None:

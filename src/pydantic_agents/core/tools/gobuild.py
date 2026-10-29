@@ -6,7 +6,7 @@ import tempfile
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
 
 GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
@@ -25,6 +25,7 @@ async def _run_build(temp_dir: str) -> str:
         "build",
         "./...",
         cwd=temp_dir,
+        env=sanitized_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
@@ -47,6 +48,7 @@ async def _run_vet(temp_dir: str) -> str:
         "vet",
         "./...",
         cwd=temp_dir,
+        env=sanitized_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )

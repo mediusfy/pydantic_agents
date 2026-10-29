@@ -36,10 +36,18 @@ configure_observability()
 
 logging.basicConfig(level=logging.INFO)
 
+def _split_csv(raw: str) -> list[str]:
+    return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+_KNOWN_CONTEXT_DOMAINS: tuple[str, ...] = ("adrs", "architecture", "conventions", "project")
+
 mcp = FastMCP(
     "Orgitration",
     transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=os.environ.get("MCP_DNS_REBINDING_PROTECTION", "1") == "1"
+        enable_dns_rebinding_protection=os.environ.get("MCP_DNS_REBINDING_PROTECTION", "1") == "1",
+        allowed_hosts=_split_csv(settings.mcp_allowed_hosts),
+        allowed_origins=_split_csv(settings.mcp_allowed_origins),
     ),
 )
 
@@ -416,9 +424,9 @@ async def cancel_pipeline_run(run_id: str) -> str:
     already done (completed, failed, or already cancelled), reports its
     current status.
     """
-    from pydantic_agents.core.pipeline_jobs import PIPELINE_RUNS
+    from pydantic_agents.core.pipeline_jobs import PIPELINE_RUNS, get_run
 
-    run = PIPELINE_RUNS.get(run_id)
+    run = PIPELINE_RUNS.get(run_id) or await get_run(run_id)
     if not run:
         return f"No pipeline run found with id '{run_id}'."
 
@@ -530,6 +538,13 @@ async def modify_existing_code(change_description: str, codebase_path: str = "")
         from pydantic_agents.agents.registration import register_all_agents
         from pydantic_agents.core.existing_code_handler import format_result_summary, run_existing_code_pipeline
 
+        if codebase_path:
+            try:
+                resolved_root = _check_codebase_root(codebase_path)
+            except PathTraversalError as e:
+                return f"Error: {e}"
+            codebase_path = str(resolved_root)
+
         register_all_agents()
 
         result = await run_existing_code_pipeline(
@@ -549,6 +564,9 @@ async def scaffold_and_build_service(service_name: str, bounded_context: str, re
     Scaffold and build a new backend service from scratch using the full Orgitration pipeline.
     This runs the BA → Advisory → Implementation → Test → SRE → Review pipeline.
     """
+    name_err = _check_project_name(service_name)
+    if name_err:
+        return f"Error: {name_err}"
     with logfire.span(
         "mcp.scaffold_service",
         service_name=service_name,
@@ -556,7 +574,7 @@ async def scaffold_and_build_service(service_name: str, bounded_context: str, re
         _level="info",
     ):
         from pydantic_agents.core.pipeline.config import PipelineConfig
-        from pydantic_agents.core.pipeline.orchestrator import OrgitrationPipeline
+        from pydantic_agents.core.pipeline.factory import build_pipeline
 
         requirement = requirement or f"Build a {service_name} service for {bounded_context} bounded context."
         config = PipelineConfig(
@@ -566,7 +584,7 @@ async def scaffold_and_build_service(service_name: str, bounded_context: str, re
             auto_yes=True,
             requirement=requirement,
         )
-        pipeline = OrgitrationPipeline(config)
+        pipeline = build_pipeline(config)
         await pipeline.execute()
         return f"Service '{service_name}' scaffolding pipeline completed. Artifacts in generated-app/{service_name}/."
 
@@ -741,6 +759,21 @@ def _check_seed_root(project_path: str) -> Path:
     return candidate
 
 
+def _check_codebase_root(codebase_path: str) -> Path:
+    """The resolved codebase path, if inside ``SEED_ROOTS``, ``output_dir``, or ``ORCHESTRATION_CODEBASE_ROOT``."""
+    candidate = Path(codebase_path).expanduser().resolve()
+    allowed = list(_allowed_seed_roots())
+    env_root = os.environ.get("ORCHESTRATION_CODEBASE_ROOT", "").strip()
+    if env_root:
+        allowed.append(Path(env_root).expanduser().resolve())
+    if not any(candidate.is_relative_to(root) for root in allowed):
+        raise PathTraversalError(
+            "codebase_path is outside the directories this server may access "
+            "(set SEED_ROOTS or ORCHESTRATION_CODEBASE_ROOT)"
+        )
+    return candidate
+
+
 @mcp.tool()
 def seed_project_context(project_path: str, project: str = "") -> str:
     """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
@@ -777,7 +810,9 @@ def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "
         project: Optional project filter (e.g. "openclaw", "modulex", "infrastructure"), matching the
                  name the documents were seeded under. Empty string searches all projects.
     """
-    domains = [domain] if domain else ["adrs", "architecture", "conventions", "project"]
+    if domain and domain not in _KNOWN_CONTEXT_DOMAINS:
+        return f"Invalid domain {domain!r}: must be one of {', '.join(_KNOWN_CONTEXT_DOMAINS)} (or empty for all)."
+    domains = [domain] if domain else list(_KNOWN_CONTEXT_DOMAINS)
     all_results = []
 
     for d in domains:
@@ -815,8 +850,8 @@ def sync_memory(all_runtimes: bool = True, max_entries: int = 50) -> str:
         max_entries: Max recent pgvector entries to process.
     """
     with logfire.span("mcp.sync_memory", all_runtimes=all_runtimes, _level="info"):
-        synced_count = sync_memory_to_claude(max_entries=max_entries)
-        pulled_count = sync_claude_to_pgvector()
+        synced_count = sync_memory_to_claude(max_entries=max_entries, include_antigravity=all_runtimes)
+        pulled_count = sync_claude_to_pgvector(max_entries)
 
     return (
         f"Memory sync complete:\n"

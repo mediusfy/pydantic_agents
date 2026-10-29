@@ -13,7 +13,7 @@ Execution Protocol:
 - Call out zero-failure status explicitly; a single failing test means the suite fails, with no partial credit.
 - Report the coverage percentage achieved and list ids you could not execute in `unexecuted_criterion_ids`, with the \
 reason in `feedback`. `all_passed` is derived from your results, so do not argue for it.
-- Do NOT fix failing tests or edit source files — that is `go_test`'s job, not yours.
+- Do NOT fix failing tests or edit source files — your role is strictly to execute the test suite and report the results.
 """
 
 qa_executor_agent = Agent(

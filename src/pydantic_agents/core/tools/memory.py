@@ -1,16 +1,16 @@
 import datetime
 import json
 import logging
-import os
 from typing import Any
 
 from pydantic_ai import RunContext
 
-from pydantic_agents.core.exceptions import OrgitrationDependencyError, OrgitrationError
+from pydantic_agents.core.exceptions import OrgitrationDependencyError, OrgitrationError, PathTraversalError
 from pydantic_agents.core.models.core import ActivityLog
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import safe_path_join
+from pydantic_agents.core.tools.web_fetch import validate_public_http_url
+from pydantic_agents.core.utils import resolve_sandboxed
 from pydantic_agents.core.vector_db import vector_db
 
 logger = logging.getLogger(__name__)
@@ -140,8 +140,9 @@ async def read_and_memorize_url(ctx: RunContext[Any], url: str) -> str:
     Args:
         url: The HTTP or HTTPS URL to fetch. Do NOT pass local file paths or file:// URLs. Use read_file for local files.
     """
-    if not url.startswith(("http://", "https://")):  # also rejects file:// and local paths
-        return f"Error: Invalid URL '{url}'. This tool requires an http:// or https:// URL. For local files, use the read_file tool instead."
+    err = validate_public_http_url(url)
+    if err:
+        return err
 
     try:
         return await vector_db.async_ingest_url("knowledge_base", url)
@@ -152,9 +153,9 @@ async def read_and_memorize_url(ctx: RunContext[Any], url: str) -> str:
 async def read_and_memorize_pdf(ctx: RunContext[Any], file_path: str) -> str:
     """Reads a PDF document, splits it into semantic chunks, and saves it directly to memory."""
     try:
-        safe_path_join(os.getcwd(), file_path)
-        return await vector_db.async_ingest_pdf("knowledge_base", file_path)
-    except ValueError as e:
+        resolved = resolve_sandboxed(file_path)
+        return await vector_db.async_ingest_pdf("knowledge_base", str(resolved))
+    except (PathTraversalError, ValueError) as e:
         return f"Error: {e}"
     except Exception as e:
         return f"Failed to ingest PDF: {e}"
@@ -166,11 +167,11 @@ register_tool(
     "read_and_memorize_url",
     read_and_memorize_url,
     "Scrapes and memorizes large webpages",
-    ["memory", "web", "research", "news"],
+    ["web", "research", "news"],
 )
 register_tool(
     "read_and_memorize_pdf",
     read_and_memorize_pdf,
     "Reads and memorizes PDF documents",
-    ["memory", "research", "documentation"],
+    ["research", "documentation"],
 )

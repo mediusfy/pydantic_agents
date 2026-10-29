@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
 
 TEST_EXECUTION_TIMEOUT = 60.0
 
@@ -16,6 +16,8 @@ TEST_EXECUTION_TIMEOUT = 60.0
 class TestRunResult:
     """What running a test suite produced. ``passed`` is the only verdict: ``error`` says the suite could not be
     run at all (toolchain missing, module setup failed, timeout, unwritable names), which also counts as a failure."""
+
+    __test__ = False
 
     passed: bool
     output: str
@@ -52,7 +54,11 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
 
         try:
             proc = await asyncio.create_subprocess_exec(
-                *cmd, cwd=temp_dir, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                *cmd,
+                cwd=temp_dir,
+                env=sanitized_subprocess_env(),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
             )
         except FileNotFoundError as e:
             return TestRunResult(False, "", f"test runner not installed: {e}")

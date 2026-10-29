@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,11 @@ class VerificationReport:
 async def _run(name: str, args: list[str], cwd: str) -> CheckResult:
     try:
         proc = await asyncio.create_subprocess_exec(
-            *args, cwd=cwd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            *args,
+            cwd=cwd,
+            env=sanitized_subprocess_env(),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError:
         return CheckResult(name, False, f"'{args[0]}' is not installed")

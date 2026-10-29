@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 # Python jobs install from the committed uv.lock (`--frozen` never re-resolves), so CI runs the same versions as
 # `make` and a new upstream release cannot change a result. `--no-build` installs only prebuilt wheels, so no
 # dependency's build script runs, and `--no-install-project` leaves the project itself unbuilt: its code runs from

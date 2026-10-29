@@ -21,7 +21,7 @@ Short map for agents. The README has the longer description, and [docs/turso-age
 
 ## Model routing
 
-`core/settings.py` holds one model field per agent (`deepseek-v4-pro`, or `subagent` for docs and the utility agents; real LiteLLM groups, not `claude-*` aliases). `Settings.resolve_model()` turns it into a spec for `MODEL_PROVIDER` (`litellm` by default, or `deepseek`, `openai`, `gemini`, `vertexai`), and `core/models/factory.py::create_model` builds the pydantic_ai model. With `litellm`, the base URL comes from `LITELLM_BASE_URL` / `OPENAI_BASE_URL` (or a default by `LITELLM_ENV`) and the key from `LITELLM_VIRTUAL_KEY` / `LITELLM_MASTER_KEY`. Without a key it logs a warning and returns the raw spec (README "Known improvement areas" item 2).
+`core/settings.py` holds one model field per agent (`deepseek-v4-pro`, or `subagent` for docs and the utility agents; real LiteLLM groups, not `claude-*` aliases). `Settings.resolve_model()` turns it into a spec for `MODEL_PROVIDER` (`litellm` by default, or `deepseek`, `openai`, `gemini`, `vertexai`), and `core/models/factory.py::create_model` builds the lazy pydantic_ai model (`LazyModel`). With `litellm`, the base URL comes from `LITELLM_BASE_URL` / `OPENAI_BASE_URL` (or a default by `LITELLM_ENV`) and the key from `LITELLM_VIRTUAL_KEY` / `LITELLM_MASTER_KEY`; a missing key raises `ConfigurationError` on first model use.
 
 ## Orchestration pipeline
 

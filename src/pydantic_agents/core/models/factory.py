@@ -75,17 +75,23 @@ class LazyModel(WrapperModel):
 
 
 def _litellm_connection(model_spec: str) -> tuple[str, str]:
-    """Base URL and key for the LiteLLM proxy, read from the environment at call time."""
-    base_url = os.environ.get("LITELLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+    """Base URL and key for the LiteLLM proxy, read from the environment (or ``settings`` loaded from ``.env``)."""
+    base_url = os.environ.get("LITELLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or settings.litellm_base_url
     if not base_url:
-        if os.environ.get("LITELLM_ENV", "local").lower() == "cloud":
-            base_url = os.environ.get("LITELLM_CLOUD_URL", "https://litellm-proxy.run.app")
+        env_mode = os.environ.get("LITELLM_ENV") or settings.litellm_env or "local"
+        if env_mode.lower() == "cloud":
+            base_url = os.environ.get("LITELLM_CLOUD_URL") or settings.litellm_cloud_url
         else:
             base_url = "http://localhost:4000"
     if not base_url.endswith("/v1"):
         base_url = f"{base_url.rstrip('/')}/v1"
 
-    api_key = os.environ.get("LITELLM_VIRTUAL_KEY") or os.environ.get("LITELLM_MASTER_KEY")
+    api_key = (
+        os.environ.get("LITELLM_VIRTUAL_KEY")
+        or os.environ.get("LITELLM_MASTER_KEY")
+        or settings.litellm_virtual_key
+        or settings.litellm_master_key
+    )
     if not api_key:
         # Falling back to "openai:<name>" here would send the request to api.openai.com.
         raise ConfigurationError(

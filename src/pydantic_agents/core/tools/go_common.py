@@ -3,6 +3,8 @@
 import asyncio
 import contextlib
 
+from pydantic_agents.core.utils import sanitized_subprocess_env
+
 GO_MOD_INIT_TIMEOUT = 10.0
 GO_MOD_TIDY_TIMEOUT = 30.0
 
@@ -12,6 +14,7 @@ async def run_cmd(*args: str, cwd: str, timeout_seconds: float = 30.0) -> None:
     proc = await asyncio.create_subprocess_exec(
         *args,
         cwd=cwd,
+        env=sanitized_subprocess_env(),
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )

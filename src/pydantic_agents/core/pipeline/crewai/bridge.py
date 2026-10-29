@@ -5,6 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import AgentAdvice, Artifact, FailureReport, Finding, PipelineState, ReviewResult
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.pipeline.crewai.crews import (
@@ -16,6 +17,7 @@ from pydantic_agents.core.pipeline.crewai.crews import (
     SecurityReviewCrew,
 )
 from pydantic_agents.core.session_recorder import recorder
+from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -87,7 +89,11 @@ async def run_crewai_pipeline(
 
 
 async def _run_crew_async(crew: Any) -> Any:
-    return await asyncio.to_thread(crew.kickoff)
+    async with llm_semaphore():
+        return await asyncio.wait_for(
+            asyncio.to_thread(crew.kickoff),
+            timeout=settings.agent_timeout_seconds,
+        )
 
 
 # ── Mapping crew output back onto the pipeline state ──────────────────────

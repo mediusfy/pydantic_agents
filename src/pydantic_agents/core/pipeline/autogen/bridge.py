@@ -2,10 +2,12 @@ import asyncio
 import logging
 from typing import Any
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.pipeline.autogen.groups import DebugGroupChat, DesignGroupChat, SdlcGroupChat
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.session_recorder import recorder
+from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +62,11 @@ async def run_autogen_pipeline(
                 human_input_mode="NEVER",
                 code_execution_config=False,
             )
-            result = await asyncio.to_thread(user.initiate_chat, manager, message=task)
+            async with llm_semaphore():
+                result = await asyncio.wait_for(
+                    asyncio.to_thread(user.initiate_chat, manager, message=task),
+                    timeout=settings.agent_timeout_seconds,
+                )
             rec.set_output({"group": group_class_name, "summary": str(result)[:500]})
             _apply_group_result(state, group_class_name, result)
 

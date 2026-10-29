@@ -462,6 +462,8 @@ async def run_existing_code_pipeline(
         _write_result(result, project or "existing-code")
         return result
     finally:
+        if hasattr(recorder, "close"):
+            recorder.close()
         run_id_var.reset(run_token)
         sandbox_root_var.reset(root_token)
 

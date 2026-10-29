@@ -22,8 +22,14 @@ _NATIVE_MODEL_PREFIXES = {
     "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
     "gemini": ("gemini-",),
     "vertexai": ("gemini-",),
+    "deepseek": ("deepseek-chat", "deepseek-reasoner", "deepseek-coder"),
 }
-_PROVIDER_DEFAULT_MODELS = {"openai": "gpt-4o", "gemini": "gemini-2.0-flash", "vertexai": "gemini-2.0-flash"}
+_PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.0-flash",
+    "vertexai": "gemini-2.0-flash",
+    "deepseek": "deepseek-chat",
+}
 
 
 @cache
@@ -50,6 +56,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     deepseek_api_key: str | None = None
+    litellm_base_url: str | None = None
+    litellm_virtual_key: str | None = None
+    litellm_master_key: str | None = None
+    litellm_env: str = "local"
+    litellm_cloud_url: str = "https://litellm-proxy.run.app"
     logfire_token: str | None = None
     logfire_api_key: str | None = None
 
@@ -107,6 +118,9 @@ class Settings(BaseSettings):
     # Directories the MCP tool seed_project_context may read, separated by os.pathsep (":" on Linux/macOS). Empty means
     # only output_dir. scripts/seed_projects.py is not restricted: it seeds clones it made itself.
     seed_roots: str = ""
+    # Host and Origin header patterns accepted by the MCP server's DNS-rebinding middleware (comma-separated).
+    mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
+    mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     max_concurrent_llm_calls: int = 5
     # Per-agent-run limits (see core/limits.py). Timeouts are not retried; 429/5xx/connection errors are.
@@ -187,6 +201,8 @@ class Settings(BaseSettings):
         - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider
+        if provider == "test":
+            return "test"
         if provider == "litellm":
             # Route everything through LiteLLM's OpenAI-compatible proxy interface
             return f"openai:{model_name}"

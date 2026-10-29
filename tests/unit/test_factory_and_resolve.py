@@ -141,6 +141,21 @@ def test_litellm_master_key_is_accepted(monkeypatch):
     assert _litellm_connection("openai:m")[1] == "master"
 
 
+def test_litellm_connection_reads_settings_loaded_from_dotenv(monkeypatch):
+    from pydantic_agents.core.models import factory
+
+    for name in ("LITELLM_BASE_URL", "OPENAI_BASE_URL", "LITELLM_VIRTUAL_KEY", "LITELLM_MASTER_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    s = Settings(
+        _env_file=None,
+        model_provider="litellm",
+        litellm_base_url="http://dotenv-proxy:4000",
+        litellm_virtual_key="sk-from-dotenv",
+    )
+    monkeypatch.setattr(factory, "settings", s)
+    assert factory._litellm_connection("openai:m") == ("http://dotenv-proxy:4000/v1", "sk-from-dotenv")
+
+
 @pytest.mark.parametrize(
     "provider, key, expected",
     [

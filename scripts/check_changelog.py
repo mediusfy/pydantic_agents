@@ -41,6 +41,7 @@ def _base_changelog(base_ref: str) -> str:
         capture_output=True,
         text=True,
         check=False,
+        timeout=30,
     )
     return result.stdout if result.returncode == 0 else ""
 

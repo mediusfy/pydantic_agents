@@ -26,6 +26,51 @@ def safe_path_join(base: str | Path, *parts: str) -> Path:
 # these instead of raising.
 WRITE_NAME_ERRORS: tuple[type[BaseException], ...] = (PathTraversalError, OSError, ValueError)
 
+# Allowlisted environment variables forwarded to untrusted build/test subprocesses (go test, go build, vitest, eslint).
+# Credentials (LITELLM_*, OPENAI_API_KEY, DATABASE_URL, etc.) are never inherited by generated code or tests.
+_SAFE_SUBPROCESS_ENV_KEYS: frozenset[str] = frozenset(
+    {
+        "PATH",
+        "HOME",
+        "USER",
+        "LOGNAME",
+        "SHELL",
+        "LANG",
+        "LC_ALL",
+        "LC_CTYPE",
+        "TMPDIR",
+        "TEMP",
+        "TMP",
+        "TERM",
+        "SYSTEMROOT",
+        "GOPATH",
+        "GOROOT",
+        "GOCACHE",
+        "GOMODCACHE",
+        "GOENV",
+        "GOPROXY",
+        "GOSUMDB",
+        "GONOPROXY",
+        "GONOSUMDB",
+        "GOPRIVATE",
+        "GOFLAGS",
+        "CGO_ENABLED",
+        "GOOS",
+        "GOARCH",
+        "NODE_PATH",
+        "NPM_CONFIG_CACHE",
+        "npm_config_cache",
+        "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    }
+)
+
+
+def sanitized_subprocess_env() -> dict[str, str]:
+    """Return a minimal environment for untrusted build/test subprocesses, stripping credentials."""
+    return {k: v for k, v in os.environ.items() if k in _SAFE_SUBPROCESS_ENV_KEYS}
+
 
 # The codebase root of the pipeline running in the current task. A ContextVar (not an environment variable) so two
 # concurrent pipelines on different codebases never see each other's root; tasks and threads started from the
@@ -41,7 +86,7 @@ def sandbox_root() -> Path:
     """
     root = sandbox_root_var.get()
     if root is not None:
-        return root
+        return root.resolve()
     return Path(os.environ.get("ORCHESTRATION_CODEBASE_ROOT", os.getcwd())).resolve()
 
 

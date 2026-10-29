@@ -32,7 +32,7 @@ Before starting task design or major refactors, review [`.ai/recent_context.md`]
 - `make lint && make typecheck && make test` must pass locally before pushing. CI runs mypy in the `typecheck` job (it must be 0 errors); the missing-import ignores for optional packages are in `[tool.mypy]`.
 - After changing dependencies or extras in `pyproject.toml`, run `make lock` and `uv lock` and commit both lockfiles. The image installs only from the hash-pinned `requirements.lock` (linux/arm64, Python 3.12).
 - Adding an agent needs a model field in `core/settings.py` and an entry in `agents/registration.py`; it gets tools only through a category list in `core/tool_assignments.py`. `tests/unit/test_agent_consistency.py` fails if the three disagree.
-- Model output chooses file paths. New code that writes or reads a model-chosen path goes through `safe_path_join` / `safe_write` in `core/utils.py`, as `writer.py`, `tools/docs.py` and `tools/memory.py` do (`tools/fs_tools.py` does not yet; see [security](.ai/guidance/security.md)).
+- Model output chooses file paths. New code that writes or reads a model-chosen path goes through `safe_path_join` / `safe_write` / `resolve_sandboxed` in `core/utils.py`, as `writer.py`, `tools/fs_tools.py`, `tools/docs.py` and `tools/memory.py` do (see [security](.ai/guidance/security.md)).
 - Never commit secrets: credentials come from the environment (`.env` is gitignored; `.env.example` holds empty placeholders) or a secret manager.
 - Fill in the PR template's "AI Context & Rules Update" section, or write "None".
 
