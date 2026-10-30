@@ -264,9 +264,7 @@ class TestBuildFullGraphNodes:
             ("security_review", {"quality_gate", "merge"}, "quality_gate"),
         ],
     )
-    def test_a_full_run_honours_the_blueprint_s_stages(
-        self, mock_provider, blueprint, expected_nodes, expected_start
-    ):
+    def test_a_full_run_honours_the_blueprint_s_stages(self, mock_provider, blueprint, expected_nodes, expected_start):
         from pydantic_agents.core.pipeline.langgraph.graphs import build_full_graph
 
         cfg = PipelineConfig(blueprint=blueprint, framework="langgraph", requirement="ship it")
@@ -471,4 +469,3 @@ class TestLangGraphExecutionAndResume:
         assert saver2.find_latest_run_id() == "bad"
         saver2.delete_thread("bad")
         assert not corrupt_path.exists()
-

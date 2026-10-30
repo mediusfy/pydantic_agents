@@ -276,6 +276,16 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **Telemetry configuration failed on the deployed pod (`Logfire configuration failed: The capture_request_headers
+  parameter has been removed`).** `_instrument()` passed `capture_request_headers` / `capture_response_headers` to
+  `logfire.instrument_httpx`, which Logfire 5.x (the locked 5.1.1) renamed to `capture_headers`. It only surfaced when
+  the Langfuse keys were first set: with no backend configured the function returned before this call. The step
+  raised after `logfire.configure`, so pydantic and pydantic-ai were never instrumented either (no per-model-call
+  spans or token counts, and no `traceparent` to LiteLLM). Now only the capture parameters the installed signature
+  declares are passed (headers and bodies stay off: the headers carry the LiteLLM key), each instrumentation step
+  runs on its own, and a step that fails is logged and reported as "partly instrumented" through the startup check
+  instead of silently dropping the rest. The exporters count as enabled once `configure()` returns. The unit tests
+  used a mocked Logfire, which is why none of this was caught; one test now checks the real installed signature.
 - **CI `test` jobs hung after #75.** `VectorDBManager._search_domains` embedded the query before checking the database, so
   a retrieval with no reachable database (every unit test, and CI) loaded or downloaded the local embedding model
   instead of failing at the connection. It now ensures the tables first and returns the failure per collection, as

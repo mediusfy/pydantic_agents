@@ -165,4 +165,3 @@ def _stub_local_embeddings_and_reset_vector_db(monkeypatch):
     monkeypatch.setattr(vector_db, "_initialized_tables", set())
     yield
     vector_db._set_test_pool(None)
-
