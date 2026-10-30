@@ -932,9 +932,9 @@ class TestMemoryBackendSelection:
                 pass
 
         pool = MockPool()
-        from pydantic_agents.core.vector_db import _set_test_pool
+        from pydantic_agents.core import vector_db
 
-        _set_test_pool(pool)  # type: ignore[arg-type]
+        monkeypatch.setattr(vector_db, "_test_pool_override", pool)
         return stores, pool
 
     @pytest.mark.asyncio

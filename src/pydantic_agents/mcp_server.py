@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
 from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.context_engine import retrieve_context
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
 from pydantic_agents.core.limits import run_id_var
@@ -896,6 +897,15 @@ def memory_bridge_status() -> str:
         f"  pgvector tables active: {list(status.get('pgvector_tables', {}).keys())}\n"
         f"  Runtime: Orgitration ↔ Claude Code ↔ Antigravity"
     )
+
+
+@mcp.tool()
+async def agent_usage_summary(days: int = 7, agent: str = "") -> str:
+    """Read-only usage summary from platform_metrics: per agent runs, success rate, p50/p95 duration, tokens,
+    verdict pass/fail counts and the last failure time. `days` is clamped to 1..90; `agent` filters to one agent.
+    Only runs through the agent provider are recorded."""
+    with logfire.span("mcp.agent_usage_summary", days=days, agent=agent, _level="info"):
+        return await platform_metrics.usage_summary(days, agent)
 
 
 if __name__ == "__main__":
