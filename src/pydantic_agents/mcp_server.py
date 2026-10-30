@@ -36,6 +36,7 @@ configure_observability()
 
 logging.basicConfig(level=logging.INFO)
 
+
 def _split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
@@ -896,3 +897,12 @@ def memory_bridge_status() -> str:
 
 if __name__ == "__main__":
     mcp.run()
+
+
+@mcp.tool()
+async def agent_usage_summary(days: int = 7, agent: str = "") -> str:
+    """Read-only usage summary from platform_metrics: per agent runs, success rate, p50/p95 duration, tokens,
+    verdict pass/fail counts and the last failure time. `days` is clamped to 1..90; `agent` filters to one agent.
+    Only runs through the agent provider are recorded."""
+    with logfire.span("mcp.agent_usage_summary", days=days, agent=agent, _level="info"):
+        return await platform_metrics.usage_summary(days, agent)

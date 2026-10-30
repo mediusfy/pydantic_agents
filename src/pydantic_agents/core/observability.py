@@ -36,6 +36,11 @@ LOGFIRE_CONFIGURE_ERROR: str | None = None
 
 SERVICE_NAME = "pydantic-agents"
 
+NO_BACKEND_MESSAGE = (
+    "no telemetry backend configured: spans are exported nowhere "
+    "(set LANGFUSE_HOST/LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY, or LOGFIRE_TOKEN)"
+)
+
 
 def _langfuse_otlp() -> tuple[str, dict[str, str]] | None:
     """The OTLP traces endpoint and auth header for Langfuse, when its three environment variables are set."""
@@ -46,6 +51,24 @@ def _langfuse_otlp() -> tuple[str, dict[str, str]] | None:
         return None
     auth = base64.b64encode(f"{public}:{secret}".encode()).decode()
     return f"{host}/api/public/otel/v1/traces", {"Authorization": f"Basic {auth}"}
+
+
+def _logfire_configured() -> bool:
+    """True when a Logfire token (environment or settings) or local ``logfire auth`` credentials exist."""
+    logfire_token = os.environ.get("LOGFIRE_TOKEN", "") or getattr(settings, "logfire_token", "") or ""
+    return bool(logfire_token) or os.path.exists(os.path.expanduser("~/.logfire/credentials.json"))
+
+
+def telemetry_backend_problem() -> str | None:
+    """Why spans are going nowhere, or None when at least one backend is configured. Side-effect free.
+
+    An explicit ``OTEL_SDK_DISABLED=true`` is a decision, not a misconfiguration, so it is not reported.
+    """
+    if os.environ.get("OTEL_SDK_DISABLED", "").lower() == "true":
+        return None
+    if _logfire_configured() or _langfuse_otlp() is not None:
+        return None
+    return NO_BACKEND_MESSAGE
 
 
 def _langfuse_processor():
@@ -93,9 +116,7 @@ def configure_observability() -> None:
         logger.info(LOGFIRE_CONFIGURE_ERROR)
         return
 
-    logfire_token = os.environ.get("LOGFIRE_TOKEN", "") or getattr(settings, "logfire_token", "") or ""
-    logfire_credentials = os.path.expanduser("~/.logfire/credentials.json")
-    send_to_logfire = bool(logfire_token) or os.path.exists(logfire_credentials)
+    send_to_logfire = _logfire_configured()
     try:
         langfuse_processor = _langfuse_processor()
     except Exception as e:  # the exporter package is missing or the endpoint is malformed
@@ -107,7 +128,8 @@ def configure_observability() -> None:
             "No Logfire token or Langfuse keys found — telemetry disabled "
             "(set LANGFUSE_HOST/LANGFUSE_PUBLIC_KEY/LANGFUSE_SECRET_KEY, or LOGFIRE_TOKEN, or run 'logfire auth')"
         )
-        logger.info(LOGFIRE_CONFIGURE_ERROR)
+        # WARNING, not INFO: this was invisible in the deployed pod, which ran for weeks exporting nothing.
+        logger.warning(LOGFIRE_CONFIGURE_ERROR)
         return
 
     try:

@@ -182,6 +182,11 @@ the database down, runs are tracked in memory only).
   `crew_architecture_review`, `crew_audit`, `langgraph_full`, ...) and an optional `framework`;
   `project_name` must be a plain name (letters, digits, `_`, `.`, `-`).
 
+### Observability
+
+Spans go to Langfuse and/or Logfire; per-run metrics go to `platform_metrics`, summarised by the read-only
+`agent_usage_summary` MCP tool. Env vars, verification steps and limits: [docs/observability.md](docs/observability.md).
+
 ### Checkpoint state backend (`STATE_BACKEND`)
 
 Pipeline checkpoints and stage events are stored on local disk by default. Set

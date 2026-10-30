@@ -111,3 +111,100 @@ async def recent_calls(agent: str | None = None, *, limit: int = 100) -> list[di
         item["created_at"] = ts.isoformat() if isinstance(ts, datetime) else ts
         out.append(item)
     return out
+
+
+USAGE_DEFAULT_DAYS = 7
+USAGE_MAX_DAYS = 90
+
+_USAGE_SQL = """
+    SELECT agent,
+           count(*)                                                  AS runs,
+           count(*) FILTER (WHERE success)                           AS successes,
+           percentile_cont(0.5)  WITHIN GROUP (ORDER BY duration)    AS p50_seconds,
+           percentile_cont(0.95) WITHIN GROUP (ORDER BY duration)    AS p95_seconds,
+           count(input_tokens)                                       AS runs_with_tokens,
+           sum(input_tokens)                                         AS input_tokens,
+           sum(output_tokens)                                        AS output_tokens,
+           count(*) FILTER (WHERE verdict = 'passed')                AS verdict_passed,
+           count(*) FILTER (WHERE verdict = 'failed')                AS verdict_failed,
+           max(created_at) FILTER (WHERE NOT success)                AS last_failure
+    FROM platform_metrics
+    WHERE created_at >= now() - make_interval(days => $1)
+    {agent_filter}
+    GROUP BY agent
+    ORDER BY runs DESC, agent
+"""
+
+
+def clamp_days(days: Any) -> int:
+    """``days`` as an int in 1..USAGE_MAX_DAYS; anything that is not a number falls back to the default."""
+    try:
+        value = int(days)
+    except (TypeError, ValueError):
+        return USAGE_DEFAULT_DAYS
+    return max(1, min(USAGE_MAX_DAYS, value))
+
+
+async def usage_by_agent(days: int, agent: str = "") -> list[dict[str, Any]]:
+    """Per-agent aggregates over the last ``days`` days (already clamped by the caller), most-run agent first.
+
+    Raises on a database error; ``usage_summary`` is the never-raising, text-returning wrapper.
+    """
+
+    async def _op(conn: Any) -> Any:
+        await _ensure_table(conn)
+        if agent:
+            return await conn.fetch(_USAGE_SQL.format(agent_filter="AND agent = $2"), days, agent)
+        return await conn.fetch(_USAGE_SQL.format(agent_filter=""), days)
+
+    rows = await vector_db.with_connection(_op)
+    return [dict(r) for r in rows]
+
+
+def _fmt_seconds(value: Any) -> str:
+    return f"{float(value):.1f}s" if value is not None else "n/a"
+
+
+def _fmt_time(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.isoformat(timespec="seconds")
+    return str(value) if value is not None else "never"
+
+
+def format_usage(rows: list[dict[str, Any]], days: int, agent: str = "") -> str:
+    """Render ``usage_by_agent`` rows as plain text, saying so when token counts are missing rather than zero."""
+    scope = f"agent '{agent}'" if agent else "all agents"
+    if not rows:
+        return f"No platform_metrics rows for {scope} in the last {days} day(s)."
+    lines = [f"Agent usage for {scope}, last {days} day(s) (source: platform_metrics):"]
+    for r in rows:
+        runs = int(r["runs"])
+        rate = 100.0 * int(r["successes"]) / runs if runs else 0.0
+        with_tokens = int(r.get("runs_with_tokens") or 0)
+        if with_tokens == 0:
+            tokens = "tokens n/a (no run in this window reported token usage)"
+        else:
+            tokens = f"tokens in={int(r['input_tokens'] or 0)} out={int(r['output_tokens'] or 0)}"
+            if with_tokens < runs:
+                tokens += f" (only {with_tokens} of {runs} runs reported tokens; the rest are NULL, not zero)"
+        lines.append(
+            f"- {r['agent']}: runs={runs}, success={rate:.0f}%, "
+            f"duration p50={_fmt_seconds(r['p50_seconds'])} p95={_fmt_seconds(r['p95_seconds'])}, {tokens}, "
+            f"verdict passed={int(r['verdict_passed'])} failed={int(r['verdict_failed'])}, "
+            f"last failure={_fmt_time(r['last_failure'])}"
+        )
+    return "\n".join(lines)
+
+
+async def usage_summary(days: Any = USAGE_DEFAULT_DAYS, agent: str = "") -> str:
+    """Human/agent-readable usage summary. Never raises: no database and database errors become a message."""
+    window = clamp_days(days)
+    name = (agent or "").strip()[:100]
+    if not enabled():
+        return "No database configured (DATABASE_URL is unset), so no usage data is recorded or available."
+    try:
+        rows = await usage_by_agent(window, name)
+    except Exception as exc:
+        logger.warning("Could not summarise platform metrics (%s: %s)", type(exc).__name__, exc)
+        return f"Could not query platform_metrics ({type(exc).__name__}: {exc})."
+    return format_usage(rows, window, name)
