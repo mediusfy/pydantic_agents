@@ -360,7 +360,9 @@ fresh **Unreleased** section above it.
   asked to fix.
 - Sonar cognitive-complexity findings on this PR: `_run_qa_staged_gate` is split into `_run_qa_tests` and
   `_qa_execute_and_fix`, `query_context` takes its per-domain work from `_query_domain`, and an exception test with
-  two calls in one `pytest.raises` builds its argument outside the block. Behaviour is unchanged.
+  two calls in one `pytest.raises` builds its argument outside the block; a second round of the same kind:
+  `fetch_url` (now `_get_following_redirects` and `_render_body`), `ImplementationStage._run_test_phase` (now
+  `_test_story`) and one more exception test. Behaviour is unchanged.
 - `.claw-checkpoints/` is git-ignored: the test suite writes run state there and an earlier commit of this change
   picked it up by mistake (removed).
 - Not addressed, by decision: LLM-generated Go still runs unsandboxed on the host (needs a sandbox such as gVisor, not

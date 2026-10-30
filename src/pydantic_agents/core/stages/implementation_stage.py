@@ -351,6 +351,37 @@ class ImplementationStage(StageRunner):
             tasks.append(("docs", self._run_tagged(run, "docs", docs_prompt)))
         return tasks
 
+    @staticmethod
+    async def _test_story(
+        run: _Run, us: UserStory, res: Any, artifacts: list[Artifact], run_test_suite: Any
+    ) -> tuple[list[Artifact], bool]:
+        """One story's test outcome: (the artifacts with its tests added, whether the story failed).
+
+        A crashed test agent, missing test files or missing sources fail the story (no tests is not a pass). Only Go
+        suites are run: the vitest path has no package.json or node_modules.
+        """
+        if isinstance(res, BaseException):
+            logger.error(f"Test agent for {us.id} failed: {res}")
+            run.test_output[us.id] = f"The test agent crashed: {res}"
+            return artifacts, True
+        res.metadata["user_story_id"] = res.metadata.get("user_story_id", "?")
+        artifacts = _replace_test_artifact(artifacts, res)
+
+        sources = _story_sources(artifacts, res.metadata["user_story_id"])
+        if not (res.files and sources):
+            reason = "the test agent returned no test files." if not res.files else "no source files were generated."
+            run.test_output[us.id] = f"No tests ran: {reason}"
+            return artifacts, True
+        if not any(name.endswith(".go") for name in res.files):
+            logger.warning(f"Tests for {us.id} are not Go tests; they are kept but not executed.")
+            return artifacts, False
+        outcome = await run_test_suite(sources, dict(res.files))
+        if outcome.passed:
+            return artifacts, False
+        run.test_output[us.id] = outcome.error or outcome.output
+        logger.warning(f"Test suite failed for {us.id}: {(outcome.error or outcome.output)[:200]}...")
+        return artifacts, True
+
     async def _run_test_phase(self, run: _Run, artifacts: list[Artifact]) -> tuple[list[Artifact], list[str]]:
         """Per-story test agents in parallel (failures isolated), then each story's suite against every source
         file of the story; returns the new artifact list and the ids of the stories whose suite failed or could
@@ -365,31 +396,9 @@ class ImplementationStage(StageRunner):
 
         failed_stories: list[str] = []
         for us, res in zip(user_stories, test_results, strict=False):
-            if isinstance(res, BaseException):
-                # No tests is not a pass: a crashed test agent fails the story so the loop retries it.
-                logger.error(f"Test agent for {us.id} failed: {res}")
+            artifacts, failed = await self._test_story(run, us, res, artifacts, run_test_suite)
+            if failed:
                 failed_stories.append(us.id)
-                run.test_output[us.id] = f"The test agent crashed: {res}"
-                continue
-            res.metadata["user_story_id"] = res.metadata.get("user_story_id", "?")
-            artifacts = _replace_test_artifact(artifacts, res)
-
-            sources = _story_sources(artifacts, res.metadata["user_story_id"])
-            if not (res.files and sources):
-                failed_stories.append(us.id)
-                run.test_output[us.id] = "No tests ran: " + (
-                    "the test agent returned no test files." if not res.files else "no source files were generated."
-                )
-                continue
-            if not any(name.endswith(".go") for name in res.files):
-                # Only Go suites can be run here (the vitest path has no package.json or node_modules).
-                logger.warning(f"Tests for {us.id} are not Go tests; they are kept but not executed.")
-                continue
-            outcome = await run_test_suite(sources, dict(res.files))
-            if not outcome.passed:
-                failed_stories.append(us.id)
-                run.test_output[us.id] = outcome.error or outcome.output
-                logger.warning(f"Test suite failed for {us.id}: {(outcome.error or outcome.output)[:200]}...")
         return artifacts, failed_stories
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:

@@ -424,8 +424,10 @@ async def test_a_failed_agent_run_is_recorded_as_a_failure(monkeypatch):
     agent = MagicMock()
     agent.run = AsyncMock(side_effect=ValueError("bad output"))
 
+    provider = provider_module.PydanticAIAgentProvider()
+    semaphore = asyncio.Semaphore(1)
     with pytest.raises(ValueError, match="bad output"):
-        await provider_module.PydanticAIAgentProvider().run_agent(asyncio.Semaphore(1), "review", agent, "p")
+        await provider.run_agent(semaphore, "review", agent, "p")
 
     assert record.await_args.kwargs["success"] is False
 
