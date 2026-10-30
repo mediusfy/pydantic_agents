@@ -143,6 +143,11 @@ fresh **Unreleased** section above it.
   first use), and `platform_metrics` gains indexes on `(agent, created_at)` and `created_at`.
 
 ### Changed
+- `run_<agent>` MCP tools return a short explanation instead of a bare `[]` when a list-valued agent finds nothing (the
+  BA agent for a request with no requirement, such as a ping): `[]` looked like a failure and said nothing about why.
+  Decision: change the tool result, not the BA output type, because `BAStage`, the crew bridge and the pipeline consume
+  a plain `list[UserStory]` and are unaffected. Trade-off: for that one case the result is text, not a JSON array, so
+  a client that always parses `run_ba` output as JSON must handle it; every non-empty result is unchanged.
 - Missing telemetry configuration is now loud. `configure_observability` logs at WARNING (was INFO) when neither
   Langfuse keys nor a Logfire token is set, and `healthcheck.validate_telemetry` (part of `run_startup_checks`, so
   also `sre_autopilot`) reports "no telemetry backend configured". Why: the deployed pod ran with neither, the
