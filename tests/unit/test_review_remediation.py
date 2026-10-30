@@ -327,6 +327,17 @@ async def test_killing_a_timed_out_command_also_kills_its_children(tmp_path):
         os.kill(child, 0)
 
 
+async def test_kill_and_reap_never_calls_killpg_on_a_magicmock_or_pid_1(monkeypatch):
+    killpg = MagicMock()
+    monkeypatch.setattr(os, "killpg", killpg)
+    mock_proc = MagicMock(kill=MagicMock(), wait=AsyncMock())  # mock_proc.pid is a MagicMock -> __index__() == 1
+    await kill_and_reap(mock_proc)
+    killpg.assert_not_called()
+    mock_proc.kill.assert_called_once()
+    mock_proc.wait.assert_awaited_once()
+
+
+
 def test_rotating_a_log_keeps_only_the_newest_archives(tmp_path, monkeypatch):
     log = tmp_path / "telemetry.jsonl"
     for stamp in range(1, 8):

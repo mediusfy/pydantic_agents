@@ -549,10 +549,16 @@ class VectorDBManager:
         concurrently. A collection that fails yields its exception in its slot instead of failing the others."""
         try:
             _require_vector_deps()
+            # The database first, the embedding second, as `_search` does: with no reachable database this fails at
+            # once, and the (local) embedding model is never loaded. Embedding first made every retrieval without a
+            # database load or download the model, which hung CI.
+            await asyncio.gather(*(_ensure_table(c) for c in collections))
             (embedding,) = await _embed_texts([query])
         except OrgitrationDependencyError as exc:
             logger.warning("Vector DB search called but vector dependencies are not installed: %s", exc)
             return [[] for _ in collections]
+        except Exception as exc:  # no database, bad collection name: reported per collection, never raised
+            return [exc for _ in collections]
         return await asyncio.gather(
             *(self._search(c, query, n_results, project, embedding=embedding) for c in collections),
             return_exceptions=True,

@@ -262,6 +262,11 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **CI `test` jobs hung after #75.** `VectorDBManager._search_domains` embedded the query before checking the database, so
+  a retrieval with no reachable database (every unit test, and CI) loaded or downloaded the local embedding model
+  instead of failing at the connection. It now ensures the tables first and returns the failure per collection, as
+  `_search` did. Found by reading the cancelled job (the `pytest` step never finished) and the order of the
+  calls; it passed locally only because the model is cached there.
 - `ArtifactWriter.write` (`core/writer.py`) now validates `artifact.agent_name` through `safe_path_join` and rejects
   multi-segment or empty names, preventing a model-chosen `agent_name` (`../...` or `/abs/...`) from writing outside
   `base_dir`.
@@ -343,6 +348,16 @@ fresh **Unreleased** section above it.
   `search_existing_adrs` is best-effort and reports an unreachable ADR store instead of aborting the review.
 - `tests/unit/test_review_2026_10_29.py`: regression tests for the review's Medium/Low fixes plus the SSRF guard's DNS,
   redirect, size-cap and error paths (`web_fetch.py` branch coverage 56% → 94%).
+- `vector_db`, `utils.kill_and_reap` and test suite (`core/vector_db.py`, `core/utils.py`, `tests/conftest.py`,
+  `tests/integration/test_pipeline_integration.py`):
+  - `kill_and_reap` now checks `isinstance(pid, int) and not isinstance(pid, bool) and pid > 1` before calling
+    `os.killpg(pid, signal.SIGKILL)`: in unit tests `proc` is a `MagicMock` whose `proc.pid` is a child `MagicMock`
+    that CPython coerces via `MagicMock.__index__()` to `1`, so `os.killpg(proc.pid, SIGKILL)` called
+    `os.killpg(1, SIGKILL)` — which on Linux GitHub Actions runners (`PGID == 1` in non-interactive shells) sent
+    `SIGKILL` to the runner's own process group and hung the step until the workflow timeout!
+  - `_get_pool` no longer falls back to connecting to `postgresql://localhost:5432/orchestration` without a timeout when
+    `DATABASE_URL` is unset, and `conftest.py` stubs `_embeddings` and resets `_test_pool_override`/`_initialized_tables`
+    between tests so tests never download HuggingFace weights or leak mock pools across modules.
 - Promptfoo: `qa_executor` provider with two cases (per-criterion results and the derived verdict from supplied
   output; no test rewrite when asked for one) and two more `cto` cases (a sound design inside the approved stack is
   approved; a component outside the approved stack is flagged).
