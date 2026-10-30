@@ -134,6 +134,28 @@ fresh **Unreleased** section above it.
   first use), and `platform_metrics` gains indexes on `(agent, created_at)` and `created_at`.
 
 ### Changed
+- `ba` and `review` prompts recalibrated after a live test of the deployed service (calibration PR, eval not yet run).
+  Why: one request (a Go `GET /healthz`) produced six stories and six events (including `health.ReadinessCheckFailed`,
+  which the agent itself called an anti-pattern), and a 9-line handler was rejected as HIGH risk with score 28.
+  `ba`: asks for the fewest stories that cover the request (default one, cap two for a single capability, about five
+  for several; failure paths are Gherkin scenarios, not stories), makes events optional (an empty `event_triggers`
+  is valid for probes, queries and UI changes, and failures and probes are not domain events), and tells the agent
+  that tools, workspace and retrieved context describe the platform rather than the target, so it must not block or
+  mark a story provisional because the target service is not visible. `UserStory` gains `open_questions` and
+  `assumptions` (default empty, so stored stories and every consumer keep working) so the agent no longer refers to
+  flags that exist nowhere in its output. Decision: fields on the story rather than a wrapper output type, because
+  `BAStage`, the crew bridge and the MCP tool all consume a plain `list[UserStory]`.
+  `review`: reviews only the submitted artifact, runs only the checks for its kind and lists skipped checks in the new
+  `ReviewResult.not_applicable` (default empty) instead of failing them, no longer rejects for provenance or a missing
+  workspace, takes the stated purpose (readiness versus liveness) from the request, and states that net/http recovers
+  handler panics. Every finding needs a concrete failure scenario, and severity, `risk_level` and `security_score`
+  have defined bands so three minor findings on a short handler land in the 70s or 80s, not HIGH/28. Decision:
+  `ReviewCriteria` defaults to no blueprint and non-strict, so a direct review makes no gRPC/CloudEvents/hexagonal
+  demands; the pipeline's `QualityGateStage` now passes `REVIEW_BLUEPRINT_SUMMARY` and `strict=True` explicitly, so
+  pipeline reviews keep their previous conformance behaviour. The approval rule (risk below HIGH, score at least 70)
+  and the `approved`/`feedback` fields used by `quality_gate_stage`, the crew bridge and verdict extraction are
+  unchanged. Evidence so far: unit tests only; the new promptfoo cases (`ba` and `review` health-endpoint cases)
+  are written but unexecuted, so whether the prompts behave better is unverified until `make eval` runs.
 - `context_engine.retrieve_context` is `async`, takes `project`, caps the query at 1,000 characters (the embedding
   model reads about 256 word pieces) and never returns the store's own unavailability notice as a snippet. The
   stages query with the requirement and story titles, not the artifact dump, and pass `config.project`.

@@ -21,7 +21,13 @@ class UserStory(BaseModel):
     statement: str = Field(default="", description="'As a ... I want ... so that ...' statement")
     bounded_context: str = Field(default="", description="Bounded context the story belongs to")
     gherkin: str = Field(description="Given/When/Then acceptance criteria")
-    event_triggers: list[EventTrigger] = Field(default_factory=list)
+    event_triggers: list[EventTrigger] = Field(
+        default_factory=list, description="Empty when the story is not event-driven (a probe, a query, a UI change)"
+    )
+    open_questions: list[str] = Field(
+        default_factory=list, description="Decisions the request leaves open that change the implementation"
+    )
+    assumptions: list[str] = Field(default_factory=list, description="What the story assumes so it could be written")
 
 
 class Artifact(BaseModel):
@@ -54,6 +60,10 @@ class ReviewResult(BaseModel):
     feedback: list[str]
     security_score: int = Field(ge=0, le=100)
     risk_level: RiskLevel
+    not_applicable: list[str] = Field(
+        default_factory=list,
+        description="Checks skipped because they do not apply to the submitted artifact (not failures)",
+    )
 
     @model_validator(mode="after")
     def _consistent_verdict(self) -> "ReviewResult":
