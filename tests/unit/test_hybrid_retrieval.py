@@ -470,3 +470,16 @@ async def test_search_domains_embeds_the_query_once(monkeypatch, no_table):
 
     embed.assert_awaited_once_with(["q"])
     assert out == [["a"], ["a"]]  # one result list per domain, in order
+
+
+async def test_search_domains_does_not_embed_when_the_database_is_unreachable(monkeypatch):
+    monkeypatch.setattr(vdb, "_get_pool", AsyncMock(side_effect=ConnectionRefusedError("no database")))
+    monkeypatch.setattr(vdb, "_initialized_tables", set())  # a table another test already set up would skip the pool
+    embed = AsyncMock(return_value=[[0.1]])
+    monkeypatch.setattr(vdb, "_embed_texts", embed)
+
+    out = await vdb.vector_db._search_domains(["adrs", "architecture"], "q", 3, None)
+
+    embed.assert_not_awaited()  # loading the local model with nowhere to search is what hung CI
+    assert all(isinstance(item, ConnectionRefusedError) for item in out)
+    assert len(out) == 2

@@ -119,12 +119,25 @@ def validate_database() -> list[str]:
         return asyncio.run(_check())
 
 
+def validate_telemetry() -> list[str]:
+    """Report when no telemetry backend (Langfuse or Logfire) is configured, so spans are exported nowhere."""
+    from pydantic_agents.core.observability import LOGFIRE_CONFIGURE_ERROR, telemetry_backend_problem
+
+    problem = telemetry_backend_problem()
+    if problem:
+        return [problem]
+    if LOGFIRE_CONFIGURE_ERROR:  # configured, but configure_observability() failed at startup
+        return [f"telemetry backend configured but not working: {LOGFIRE_CONFIGURE_ERROR}"]
+    return []
+
+
 def run_startup_checks() -> list[str]:
     """Run all startup checks and return a list of error messages."""
     errors: list[str] = []
     errors.extend(validate_api_keys())
     errors.extend(validate_directories())
     errors.extend(validate_database())
+    errors.extend(validate_telemetry())
     if errors:
         logger.debug("startup checks found %d issue(s): %s", len(errors), errors)
     return errors

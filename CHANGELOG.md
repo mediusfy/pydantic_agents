@@ -12,6 +12,15 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
+  (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
+  operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the
+  query lives in `platform_metrics.py` and runs through `vector_db.with_connection` with bound parameters only;
+  `days` is clamped to 1..90 rather than rejected, so a model's out-of-range guess still gets an answer; the tool is
+  `async` (the pool work is bridged to the background loop) so it never blocks the MCP event loop; rows with NULL
+  tokens (written before the provider recorded them) are reported as "n/a" / "only N of M runs", never as zeros;
+  "no database" and "no rows" return distinct messages. `docs/observability.md` explains backends, env vars and
+  verification, and the limit that only runs through `PydanticAIAgentProvider` are recorded.
 - `agents/innovation_scout.py` (AP-81, ADR-0001 Platform Intelligence Layer): registered agent with a settings
   field (`innovation_scout_model`), tool category (`"innovation_scout": ["web", "search", "memory",
   "documentation"]`), and `run_innovation_scout` MCP tool. Its own tools search past ADRs (`search_existing_adrs`)
@@ -134,6 +143,11 @@ fresh **Unreleased** section above it.
   first use), and `platform_metrics` gains indexes on `(agent, created_at)` and `created_at`.
 
 ### Changed
+- Missing telemetry configuration is now loud. `configure_observability` logs at WARNING (was INFO) when neither
+  Langfuse keys nor a Logfire token is set, and `healthcheck.validate_telemetry` (part of `run_startup_checks`, so
+  also `sre_autopilot`) reports "no telemetry backend configured". Why: the deployed pod ran with neither, the
+  INFO line was never seen, and the Logfire project stayed empty. An explicit `OTEL_SDK_DISABLED=true` is treated as
+  a decision and not reported, to avoid `sre_autopilot` escalating an intentional setting.
 - `ba` and `review` prompts recalibrated after a live test of the deployed service (calibration PR, eval not yet run).
   Why: one request (a Go `GET /healthz`) produced six stories and six events (including `health.ReadinessCheckFailed`,
   which the agent itself called an anti-pattern), and a 9-line handler was rejected as HIGH risk with score 28.
@@ -262,6 +276,11 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **CI `test` jobs hung after #75.** `VectorDBManager._search_domains` embedded the query before checking the database, so
+  a retrieval with no reachable database (every unit test, and CI) loaded or downloaded the local embedding model
+  instead of failing at the connection. It now ensures the tables first and returns the failure per collection, as
+  `_search` did. Found by reading the cancelled job (the `pytest` step never finished) and the order of the
+  calls; it passed locally only because the model is cached there.
 - `ArtifactWriter.write` (`core/writer.py`) now validates `artifact.agent_name` through `safe_path_join` and rejects
   multi-segment or empty names, preventing a model-chosen `agent_name` (`../...` or `/abs/...`) from writing outside
   `base_dir`.

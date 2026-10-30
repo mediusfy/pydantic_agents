@@ -57,3 +57,44 @@ class TestValidateDirectories:
             mock.vector_db_dir = tmp_path / "vdb"
             errors = validate_directories()
             assert len(errors) == 0
+
+
+class TestValidateTelemetry:
+    def test_no_backend_is_a_finding(self):
+        from pydantic_agents.core import healthcheck
+
+        with patch(
+            "pydantic_agents.core.observability.telemetry_backend_problem",
+            return_value="no telemetry backend configured: x",
+        ):
+            assert healthcheck.validate_telemetry() == ["no telemetry backend configured: x"]
+
+    def test_configured_backend_is_clean(self):
+        from pydantic_agents.core import healthcheck
+
+        with (
+            patch("pydantic_agents.core.observability.telemetry_backend_problem", return_value=None),
+            patch("pydantic_agents.core.observability.LOGFIRE_CONFIGURE_ERROR", None),
+        ):
+            assert healthcheck.validate_telemetry() == []
+
+    def test_configured_but_failed_is_a_finding(self):
+        from pydantic_agents.core import healthcheck
+
+        with (
+            patch("pydantic_agents.core.observability.telemetry_backend_problem", return_value=None),
+            patch("pydantic_agents.core.observability.LOGFIRE_CONFIGURE_ERROR", "Logfire configuration failed: boom"),
+        ):
+            (finding,) = healthcheck.validate_telemetry()
+        assert "not working" in finding and "boom" in finding
+
+    def test_startup_checks_include_telemetry(self):
+        from pydantic_agents.core import healthcheck
+
+        with (
+            patch.object(healthcheck, "validate_api_keys", return_value=[]),
+            patch.object(healthcheck, "validate_directories", return_value=[]),
+            patch.object(healthcheck, "validate_database", return_value=[]),
+            patch.object(healthcheck, "validate_telemetry", return_value=["no telemetry backend configured"]),
+        ):
+            assert healthcheck.run_startup_checks() == ["no telemetry backend configured"]

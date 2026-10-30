@@ -95,3 +95,41 @@ def test_configure_tolerates_missing_instrument_pydantic_ai(monkeypatch):
         observability.configure_observability()
 
     assert observability.LOGFIRE_ENABLED is True
+
+
+@pytest.mark.parametrize(
+    ("env", "expect_problem"),
+    [
+        ({}, True),
+        ({"LOGFIRE_TOKEN": "t"}, False),
+        ({"LANGFUSE_HOST": "https://l", "LANGFUSE_PUBLIC_KEY": "p", "LANGFUSE_SECRET_KEY": "s"}, False),
+        ({"LANGFUSE_HOST": "https://l", "LANGFUSE_PUBLIC_KEY": "p"}, True),
+        ({"OTEL_SDK_DISABLED": "true"}, False),
+    ],
+)
+def test_telemetry_backend_problem(monkeypatch, env, expect_problem):
+    for key in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    _clear_logfire_env(monkeypatch)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    from pydantic_agents.core import observability
+
+    problem = observability.telemetry_backend_problem()
+    assert (problem is not None) is expect_problem
+    if expect_problem:
+        assert "no telemetry backend configured" in problem
+
+
+def test_no_backend_logs_a_warning(monkeypatch, caplog):
+    for key in ("LANGFUSE_HOST", "LANGFUSE_PUBLIC_KEY", "LANGFUSE_SECRET_KEY"):
+        monkeypatch.delenv(key, raising=False)
+    _clear_logfire_env(monkeypatch)
+    from pydantic_agents.core import observability
+
+    with caplog.at_level("INFO", logger=observability.logger.name):
+        observability.configure_observability()
+
+    records = [r for r in caplog.records if "telemetry disabled" in r.getMessage()]
+    assert records
+    assert all(r.levelname == "WARNING" for r in records)
