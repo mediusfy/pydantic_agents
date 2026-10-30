@@ -349,6 +349,13 @@ async def _run_attempt(
     logger.info("Changed files: %s", result.changed_files)
     _record(recorder, result, "service_engineer", attempt, "ok", eng_start, f"{len(result.changed_files)} files")
 
+    if not result.changed_files and attempt > 0:
+        # A retry that changes nothing has not fixed what the gates rejected: that is a failed attempt, not a pass.
+        msg = f"Service Engineer returned no changed files on attempt {attempt}; the earlier failures stand."
+        logger.warning(msg)
+        result.errors.append(msg)
+        return False
+
     if not result.changed_files:
         logger.warning("Service Engineer returned no changed files.")
         result.passed = True

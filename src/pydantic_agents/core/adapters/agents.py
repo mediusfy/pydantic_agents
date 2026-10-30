@@ -1,13 +1,33 @@
 import asyncio
+import contextlib
+import time
 from abc import ABC, abstractmethod
 from typing import Any
 
 import logfire
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
+from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.limits import is_transient_error, permit_held, run_id_var, run_model_settings, usage_limits
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
+
+
+async def _record_metric(agent_name: str, start: float, result: Any) -> None:
+    """One platform_metrics row per agent run (duration, tokens, verdict); best-effort and never raises.
+
+    ``result is None`` means the run failed or was cancelled.
+    """
+    in_tokens, out_tokens = platform_metrics.token_counts(result) if result is not None else (None, None)
+    with contextlib.suppress(Exception):
+        await platform_metrics.record_call(
+            agent_name,
+            duration=time.time() - start,
+            success=result is not None,
+            input_tokens=in_tokens,
+            output_tokens=out_tokens,
+            verdict=platform_metrics.verdict_of(result) if result is not None else None,
+        )
 
 
 class AgentProviderPort(ABC):
@@ -72,8 +92,14 @@ class PydanticAIAgentProvider(AgentProviderPort):
                 "langfuse.session.id": run_id_var.get() or "",
                 "langfuse.trace.name": f"pydantic-agents/{agent_name}",
             }
+            start = time.time()
+            result: Any = None
             with logfire.span("agent.run", agent_name=agent_name, prompt_length=len(prompt), **tags, _level="info"):
-                return await telemetry.track(agent_name, _run_with_retry)
+                try:
+                    result = await telemetry.track(agent_name, _run_with_retry)
+                    return result
+                finally:
+                    await _record_metric(agent_name, start, result)
 
         if permit_held.get():
             # Delegated call: the parent's permit already covers it. The flag is inherited by tasks created while

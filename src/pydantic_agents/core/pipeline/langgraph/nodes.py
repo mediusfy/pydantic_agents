@@ -61,6 +61,7 @@ async def ba_node(
             }
         except Exception as e:
             logger.exception("BA stage failed: %s", e)
+            rec.abort_run(str(e))
             return _make_error(state, "ba", str(e))
 
 
@@ -98,6 +99,7 @@ async def advisory_node(
             }
         except Exception as e:
             logger.exception("Advisory stage failed: %s", e)
+            rec.abort_run(str(e))
             return _make_error(state, "advisory", str(e))
 
 
@@ -138,6 +140,7 @@ async def implementation_node(
             }
         except Exception as e:
             logger.exception("Implementation stage failed: %s", e)
+            rec.abort_run(str(e))
             return _make_error(state, "implementation", str(e))
 
 
@@ -173,6 +176,7 @@ async def quality_gate_node(
             }
         except Exception as e:
             logger.exception("Quality gate failed: %s", e)
+            rec.abort_run(str(e))
             return _make_error(state, "quality_gate", str(e))
 
 
@@ -203,4 +207,5 @@ async def merge_node(
             }
         except Exception as e:
             logger.exception("Merge failed: %s", e)
+            rec.abort_run(str(e))
             return _make_error(state, "merge", str(e))

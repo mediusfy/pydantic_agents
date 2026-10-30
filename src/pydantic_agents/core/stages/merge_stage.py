@@ -8,6 +8,7 @@ After all pipeline stages complete and quality gate approves, this stage:
 5. Optionally runs make test / lint on the target project
 """
 
+import asyncio
 import logging
 import shutil
 from dataclasses import dataclass, field
@@ -15,6 +16,7 @@ from pathlib import Path
 
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.stages.base import StageRunner
 
 logger = logging.getLogger(__name__)
@@ -56,18 +58,37 @@ def _approve(state: PipelineState) -> PipelineState:
     return state
 
 
-def _store_merged_context(agent: str, clean_path: str, content: str, project: str) -> None:
-    """Index a merged file in the context engine; failures are only logged."""
-    try:
-        from pydantic_agents.core.context_engine import store_artifact_context
+# Longest file body indexed: the embedding model reads about the first 1 KB anyway.
+_INDEX_MAX_CHARS = 4_000
 
-        store_artifact_context(
-            domain="project",
-            content=f"File: {clean_path}\nAgent: {agent}\nContent:\n{content}",
-            metadata={"agent": agent, "file": clean_path, "project": project},
+
+async def _store_merged_contexts(pending: list[tuple[str, str, str]], project: str) -> None:
+    """Index the merged files in the context engine, in one batch; failures are only logged.
+
+    The row id is the project and file path, so a file merged again replaces its earlier row (a random id added a
+    duplicate on every run).
+    """
+    try:
+        from pydantic_agents.core.context_engine import astore_artifact_contexts
+
+        await astore_artifact_contexts(
+            "project",
+            [
+                (
+                    f"File: {path}\nAgent: {agent}\nContent:\n{content[:_INDEX_MAX_CHARS]}",
+                    {"agent": agent, "file": path, "project": project},
+                    f"merge:{project}:{path}",
+                )
+                for agent, path, content in pending
+            ],
         )
     except Exception as ce:
         logger.debug("Failed to store merged file context: %s", ce)
+
+
+def _is_server_tree(target_root: Path) -> bool:
+    """Whether the target is the server's own working directory."""
+    return target_root.resolve() == Path.cwd().resolve()
 
 
 class MergeStage(StageRunner):
@@ -75,9 +96,10 @@ class MergeStage(StageRunner):
 
     def __init__(self):
         self.result = MergeResult()
+        self._pending_index: list[tuple[str, str, str]] = []
 
     def _merge_file(
-        self, target_root: Path, backup_dir: Path, subdir: str, filepath: str, content: str, agent: str, project: str
+        self, target_root: Path, backup_dir: Path, subdir: str, filepath: str, content: str, agent: str
     ) -> None:
         """Write one artifact file into the project, backing up a different existing file first."""
         clean_path = _clean_artifact_path(filepath)
@@ -102,7 +124,14 @@ class MergeStage(StageRunner):
         dest.write_text(content, encoding="utf-8")
         self.result.files_written += 1
         logger.info(f"  Merged: {dest.relative_to(target_root_resolved)}")
-        _store_merged_context(agent, clean_path, content, project)
+        self._pending_index.append((agent, clean_path, content))
+
+    def _merge_all(self, artifacts: list, target_root: Path, backup_dir: Path) -> None:
+        """Write every artifact file (blocking file I/O, so run in a worker thread)."""
+        for artifact in artifacts:
+            subdir = _target_subdir(artifact.agent_name)
+            for filepath, content in (artifact.files or {}).items():
+                self._merge_file(target_root, backup_dir, subdir, filepath, content, artifact.agent_name)
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:
         logger.info("--- Running Merge Stage ---")
@@ -121,13 +150,18 @@ class MergeStage(StageRunner):
             logger.info("No artifacts to merge.")
             return _approve(state)
 
+        if _is_server_tree(target_root) and not settings.merge_into_server_tree:
+            logger.warning(
+                "Target root %s is the server's own working directory: not merging into it "
+                "(set MERGE_INTO_SERVER_TREE=true to allow). The generated files stay under %s.",
+                target_root,
+                config.output_dir(),
+            )
+            return _approve(state)
+
         backup_dir = target_root / ".merge-backups"
-        for artifact in artifacts:
-            subdir = _target_subdir(artifact.agent_name)
-            for filepath, content in (artifact.files or {}).items():
-                self._merge_file(
-                    target_root, backup_dir, subdir, filepath, content, artifact.agent_name, config.project
-                )
+        await asyncio.to_thread(self._merge_all, artifacts, target_root, backup_dir)
+        await _store_merged_contexts(self._pending_index, config.project)
 
         logger.info(
             f"Merge complete: {self.result.files_written} written, "

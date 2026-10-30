@@ -77,6 +77,55 @@ def validate_public_http_url(url: str, *, resolve_dns: bool = True) -> str | Non
     return None
 
 
+# Bytes read from a response. `resp.text` loaded the whole body before it was cut to _MAX_RESPONSE_CHARS, so one
+# large response could use all the memory; 4 bytes per character is the UTF-8 worst case.
+_MAX_RESPONSE_BYTES = _MAX_RESPONSE_CHARS * 4
+
+
+async def _get_bounded(client: httpx.AsyncClient, url: str) -> tuple[httpx.Response, bytes]:
+    """GET ``url`` and read at most ``_MAX_RESPONSE_BYTES`` of the body.
+
+    The body is read inside the stream context and returned as bytes: once the context exits the response is closed,
+    so reading ``resp.content`` or ``resp.text`` from the caller would see nothing. Use the returned bytes.
+    """
+    async with client.stream("GET", url, headers={"User-Agent": "Orgitration-Agent/1.0"}) as resp:
+        body = bytearray()
+        if not resp.is_redirect:
+            async for chunk in resp.aiter_bytes():
+                body.extend(chunk)
+                if len(body) >= _MAX_RESPONSE_BYTES:
+                    break
+        return resp, bytes(body[:_MAX_RESPONSE_BYTES])
+
+
+def _render_body(resp: httpx.Response, body: bytes) -> str:
+    """The response text, JSON re-indented, capped at ``_MAX_RESPONSE_CHARS``."""
+    text = body.decode(resp.encoding or "utf-8", errors="replace")
+    if "json" in resp.headers.get("content-type", ""):
+        try:
+            return json.dumps(json.loads(text), indent=2)[:_MAX_RESPONSE_CHARS]
+        except ValueError:
+            pass  # truncated or invalid JSON: return it as text
+    return text[:_MAX_RESPONSE_CHARS]
+
+
+async def _get_following_redirects(client: httpx.AsyncClient, url: str) -> str:
+    """GET ``url``, following up to ``_MAX_REDIRECTS`` redirects that each pass the public-URL check."""
+    current_url = url
+    for _ in range(_MAX_REDIRECTS + 1):
+        resp, body = await _get_bounded(client, current_url)
+        if not resp.is_redirect:
+            resp.raise_for_status()
+            return _render_body(resp, body)
+        location = resp.headers.get("location")
+        if not location:
+            return f"Error: Redirect from {current_url} had no Location header."
+        current_url = urljoin(current_url, location)
+        if redirect_err := await asyncio.to_thread(validate_public_http_url, current_url):
+            return redirect_err
+    return f"Error: Too many redirects fetching {url}."
+
+
 async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str:
     """Fetch content from a URL via HTTP GET.
 
@@ -89,26 +138,8 @@ async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str
         return err
 
     try:
-        current_url = url
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
-            for _ in range(_MAX_REDIRECTS + 1):
-                resp = await client.get(current_url, headers={"User-Agent": "Orgitration-Agent/1.0"})
-                if resp.is_redirect:
-                    location = resp.headers.get("location")
-                    if not location:
-                        return f"Error: Redirect from {current_url} had no Location header."
-                    next_url = urljoin(current_url, location)
-                    redirect_err = await asyncio.to_thread(validate_public_http_url, next_url)
-                    if redirect_err:
-                        return redirect_err
-                    current_url = next_url
-                    continue
-                resp.raise_for_status()
-                content_type = resp.headers.get("content-type", "")
-                if "json" in content_type:
-                    return json.dumps(resp.json(), indent=2)[:_MAX_RESPONSE_CHARS]
-                return resp.text[:_MAX_RESPONSE_CHARS]
-            return f"Error: Too many redirects fetching {url}."
+            return await _get_following_redirects(client, url)
     except httpx.HTTPStatusError as e:
         return f"HTTP error {e.response.status_code} fetching {url}: {e}"
     except httpx.RequestError as e:

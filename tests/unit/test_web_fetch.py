@@ -77,9 +77,7 @@ def test_validate_public_http_url_unresolvable_host_is_left_to_the_client(monkey
 
 def _patch_client(monkeypatch, handler):
     real = httpx.AsyncClient
-    monkeypatch.setattr(
-        web_fetch.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw)
-    )
+    monkeypatch.setattr(web_fetch.httpx, "AsyncClient", lambda **kw: real(transport=httpx.MockTransport(handler), **kw))
     monkeypatch.setattr(web_fetch, "validate_public_http_url", lambda url, **_k: None if "evil" not in url else "Err")
     return web_fetch
 
@@ -101,9 +99,20 @@ async def test_fetch_url_blocks_redirect_to_loopback(monkeypatch):
         async def __aexit__(self, *_exc):
             return False
 
-        async def get(self, url, **_kwargs):
+        def stream(self, _method, url, **_kwargs):
             req = httpx.Request("GET", url)
-            return httpx.Response(302, headers={"location": "http://169.254.169.254/latest/meta-data/"}, request=req)
+            response = httpx.Response(
+                302, headers={"location": "http://169.254.169.254/latest/meta-data/"}, request=req
+            )
+
+            class _Stream:
+                async def __aenter__(self):
+                    return response
+
+                async def __aexit__(self, *_exc):
+                    return False
+
+            return _Stream()
 
     monkeypatch.setattr("pydantic_agents.core.tools.web_fetch.httpx.AsyncClient", _FakeClient)
     out = await fetch_url(MagicMock(), "https://93.184.216.34/start")
@@ -155,3 +164,22 @@ async def test_fetch_url_reports_request_errors(monkeypatch):
 
     wf = _patch_client(monkeypatch, handler)
     assert "Request failed" in await wf.fetch_url(MagicMock(), "https://example.com/")
+
+
+@pytest.mark.asyncio
+async def test_fetch_url_reads_a_bounded_number_of_bytes(monkeypatch):
+    sent = []
+
+    class _Body(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for _ in range(10_000):  # 10 MB offered
+                sent.append(1)
+                yield b"y" * 1024
+
+    wf = _patch_client(
+        monkeypatch, lambda _r: httpx.Response(200, headers={"content-type": "text/plain"}, stream=_Body())
+    )
+    out = await wf.fetch_url(MagicMock(), "https://example.com/big")
+
+    assert len(out) == wf._MAX_RESPONSE_CHARS
+    assert len(sent) < 3_000  # stopped at the cap, not after the whole body

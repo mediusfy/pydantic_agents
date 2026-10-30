@@ -1,5 +1,9 @@
+import asyncio
+import contextlib
 import os
 import re
+import signal
+import time
 from collections.abc import Iterator
 from contextvars import ContextVar
 from pathlib import Path
@@ -65,6 +69,45 @@ _SAFE_SUBPROCESS_ENV_KEYS: frozenset[str] = frozenset(
         "XDG_CACHE_HOME",
     }
 )
+
+
+MAX_ROTATED_ARCHIVES = 5
+
+
+def rotate_log(path: str, max_bytes: int, keep: int = MAX_ROTATED_ARCHIVES) -> bool:
+    """Rotate ``path`` to ``<path>.<unix time>.archive`` once it exceeds ``max_bytes``, and keep only the ``keep``
+    newest archives. Rotation alone filled the disk: nothing ever deleted an archive. True when it rotated."""
+    try:
+        if os.path.getsize(path) <= max_bytes:
+            return False
+        os.rename(path, f"{path}.{int(time.time())}.archive")
+    except OSError:
+        return False
+    directory, name = os.path.split(os.path.abspath(path))
+    try:
+        archives = sorted(f for f in os.listdir(directory) if f.startswith(f"{name}.") and f.endswith(".archive"))
+        for stale in archives[:-keep] if keep > 0 else archives:
+            with contextlib.suppress(OSError):
+                os.remove(os.path.join(directory, stale))
+    except OSError:
+        pass
+    return True
+
+
+async def kill_and_reap(proc: Any) -> None:
+    """Kill an untrusted build/test subprocess together with its children, then wait for it.
+
+    The command is started in its own session (``start_new_session=True``), so the group can be killed: ``go test``
+    runs the test binary as a child, and killing only ``go`` left that binary spinning after a timeout. Waiting
+    reaps the process instead of leaving a zombie.
+    """
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except Exception:
+        with contextlib.suppress(ProcessLookupError):
+            proc.kill()
+    with contextlib.suppress(Exception):
+        await asyncio.wait_for(proc.wait(), timeout=5)
 
 
 def sanitized_subprocess_env() -> dict[str, str]:

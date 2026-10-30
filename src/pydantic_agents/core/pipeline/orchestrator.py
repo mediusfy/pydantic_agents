@@ -7,7 +7,7 @@ from pydantic_agents.core.adapters.state_repository import build_state_repositor
 from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter, WorkspaceContext
 from pydantic_agents.core.checkpoint import CheckpointManager
 from pydantic_agents.core.limits import run_id_var
-from pydantic_agents.core.models.core import FailureReport, PipelineState
+from pydantic_agents.core.models.core import FailureReport, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import STAGES, PipelineConfig
 from pydantic_agents.core.stages.base import StageRunner
 
@@ -107,6 +107,8 @@ class OrgitrationPipeline:
         for attempt in range(self._resume_attempt(), max_retries):
             logger.info(f"--- Implementation Loop Attempt {attempt + 1}/{max_retries} ---")
             self.state = await self.stages[STAGES.IMPLEMENTATION].run(self.state, self.config)
+            if self.state.failure_report and self.state.failure_report.source == "implementation":
+                return  # nothing was generated: a retry would rerun the same failing agents against no feedback
 
             # Test suite failed — retry implementation
             failure = getattr(self.state, "failure_report", None)
@@ -128,7 +130,11 @@ class OrgitrationPipeline:
         """Run one stage; False when it is handled elsewhere and so needs no checkpoint of its own."""
         if stage_name == STAGES.IMPLEMENTATION:
             await self._run_implementation_loop()
-        elif stage_name == STAGES.QUALITY_GATE and self.config.step == "all":
+        elif (
+            stage_name == STAGES.QUALITY_GATE
+            and self.config.step == "all"
+            and STAGES.IMPLEMENTATION in self.stages  # a gate-only blueprint has no loop to run it in
+        ):
             return False  # Handled inside the implementation retry loop
         else:
             self.state = await self.stages[stage_name].run(self.state, self.config)
@@ -203,6 +209,12 @@ class OrgitrationPipeline:
                 source="pipeline", error_type="config", trace=f"Unknown step: {self.config.step}"
             )
             return self.state
+
+        if stage == "all" and STAGES.BA not in self.stages and not self.state.user_stories and self.config.requirement:
+            # A blueprint without the BA stage still needs something to implement: the requirement is the story.
+            self.state.user_stories = [
+                UserStory(id="US-001", title=self.config.requirement[:80], gherkin=self.config.requirement)
+            ]
 
         for stage_name in _ALL_STAGES if stage == "all" else [stage]:
             if stage_name not in self.stages:

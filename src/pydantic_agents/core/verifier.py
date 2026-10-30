@@ -15,7 +15,6 @@ Both never raise: a missing toolchain, a timeout or an unwritable file name is a
 """
 
 import asyncio
-import contextlib
 import logging
 import shutil
 import tempfile
@@ -24,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +74,7 @@ async def _run(name: str, args: list[str], cwd: str) -> CheckResult:
             *args,
             cwd=cwd,
             env=sanitized_subprocess_env(),
+            start_new_session=True,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -83,8 +83,7 @@ async def _run(name: str, args: list[str], cwd: str) -> CheckResult:
     try:
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=COMMAND_TIMEOUT)
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
+        await kill_and_reap(proc)
         return CheckResult(name, False, f"'{' '.join(args)}' timed out after {COMMAND_TIMEOUT:.0f}s")
     output = f"{stdout.decode(errors='replace')}\n{stderr.decode(errors='replace')}".strip()
     return CheckResult(name, proc.returncode == 0, output[-_OUTPUT_MAX_CHARS:])

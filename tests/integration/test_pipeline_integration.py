@@ -849,9 +849,25 @@ class TestMemoryBackendSelection:
                         "metadata": metadata,
                     }
 
+            async def executemany(self, query: str, rows):
+                for row in rows:
+                    await self.execute(query, *row)
+
+            def transaction(self):
+                conn = self
+
+                class _Tx:
+                    async def __aenter__(self):
+                        return conn
+
+                    async def __aexit__(self, *_exc):
+                        return False
+
+                return _Tx()
+
             async def fetch(self, query: str, *args, **kwargs):
                 # e.g. "SELECT content FROM v_xxx ORDER BY embedding <=> $1::vector LIMIT $2"
-                if "plainto_tsquery" in query:
+                if "to_tsquery" in query:
                     return []  # the full-text half of a hybrid search: this mock has no text index
                 parts = query.split()
                 from_idx = next(i for i, p in enumerate(parts) if p.upper() == "FROM")

@@ -64,6 +64,7 @@ async def submit_pipeline_run(
     resume: bool = False,
     blueprint: str = "new_feature",
     framework: str | None = None,
+    resume_attempts: int = 0,
 ) -> str:
     """Submit a pipeline run as a background asyncio task.
 
@@ -86,6 +87,7 @@ async def submit_pipeline_run(
         "requirement": requirement,
         "blueprint": blueprint,
         "framework": framework or BLUEPRINTS[blueprint].get("framework", "legacy"),
+        "resume_attempts": resume_attempts,
         "result": None,
         "error": None,
         "started_at": datetime.now(UTC).isoformat(),
@@ -93,13 +95,32 @@ async def submit_pipeline_run(
         "elapsed_seconds": None,
     }
 
-    # Fire-and-forget background task; stash the handle so cancel_pipeline_run
-    # can reach it.
-    await run_store.save_run(run_id, PIPELINE_RUNS[run_id])
+    # Fire-and-forget background task; stash the handle so cancel_pipeline_run can reach it. The handle is stored
+    # before the first await: a second submit of the same id (two concurrent resumes) then sees a live task and is
+    # refused, instead of starting a second task whose handle nothing could cancel.
     task = asyncio.create_task(_run_pipeline_in_background(run_id, project_name, requirement, resume))
     PIPELINE_RUNS[run_id]["_task"] = task
+    _evict_finished_runs()
+    await run_store.save_run(run_id, PIPELINE_RUNS[run_id])
 
     return run_id
+
+
+# Finished runs kept in memory (the run store holds them durably); older ones are dropped so a long-lived server
+# does not accumulate every requirement and result it ever ran.
+MAX_FINISHED_RUNS_IN_MEMORY = 200
+
+
+def _evict_finished_runs() -> None:
+    """Drop the oldest finished runs beyond the cap. ``started_at`` is an ISO string, which sorts chronologically; a
+    run without one sorts first and is evicted first, which is fine: it is also the least informative."""
+    finished = [
+        (run.get("started_at") or "", run_id)
+        for run_id, run in PIPELINE_RUNS.items()
+        if run.get("_task") is None or run["_task"].done()
+    ]
+    for _, run_id in sorted(finished)[: max(0, len(finished) - MAX_FINISHED_RUNS_IN_MEMORY)]:
+        del PIPELINE_RUNS[run_id]
 
 
 def _outcome(project_name: str, state: Any) -> tuple[str, str | None, str | None]:
@@ -123,7 +144,8 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
     start_time = time.time()
     run = PIPELINE_RUNS[run_id]
 
-    with logfire.span("pipeline.background_run", run_id=run_id, project=project_name):
+    span_attrs: dict[str, Any] = {"run_id": run_id, "project": project_name, "langfuse.session.id": run_id}
+    with logfire.span("pipeline.background_run", **span_attrs):
         run["status"] = "running"
         await run_store.save_run(run_id, run)
         run_id_var.set(run_id)  # this task's own context: sent to LiteLLM as the Langfuse session id
@@ -205,4 +227,5 @@ async def resume_pipeline_run(run_id: str) -> str | None:
         resume=True,
         blueprint=run.get("blueprint") or "new_feature",
         framework=run.get("framework"),
+        resume_attempts=int(run.get("resume_attempts") or 0) + 1,
     )

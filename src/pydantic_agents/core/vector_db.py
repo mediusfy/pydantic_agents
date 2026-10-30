@@ -64,6 +64,7 @@ def _validate_collection_name(collection_name: str) -> str:
         raise ValueError(f"Invalid collection name: {collection_name!r}")
     return collection_name
 
+
 # Reciprocal rank fusion constant (Cormack et al. 2009); 60 is the conventional value.
 _RRF_K = 60
 # Timeout for the LiteLLM /embeddings and /rerank calls.
@@ -285,15 +286,28 @@ async def _ensure_table(collection_name: str):
                 f"Switching the embedding provider, model or dimension requires re-seeding: drop table "
                 f"v_{collection_name} and run the seed scripts again."
             )
-        # Index for cosine-distance (<=>) search — ivfflat with cosine distance
-        await conn.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS idx_{collection_name}_embedding
-            ON v_{collection_name}
-            USING ivfflat (embedding vector_cosine_ops)
-            WITH (lists = 100)
-            """
-        )
+        # Index for cosine-distance (<=>) search. HNSW needs no training data: an ivfflat index built on an empty
+        # table (as here, at first use) keeps meaningless centroids and loses recall until it is rebuilt. Older
+        # pgvector without HNSW falls back to ivfflat.
+        try:
+            await conn.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_{collection_name}_hnsw
+                ON v_{collection_name}
+                USING hnsw (embedding vector_cosine_ops)
+                """
+            )
+            await conn.execute(f"DROP INDEX IF EXISTS idx_{collection_name}_embedding")
+        except Exception as exc:
+            logger.warning("HNSW index unavailable for %s (%s); using ivfflat", collection_name, exc)
+            await conn.execute(
+                f"""
+                CREATE INDEX IF NOT EXISTS idx_{collection_name}_embedding
+                ON v_{collection_name}
+                USING ivfflat (embedding vector_cosine_ops)
+                WITH (lists = 100)
+                """
+            )
         # Full-text column + index for the lexical half of hybrid search.
         await conn.execute(
             f"""
@@ -324,6 +338,22 @@ def _to_embedding(text: str) -> list[float]:
     if isinstance(vec, np.ndarray):
         return vec.tolist()
     return list(vec)
+
+
+_TSQUERY_WORD = re.compile(r"\w+", re.ASCII)
+_TSQUERY_MAX_TERMS = 32
+
+
+def _or_tsquery(query: str) -> str:
+    """The query's words joined with OR, as a ``to_tsquery`` string ('' when it has none).
+
+    ``plainto_tsquery`` ANDs every word, so a request-length query (the context engine passes the whole task) almost
+    never matches a chunk lexically and the text half of hybrid search returned nothing. With OR, ``ts_rank_cd``
+    still ranks the chunks that match most terms first. The words are ``\\w`` characters only, so the string is a
+    valid, injection-free tsquery.
+    """
+    words = list(dict.fromkeys(w.lower() for w in _TSQUERY_WORD.findall(query)))[:_TSQUERY_MAX_TERMS]
+    return " | ".join(words)
 
 
 def _rrf_fuse(rankings: list[list[str]], k: int = _RRF_K) -> list[str]:
@@ -389,23 +419,23 @@ class VectorDBManager:
             await _ensure_table(collection_name)
             pool = await _get_pool()
             embeddings = await _embed_texts(list(documents)) if documents else []
-            async with pool.acquire() as conn:
-                for doc_text, meta, doc_id, embedding in zip(documents, metadatas, ids, embeddings, strict=True):
-                    embedding_str = _vector_literal(embedding)
-                    await conn.execute(
-                        f"""
-                        INSERT INTO v_{collection_name} (id, metadata, embedding, content)
-                        VALUES ($1, $2::jsonb, $3::vector, $4)
-                        ON CONFLICT (id) DO UPDATE SET
-                            metadata = EXCLUDED.metadata,
-                            embedding = EXCLUDED.embedding,
-                            content   = EXCLUDED.content
-                        """,
-                        doc_id,
-                        _serialize_meta(meta),
-                        embedding_str,
-                        doc_text,
-                    )
+            rows = [
+                (doc_id, _serialize_meta(meta), _vector_literal(embedding), doc_text)
+                for doc_text, meta, doc_id, embedding in zip(documents, metadatas, ids, embeddings, strict=True)
+            ]
+            # One transaction and one round trip: a failure part-way no longer leaves half a document set behind.
+            async with pool.acquire() as conn, conn.transaction():
+                await conn.executemany(
+                    f"""
+                    INSERT INTO v_{collection_name} (id, metadata, embedding, content)
+                    VALUES ($1, $2::jsonb, $3::vector, $4)
+                    ON CONFLICT (id) DO UPDATE SET
+                        metadata = EXCLUDED.metadata,
+                        embedding = EXCLUDED.embedding,
+                        content   = EXCLUDED.content
+                    """,
+                    rows,
+                )
         except OrgitrationDependencyError as exc:
             logger.warning("Vector DB add_documents called but vector dependencies are not installed: %s", exc)
 
@@ -435,7 +465,9 @@ class VectorDBManager:
         n_results: int = 3,
         project: str | None = None,
         filters: dict[str, str | None] | None = None,
+        embedding: list[float] | None = None,
     ) -> list[str]:
+        """``embedding`` is the query's vector when the caller already computed it (``_search_domains``)."""
         _validate_collection_name(collection_name)
         # `project` is the long-standing filter; `filters` adds any other metadata equality filters.
         conditions: dict[str, str | None] = dict(filters or {})
@@ -447,7 +479,8 @@ class VectorDBManager:
         try:
             _require_vector_deps()
             await _ensure_table(collection_name)
-            (embedding,) = await _embed_texts([query])
+            if embedding is None:
+                (embedding,) = await _embed_texts([query])
             embedding_str = _vector_literal(embedding)
             pool = await _get_pool()
             # Both candidate queries take ($1 = query vector / query text, $2 = LIMIT, $3.. = metadata values),
@@ -479,20 +512,22 @@ class VectorDBManager:
                 by_vector = [row["content"] for row in vector_rows]
                 if not hybrid:
                     return by_vector[:n_results]
-                text_clauses = [*clauses, "content_tsv @@ plainto_tsquery('english', $1)"]
-                text_rows = await conn.fetch(
-                    f"""
-                    SELECT content
-                    FROM v_{collection_name}
-                    WHERE {" AND ".join(text_clauses)}
-                    ORDER BY ts_rank_cd(content_tsv, plainto_tsquery('english', $1)) DESC
-                    LIMIT $2
-                    """,
-                    query,
-                    limit,
-                    *params,
-                )
-                by_text = [row["content"] for row in text_rows]
+                by_text: list[str] = []
+                if ts_query := _or_tsquery(query):
+                    text_clauses = [*clauses, "content_tsv @@ to_tsquery('english', $1)"]
+                    text_rows = await conn.fetch(
+                        f"""
+                        SELECT content
+                        FROM v_{collection_name}
+                        WHERE {" AND ".join(text_clauses)}
+                        ORDER BY ts_rank_cd(content_tsv, to_tsquery('english', $1)) DESC
+                        LIMIT $2
+                        """,
+                        ts_query,
+                        limit,
+                        *params,
+                    )
+                    by_text = [row["content"] for row in text_rows]
             fused = _rrf_fuse([by_vector, by_text])
             return await _rerank(query, fused, n_results)
         except OrgitrationDependencyError as exc:
@@ -506,6 +541,28 @@ class VectorDBManager:
         ``project`` restricts results to documents tagged with that project at seed time.
         """
         return self._run_sync(self._search(collection_name, query, n_results, project))
+
+    async def _search_domains(
+        self, collections: list[str], query: str, n_results: int, project: str | None
+    ) -> list[list[str] | BaseException]:
+        """Search several collections for one query: it is embedded once, and the collections are queried
+        concurrently. A collection that fails yields its exception in its slot instead of failing the others."""
+        try:
+            _require_vector_deps()
+            (embedding,) = await _embed_texts([query])
+        except OrgitrationDependencyError as exc:
+            logger.warning("Vector DB search called but vector dependencies are not installed: %s", exc)
+            return [[] for _ in collections]
+        return await asyncio.gather(
+            *(self._search(c, query, n_results, project, embedding=embedding) for c in collections),
+            return_exceptions=True,
+        )
+
+    async def async_search_domains(
+        self, collections: list[str], query: str, n_results: int = 3, project: str | None = None
+    ) -> list[list[str] | BaseException]:
+        """``_search`` over several collections with one query embedding (see ``_search_domains``)."""
+        return await _bridge(self._search_domains(collections, query, n_results, project))
 
     async def async_search(
         self,
@@ -591,7 +648,7 @@ class VectorDBManager:
                 raise ValueError(err)
             _require_vector_deps()
             loader = WebBaseLoader(url, requests_kwargs={"timeout": 15, "allow_redirects": False})
-            docs = loader.load()
+            docs = await asyncio.to_thread(loader.load)  # blocking HTTP: not on the event loop
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
@@ -617,7 +674,7 @@ class VectorDBManager:
         else:
             _require_vector_deps()
             loader = PyPDFLoader(file_path)
-            docs = loader.load()
+            docs = await asyncio.to_thread(loader.load)
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 

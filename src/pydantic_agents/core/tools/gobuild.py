@@ -1,12 +1,11 @@
 """Go build and vet tools for shift-left validation during code generation."""
 
 import asyncio
-import contextlib
 import tempfile
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
 
 GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
@@ -26,14 +25,14 @@ async def _run_build(temp_dir: str) -> str:
         "./...",
         cwd=temp_dir,
         env=sanitized_subprocess_env(),
+        start_new_session=True,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         _, stderr = await asyncio.wait_for(build_proc.communicate(), timeout=GO_BUILD_TIMEOUT)
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            build_proc.kill()
+        await kill_and_reap(build_proc)
         return "BUILD FAILED: 'go build' timed out (possible circular dependency or slow proxy)."
 
     if build_proc.returncode == 0:
@@ -49,14 +48,14 @@ async def _run_vet(temp_dir: str) -> str:
         "./...",
         cwd=temp_dir,
         env=sanitized_subprocess_env(),
+        start_new_session=True,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
     try:
         _, stderr = await asyncio.wait_for(vet_proc.communicate(), timeout=GO_VET_TIMEOUT)
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            vet_proc.kill()
+        await kill_and_reap(vet_proc)
         return "VET FAILED: 'go vet' timed out."
 
     if vet_proc.returncode == 0:

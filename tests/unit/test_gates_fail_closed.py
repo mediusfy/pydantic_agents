@@ -13,6 +13,8 @@ from pydantic_agents.core.models.core import (
     FindingSeverity,
     PipelineState,
     QualityGateResult,
+    ReviewResult,
+    RiskLevel,
     SecurityReport,
     TestRunReport,
     UserStory,
@@ -127,9 +129,13 @@ async def test_security_failure_sends_feedback_instead_of_crashing():
     outputs = {
         "sre": Artifact(agent_name="sre", files={"a.yaml": "x"}),
         "security": SecurityReport(passed=False, score=20, feedback=["SQL injection in handler"]),
+        "quality_gate": QualityGateResult(complexity_score=10, feedback=[]),
+        "review": ReviewResult(approved=True, feedback=[], security_score=90, risk_level=RiskLevel.LOW),
     }
     stage = QualityGateStage(agent_provider=_runner(outputs))
-    state = PipelineState(run_id="sec-fail", stage="implementation", artifacts=[])
+    state = PipelineState(
+        run_id="sec-fail", stage="implementation", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]
+    )
     config = PipelineConfig(project="p", requirement="r")
 
     with (
@@ -197,8 +203,12 @@ async def test_security_failure_without_feedback_still_gives_the_retry_loop_some
     outputs = {
         "sre": Artifact(agent_name="sre", files={"a.yaml": "x"}),
         "security": SecurityReport(passed=False, score=10),
+        "quality_gate": QualityGateResult(complexity_score=10, feedback=[]),
+        "review": ReviewResult(approved=True, feedback=[], security_score=90, risk_level=RiskLevel.LOW),
     }
-    state = PipelineState(run_id="sec-empty", stage="implementation", artifacts=[])
+    state = PipelineState(
+        run_id="sec-empty", stage="implementation", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]
+    )
     with (
         patch("pydantic_agents.core.stages.quality_gate_stage.registry.get", return_value=MagicMock()),
         patch(
