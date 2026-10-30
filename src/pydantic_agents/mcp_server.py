@@ -1,10 +1,9 @@
 import asyncio
-import contextlib
+import functools
 import logging
 import os
 import re
 import sys
-import time
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
@@ -89,9 +88,6 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         raise AgentNotFoundError(f"Agent '{agent_name}' not registered")
 
     run_token = run_id_var.set(run_id_var.get() or f"call_{uuid.uuid4().hex[:12]}")
-    start = time.time()
-    success = False
-    verdict: str | None = None
     try:
         # ── Context Enrichment ────────────────────────────────────────────────
         # Pull relevant snippets from the vector-indexed knowledge base
@@ -111,29 +107,14 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         try:
             with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
                 result = await registry.run(agent_name, enriched_request)
-                success = True
-                verdict = _extract_verdict(result)
                 return serialize_output(result)
         except Exception as e:
             logger.warning("Agent '%s' failed: %s", agent_name, e)
             raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
     finally:
         run_id_var.reset(run_token)
-        # Additive to the provider's JSONL telemetry entry: one platform_metrics row per MCP call, best-effort.
-        with contextlib.suppress(Exception):
-            await platform_metrics.record_call(
-                agent_name, duration=time.time() - start, success=success, verdict=verdict
-            )
-
-
-def _extract_verdict(result: Any) -> str | None:
-    """'passed'/'failed' from a QualityGateResult.passed or ReviewResult.approved output, else None."""
-    output = getattr(result, "output", result)
-    for field in ("passed", "approved"):
-        value = getattr(output, field, None)
-        if isinstance(value, bool):
-            return "passed" if value else "failed"
-    return None
+        # The platform_metrics row (duration, tokens, verdict) is written by the agent provider, once per agent run,
+        # so pipeline and delegated runs are recorded too and not only the calls that arrive over MCP.
 
 
 AGENT_DOCSTRINGS = {
@@ -246,7 +227,23 @@ _register_agent_mcp_tools()
 # ── SDLC / Existing Code Tools
 
 
-@mcp.tool()
+def _threaded_tool(fn):
+    """Register a blocking function as an async MCP tool that runs in a worker thread.
+
+    FastMCP calls a sync tool directly on the event loop, so the vector store's embed-and-query round trips (up to the
+    30 s HTTP timeout) froze every other request and every background pipeline run. The plain function stays
+    callable, for scripts and tests.
+    """
+
+    @functools.wraps(fn)
+    async def runner(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    mcp.tool(name=fn.__name__)(runner)
+    return fn
+
+
+@_threaded_tool
 def search_adrs(query: str) -> str:
     """Search existing Architecture Decision Records (ADRs) to ensure new advice doesn't contradict past rulings."""
     with logfire.span("mcp.search_adrs", query_length=len(query), _level="info"):
@@ -256,7 +253,7 @@ def search_adrs(query: str) -> str:
         return "Found past architectural context:\n" + "\n---\n".join(results)
 
 
-@mcp.tool()
+@_threaded_tool
 def save_adr(decision_id: str, content: str) -> str:
     """Save a new Architecture Decision Record (ADR) to the knowledge base."""
     with logfire.span("mcp.save_adr", decision_id=decision_id, _level="info"):
@@ -307,6 +304,7 @@ async def delegate_to_orchestration_agent(
     from pydantic_agents.core.registry import instrumented_query
 
     register_all_agents()
+    run_token = run_id_var.set(run_id_var.get() or f"delegate_{uuid.uuid4().hex[:12]}")
 
     full_prompt = (
         f"Context from IDE:\n<ide_context>\n{context}\n</ide_context>\n\nTask:\n<user_task>\n{task}\n</user_task>"
@@ -327,6 +325,8 @@ async def delegate_to_orchestration_agent(
         return f"ERROR: {e}\n\nRe-call delegate_to_orchestration_agent with owner=<agent_name> from: {owners_str}"
     except AgentExecutionError as e:
         return f"ERROR: {e}"
+    finally:
+        run_id_var.reset(run_token)
 
 
 @mcp.tool()
@@ -424,7 +424,7 @@ async def approve_cto_gate(project_name: str, approved: bool = True, adr_id: str
         return "ERROR: adr_content requires adr_id (nothing to save it under)."
     if adr_content.strip():
         try:
-            save_adr(adr_id, adr_content)
+            await asyncio.to_thread(save_adr, adr_id, adr_content)
         except Exception as e:
             logger.exception("save_adr failed for %r during approve_cto_gate", adr_id)
             return f"ERROR: save_adr failed ({e}); the CTO gate was not approved so it can be retried."
@@ -791,7 +791,7 @@ def _check_codebase_root(codebase_path: str) -> Path:
     return candidate
 
 
-@mcp.tool()
+@_threaded_tool
 def seed_project_context(project_path: str, project: str = "") -> str:
     """Seed the vector DB with project files (rules, workflows, READMEs, ADRs).
 
@@ -812,7 +812,7 @@ def seed_project_context(project_path: str, project: str = "") -> str:
     return seed_project_files(str(root), project or os.path.basename(os.path.normpath(project_path)))
 
 
-@mcp.tool()
+@_threaded_tool
 def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "") -> str:
     """Query the vector DB directly for relevant context about any topic.
 
@@ -830,19 +830,9 @@ def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "
     if domain and domain not in _KNOWN_CONTEXT_DOMAINS:
         return f"Invalid domain {domain!r}: must be one of {', '.join(_KNOWN_CONTEXT_DOMAINS)} (or empty for all)."
     domains = [domain] if domain else list(_KNOWN_CONTEXT_DOMAINS)
-    all_results = []
-
+    all_results: list[str] = []
     for d in domains:
-        with logfire.span("mcp.query_context", domain=d, query_length=len(query), _level="info"):
-            try:
-                results = vector_db.search(d, query, n_results=top_k, project=project or None)
-                if results:
-                    all_results.append(f"\n=== Domain: {d} ===")
-                    for i, r in enumerate(results, 1):
-                        snippet = r[:300] + "..." if len(r) > 300 else r
-                        all_results.append(f"[{i}] {snippet}")
-            except Exception as e:
-                all_results.append(f"[Domain {d}] Error: {e}")
+        all_results.extend(_query_domain(d, query, top_k, project))
 
     if not all_results:
         return f"No context found for: {query}"
@@ -850,10 +840,24 @@ def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "
     return "\n".join(all_results)
 
 
+def _query_domain(domain: str, query: str, top_k: int, project: str) -> list[str]:
+    """The formatted lines one domain contributes to ``query_context``: nothing, snippets, or its error."""
+    with logfire.span("mcp.query_context", domain=domain, query_length=len(query), _level="info"):
+        try:
+            results = vector_db.search(domain, query, n_results=top_k, project=project or None)
+        except Exception as e:
+            return [f"[Domain {domain}] Error: {e}"]
+    if not results:
+        return []
+    lines = [f"\n=== Domain: {domain} ==="]
+    lines.extend(f"[{i}] {r[:300] + '...' if len(r) > 300 else r}" for i, r in enumerate(results, 1))
+    return lines
+
+
 # ── Cross-Runtime Memory Bridge Tools ─────────────────────────────────────
 
 
-@mcp.tool()
+@_threaded_tool
 def sync_memory(all_runtimes: bool = True, max_entries: int = 50) -> str:
     """Sync memory across all agent runtimes (pgvector ↔ Claude Code ↔ Antigravity).
 
@@ -877,7 +881,7 @@ def sync_memory(all_runtimes: bool = True, max_entries: int = 50) -> str:
     )
 
 
-@mcp.tool()
+@_threaded_tool
 def memory_bridge_status() -> str:
     """Get the current status of all memory systems (pgvector, Claude Code, Antigravity).
 
@@ -895,10 +899,6 @@ def memory_bridge_status() -> str:
     )
 
 
-if __name__ == "__main__":
-    mcp.run()
-
-
 @mcp.tool()
 async def agent_usage_summary(days: int = 7, agent: str = "") -> str:
     """Read-only usage summary from platform_metrics: per agent runs, success rate, p50/p95 duration, tokens,
@@ -906,3 +906,7 @@ async def agent_usage_summary(days: int = 7, agent: str = "") -> str:
     Only runs through the agent provider are recorded."""
     with logfire.span("mcp.agent_usage_summary", days=days, agent=agent, _level="info"):
         return await platform_metrics.usage_summary(days, agent)
+
+
+if __name__ == "__main__":
+    mcp.run()

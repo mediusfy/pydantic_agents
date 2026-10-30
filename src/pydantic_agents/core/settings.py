@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     # Directories the MCP tool seed_project_context may read, separated by os.pathsep (":" on Linux/macOS). Empty means
     # only output_dir. scripts/seed_projects.py is not restricted: it seeds clones it made itself.
     seed_roots: str = ""
+    # Whether an approved run may merge its files into the server's own working directory (the "default" project's
+    # target root is "."). Off: such a run keeps its output under output_dir and the merge stage does nothing.
+    merge_into_server_tree: bool = False
     # Host and Origin header patterns accepted by the MCP server's DNS-rebinding middleware (comma-separated).
     mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
     mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"

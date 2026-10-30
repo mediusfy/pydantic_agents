@@ -19,7 +19,20 @@ class _Conn:
 
     async def execute(self, sql, *args):
         if "INSERT INTO pipeline_runs" in sql:
-            run_id, status, project, requirement, result, error, started, completed, elapsed = args
+            (
+                run_id,
+                status,
+                project,
+                requirement,
+                result,
+                error,
+                started,
+                completed,
+                elapsed,
+                blueprint,
+                framework,
+                attempts,
+            ) = args
             self.db[run_id] = {
                 "status": status,
                 "project": project,
@@ -29,6 +42,9 @@ class _Conn:
                 "started_at": started,
                 "completed_at": completed,
                 "elapsed_seconds": elapsed,
+                "blueprint": blueprint,
+                "framework": framework,
+                "resume_attempts": attempts,
             }
 
     async def fetchrow(self, _sql, run_id):
@@ -51,6 +67,9 @@ def _run(status, **extra):
         "started_at": datetime.now(UTC).isoformat(),
         "completed_at": None,
         "elapsed_seconds": None,
+        "blueprint": "crew_audit",
+        "framework": "crewai",
+        "resume_attempts": 0,
         **extra,
     }
 
@@ -94,8 +113,18 @@ async def test_unreachable_database_is_best_effort(monkeypatch):
 async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resumes):
     seen = {}
 
-    async def fake_submit(project, requirement, *, run_id=None, resume=False, blueprint="new_feature", framework=None):
-        seen.update(project=project, requirement=requirement, run_id=run_id, resume=resume)
+    async def fake_submit(
+        project, requirement, *, run_id=None, resume=False, blueprint="new_feature", framework=None, resume_attempts=0
+    ):
+        seen.update(
+            project=project,
+            requirement=requirement,
+            run_id=run_id,
+            resume=resume,
+            blueprint=blueprint,
+            framework=framework,
+            resume_attempts=resume_attempts,
+        )
         return run_id
 
     monkeypatch.setattr(pipeline_jobs, "submit_pipeline_run", fake_submit)
@@ -103,7 +132,15 @@ async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resume
     out = await pipeline_jobs.resume_pipeline_run("pipe_3")
     if resumes:
         assert out == "pipe_3"
-        assert seen == {"project": "svc", "requirement": "build it", "run_id": "pipe_3", "resume": True}
+        assert seen == {
+            "project": "svc",
+            "requirement": "build it",
+            "run_id": "pipe_3",
+            "resume": True,
+            "blueprint": "crew_audit",
+            "framework": "crewai",
+            "resume_attempts": 1,
+        }
     else:
         assert out is None
         assert not seen
@@ -336,3 +373,33 @@ async def test_an_approved_state_passes_the_gate_without_logging_a_block(caplog)
         assert await cto_gate.apply(state) is True
 
     assert [r.getMessage() for r in caplog.records] == ["CTO approval gate passed (approved_to_proceed=True)."]
+
+
+async def test_a_stored_run_keeps_its_blueprint_and_framework_for_a_resume(pool):
+    await run_store.save_run("pipe_1", _run("running"))
+
+    stored = await run_store.load_run("pipe_1")
+
+    assert (stored["blueprint"], stored["framework"]) == ("crew_audit", "crewai")
+
+
+async def test_two_concurrent_resumes_start_one_task(pool, monkeypatch):
+    started = []
+
+    async def fake_background(run_id, *_a, **_k):
+        started.append(run_id)
+        await asyncio.sleep(0.05)
+
+    monkeypatch.setattr(pipeline_jobs, "_run_pipeline_in_background", fake_background)
+    await run_store.save_run("pipe_aaaaaaaaaaaa", _run("failed"))
+
+    first, second = await asyncio.gather(
+        pipeline_jobs.resume_pipeline_run("pipe_aaaaaaaaaaaa"),
+        pipeline_jobs.resume_pipeline_run("pipe_aaaaaaaaaaaa"),
+        return_exceptions=True,
+    )
+    await asyncio.sleep(0.1)
+
+    assert len(started) == 1
+    assert [first, second].count("pipe_aaaaaaaaaaaa") == 1
+    assert pipeline_jobs.PIPELINE_RUNS["pipe_aaaaaaaaaaaa"]["resume_attempts"] == 1

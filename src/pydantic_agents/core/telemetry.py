@@ -1,9 +1,10 @@
 import asyncio
 import json
 import logging
-import os
 import time
 from typing import Any
+
+from pydantic_agents.core.utils import rotate_log
 
 logger = logging.getLogger(__name__)
 
@@ -16,14 +17,8 @@ class Telemetry:
         self._rotate_if_needed()
 
     def _rotate_if_needed(self):
-        try:
-            if os.path.getsize(self.log_file) > _MAX_FILE_BYTES:
-                ts = int(time.time())
-                rotated = f"{self.log_file}.{ts}.archive"
-                os.rename(self.log_file, rotated)
-                logger.info("Rotated telemetry file to %s", rotated)
-        except OSError:
-            pass
+        if rotate_log(self.log_file, _MAX_FILE_BYTES):
+            logger.info("Rotated telemetry file %s", self.log_file)
 
     async def log_call(self, agent_name: str, duration: float, success: bool, metadata: dict[str, Any] | None = None):
         entry = {

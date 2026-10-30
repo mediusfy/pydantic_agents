@@ -515,8 +515,9 @@ def test_pydantic_ai_compat_fails_loudly_when_agent_internals_change(monkeypatch
     with pytest.raises(PydanticAICompatibilityError, match="_function_toolset"):
         agent_tools(real_agent)
 
+    no_function = SimpleNamespace(function=None)
     with pytest.raises(PydanticAICompatibilityError, match="callable"):
-        tool_function(SimpleNamespace(function=None))
+        tool_function(no_function)
+    plain_object = object()
     with pytest.raises(PydanticAICompatibilityError, match="callable"):
-        tool_function(object())
-
+        tool_function(plain_object)

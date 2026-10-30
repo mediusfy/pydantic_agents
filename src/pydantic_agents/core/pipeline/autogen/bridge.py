@@ -1,8 +1,7 @@
-import asyncio
 import logging
 from typing import Any
 
-from pydantic_agents.core.limits import llm_semaphore
+from pydantic_agents.core.limits import run_blocking_with_permit
 from pydantic_agents.core.models.core import FailureReport, PipelineState
 from pydantic_agents.core.pipeline.autogen.groups import DebugGroupChat, DesignGroupChat, SdlcGroupChat
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
@@ -62,11 +61,9 @@ async def run_autogen_pipeline(
                 human_input_mode="NEVER",
                 code_execution_config=False,
             )
-            async with llm_semaphore():
-                result = await asyncio.wait_for(
-                    asyncio.to_thread(user.initiate_chat, manager, message=task),
-                    timeout=settings.agent_timeout_seconds,
-                )
+            result = await run_blocking_with_permit(
+                lambda: user.initiate_chat(manager, message=task), settings.agent_timeout_seconds
+            )
             rec.set_output({"group": group_class_name, "summary": str(result)[:500]})
             _apply_group_result(state, group_class_name, result)
 
@@ -78,11 +75,16 @@ async def run_autogen_pipeline(
             state.context_history.append(cf)
 
             state.stage = label
-        except Exception as e:
+        except BaseException as e:
             logger.exception("AutoGen pipeline failed: %s", e)
             state.errors.append(f"autogen: {e}")
             state.failure_report = FailureReport(source="autogen", error_type="runtime_error", trace=str(e))
+            rec.abort_run(str(e) or type(e).__name__)
+            if not isinstance(e, Exception):
+                raise
 
+    # A group chat has no verdict of its own: it is complete when it ended without an error.
+    state.approved = state.failure_report is None and not state.errors
     return state
 
 

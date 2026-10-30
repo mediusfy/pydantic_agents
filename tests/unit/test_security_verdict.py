@@ -10,6 +10,9 @@ from pydantic_agents.core.models.core import (
     SECURITY_PASS_SCORE,
     Artifact,
     PipelineState,
+    QualityGateResult,
+    ReviewResult,
+    RiskLevel,
     SecurityReport,
 )
 from pydantic_agents.core.pipeline.config import PipelineConfig
@@ -61,6 +64,8 @@ async def test_quality_gate_blocks_on_the_derived_verdict_not_the_claimed_one():
     outputs = {
         "sre": Artifact(agent_name="sre", files={"a.yaml": "x"}),
         "security": SecurityReport(passed=True, score=SECURITY_PASS_SCORE - 1, feedback=["weak hash"]),
+        "quality_gate": QualityGateResult(complexity_score=10, feedback=[]),
+        "review": ReviewResult(approved=True, feedback=[], security_score=90, risk_level=RiskLevel.LOW),
     }
     provider = AsyncMock()
 
@@ -76,7 +81,10 @@ async def test_quality_gate_blocks_on_the_derived_verdict_not_the_claimed_one():
         patch("pydantic_agents.core.context_engine.retrieve_context", return_value=""),
     ):
         result = await QualityGateStage(agent_provider=provider).run(
-            PipelineState(run_id="r", stage="implementation"), PipelineConfig(project="p", requirement="r")
+            PipelineState(
+                run_id="r", stage="implementation", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]
+            ),
+            PipelineConfig(project="p", requirement="r"),
         )
 
     assert result.approved is False

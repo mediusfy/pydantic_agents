@@ -2,6 +2,7 @@ import logging
 import uuid
 
 from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter, WorkspaceContext
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.pipeline.crewai.bridge import run_crewai_pipeline
@@ -17,7 +18,8 @@ class CrewAIPipeline:
 
     async def execute(self):
         state = PipelineState(
-            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            # The run's own id, so its session trace and Langfuse session match the run the caller polls.
+            run_id=self.config.run_id or run_id_var.get() or f"run-{uuid.uuid4().hex[:8]}",
             stage="init",
             requirement=self.config.requirement or "",
         )

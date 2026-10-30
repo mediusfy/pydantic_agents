@@ -1,9 +1,8 @@
 """Go module setup shared by the Go tools (build, vet and test execution)."""
 
 import asyncio
-import contextlib
 
-from pydantic_agents.core.utils import sanitized_subprocess_env
+from pydantic_agents.core.utils import kill_and_reap, sanitized_subprocess_env
 
 GO_MOD_INIT_TIMEOUT = 10.0
 GO_MOD_TIDY_TIMEOUT = 30.0
@@ -15,15 +14,14 @@ async def run_cmd(*args: str, cwd: str, timeout_seconds: float = 30.0) -> None:
         *args,
         cwd=cwd,
         env=sanitized_subprocess_env(),
+        start_new_session=True,
         stdout=asyncio.subprocess.DEVNULL,
         stderr=asyncio.subprocess.DEVNULL,
     )
     try:
         await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
     except TimeoutError:
-        with contextlib.suppress(ProcessLookupError):
-            proc.kill()
-        await proc.wait()
+        await kill_and_reap(proc)
         raise
 
 

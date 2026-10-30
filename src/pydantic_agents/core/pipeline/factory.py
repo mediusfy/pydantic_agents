@@ -7,11 +7,12 @@ Preserves the legacy ``build_default_pipeline()`` for backwards compatibility.
 from __future__ import annotations
 
 import importlib
+import importlib.util
 import logging
 from typing import Any
 
 from pydantic_agents.core.models.core import PipelineState
-from pydantic_agents.core.pipeline.config import STAGES, PipelineConfig
+from pydantic_agents.core.pipeline.config import BLUEPRINTS, STAGES, PipelineConfig
 from pydantic_agents.core.pipeline.orchestrator import OrgitrationPipeline
 from pydantic_agents.core.pipeline.protocols import PipelineOrchestrator
 from pydantic_agents.core.stages.advisory_stage import AdvisoryStage
@@ -24,17 +25,32 @@ logger = logging.getLogger(__name__)
 
 _FRAMEWORK_EXTRAS: dict[str, str] = {
     "crewai": "crewai",
-    "autogen": "pyautogen",
+    "autogen": "autogen",  # the pyautogen distribution is imported as `autogen`
 }
 
 
 def build_default_pipeline(config: PipelineConfig) -> OrgitrationPipeline:
     """Legacy: construct an ``OrgitrationPipeline`` with the four standard stages."""
     pipeline = OrgitrationPipeline(config)
-    pipeline.register_stage(STAGES.BA, BAStage())
-    pipeline.register_stage(STAGES.ADVISORY, AdvisoryStage())
-    pipeline.register_stage(STAGES.IMPLEMENTATION, ImplementationStage())
-    pipeline.register_stage(STAGES.QUALITY_GATE, QualityGateStage())
+    # Only the blueprint's own stages: quick_backend, docs_update and security_review used to run the whole SDLC
+    # (BA and the CTO gate included) because every stage was registered regardless.
+    # An unknown blueprint (or a stage-less one) fails closed: registering everything would run the full SDLC,
+    # CTO gate included, for a typo.
+    blueprint = BLUEPRINTS.get(config.blueprint)
+    if blueprint is None or not blueprint.get("stages"):
+        raise ValueError(
+            f"Blueprint {config.blueprint!r} has no legacy stages to run. Available: {', '.join(BLUEPRINTS)}"
+        )
+    wanted = {str(getattr(s, "value", s)) for s in blueprint["stages"]}
+    stages = {
+        STAGES.BA: BAStage,
+        STAGES.ADVISORY: AdvisoryStage,
+        STAGES.IMPLEMENTATION: ImplementationStage,
+        STAGES.QUALITY_GATE: QualityGateStage,
+    }
+    for name, stage_cls in stages.items():
+        if name.value in wanted:
+            pipeline.register_stage(name, stage_cls())
     return pipeline
 
 

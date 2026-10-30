@@ -2,14 +2,17 @@
 
 import asyncio
 import weakref
+from collections.abc import Callable
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, TypeVar
 
 from pydantic_ai import UsageLimits
 from pydantic_ai.exceptions import ModelAPIError, ModelHTTPError
 from pydantic_ai.settings import ModelSettings
 
 from pydantic_agents.core.settings import settings
+
+T = TypeVar("T")
 
 # Agents that legitimately make many tool round-trips get a higher request cap.
 _ROLE_REQUEST_LIMITS = {"backend": 60, "service_engineer": 60, "frontend": 60}
@@ -76,3 +79,33 @@ def is_transient_error(exc: BaseException) -> bool:
     if isinstance(exc, ModelHTTPError):
         return exc.status_code in _RETRYABLE_STATUS
     return isinstance(exc, (ModelAPIError, ConnectionError))
+
+
+def _release_after(future: "asyncio.Future[Any]", sem: asyncio.Semaphore) -> None:
+    """Done-callback of an abandoned worker thread: collect its outcome (so it is never logged as unretrieved) and free
+    the permit."""
+    if not future.cancelled():
+        future.exception()
+    sem.release()
+
+
+async def run_blocking_with_permit(fn: Callable[[], T], timeout_seconds: float) -> T:
+    """Run a blocking ``fn`` in a worker thread under one LLM permit, with a timeout.
+
+    A thread cannot be stopped, so after a timeout (or a cancel) ``fn`` keeps running and keeps calling models.
+    The permit is therefore held until the thread actually ends: releasing it at the timeout would let the
+    concurrency limit be exceeded by every timed-out CrewAI or AutoGen run.
+    """
+    sem = llm_semaphore()
+    await sem.acquire()
+    future: asyncio.Future[T] = asyncio.ensure_future(asyncio.to_thread(fn))
+    try:
+        result = await asyncio.wait_for(asyncio.shield(future), timeout=timeout_seconds)
+    except BaseException:
+        if future.done():
+            sem.release()
+        else:
+            future.add_done_callback(lambda f: _release_after(f, sem))
+        raise
+    sem.release()
+    return result

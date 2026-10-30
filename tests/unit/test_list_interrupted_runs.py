@@ -35,6 +35,9 @@ def _row(run_id, status, updated_at=BEFORE_START):
         "started_at": None,
         "completed_at": None,
         "elapsed_seconds": None,
+        "blueprint": "new_feature",
+        "framework": "legacy",
+        "resume_attempts": 0,
         "updated_at": updated_at,
     }
 

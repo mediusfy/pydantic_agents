@@ -16,6 +16,10 @@ from typing import Any
 
 ACTION_RESUME_INTERRUPTED_RUN = "resume_interrupted_pipeline_run"
 
+# A run that is interrupted again after this many resumes is probably what is killing the server (an out-of-memory
+# run would otherwise be resumed on every restart, forever): it is escalated to a human instead.
+MAX_AUTO_RESUMES = 3
+
 # Literal, reviewable allowlist. Extending it is a deliberate code change (and an ADR amendment per ADR-0001),
 # never a runtime decision by the model.
 ALLOWLISTED_ACTIONS = frozenset({ACTION_RESUME_INTERRUPTED_RUN})
@@ -38,7 +42,21 @@ class RemediationPlan:
 
 def plan_for_interrupted_run(run_id: str, run: dict[str, Any]) -> RemediationPlan:
     """An interrupted pipeline run is always on the allowlist: resuming it is reversible and matches exactly
-    what a human would otherwise do by calling ``resume_pipeline_run`` themselves."""
+    what a human would otherwise do by calling ``resume_pipeline_run`` themselves, up to ``MAX_AUTO_RESUMES``
+    times: a run that keeps being interrupted escalates instead."""
+    attempts = int(run.get("resume_attempts") or 0)
+    if attempts >= MAX_AUTO_RESUMES:
+        return RemediationPlan(
+            action=None,
+            kind="health",
+            severity="high",
+            agent=None,
+            summary=(
+                f"pipeline run {run_id} ({run.get('project', 'unknown project')}) was interrupted again after "
+                f"{attempts} automatic resumes; not resuming it again"
+            ),
+            evidence={"run_id": run_id, "project": run.get("project"), "resume_attempts": attempts},
+        )
     return RemediationPlan(
         action=ACTION_RESUME_INTERRUPTED_RUN,
         kind="health",

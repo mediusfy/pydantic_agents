@@ -1,6 +1,7 @@
 import logging
 import uuid
 
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.models.core import PipelineState
 from pydantic_agents.core.pipeline.autogen.bridge import run_autogen_pipeline
 from pydantic_agents.core.pipeline.config import PipelineConfig
@@ -12,7 +13,7 @@ class AutoGenPipeline:
     def __init__(self, config: PipelineConfig):
         self.config = config
         self.state = PipelineState(
-            run_id=f"run-{uuid.uuid4().hex[:8]}",
+            run_id=self.config.run_id or run_id_var.get() or f"run-{uuid.uuid4().hex[:8]}",
             stage="init",
             requirement=self.config.requirement or "",
         )

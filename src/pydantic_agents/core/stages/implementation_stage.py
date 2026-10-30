@@ -1,7 +1,7 @@
 import asyncio
 import logging
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 from pydantic_agents.core.limits import llm_semaphore
@@ -90,6 +90,8 @@ class _Run:
     ux_advice: str
     project_state: Any
     progress: ProgressTracker
+    # Story id -> what its failed test run printed, so a retry sees the failure and not just the story id.
+    test_output: dict[str, str] = field(default_factory=dict)
 
 
 async def _guidelines(agent: str, gherkin: str, heading: str, project: str | None = None) -> str:
@@ -202,7 +204,22 @@ def _replace_test_artifact(artifacts: list[Artifact], new_test: Artifact) -> lis
     return kept
 
 
-def _record_test_outcome(state: PipelineState, failed_stories: list[str], n_stories: int) -> None:
+_TEST_TRACE_CHARS = 3_000
+
+
+def _test_trace(failed_stories: list[str], details: dict[str, str]) -> str:
+    """The failure trace the next attempt reads: each failed story with the tail of its test output (the end of
+    a ``go test`` run is where the failing assertions are)."""
+    lines = [f"Failed stories: {', '.join(failed_stories)}"]
+    for story_id in failed_stories:
+        if output := details.get(story_id):
+            lines.append(f"\n--- {story_id} ---\n{output[-_TEST_TRACE_CHARS:]}")
+    return "\n".join(lines)
+
+
+def _record_test_outcome(
+    state: PipelineState, failed_stories: list[str], n_stories: int, details: dict[str, str] | None = None
+) -> None:
     """Set the feedback and failure report the next implementation attempt (or the loop) will read."""
     if failed_stories:
         logger.warning(f"Test failures in {len(failed_stories)}/{n_stories} stories: {', '.join(failed_stories)}")
@@ -213,7 +230,7 @@ def _record_test_outcome(state: PipelineState, failed_stories: list[str], n_stor
         state.failure_report = FailureReport(
             source="test_suite",
             error_type="test_failure",
-            trace=f"Failed stories: {', '.join(failed_stories)}",
+            trace=_test_trace(failed_stories, details or {}),
             relevant_files=failed_stories,
         )
     else:
@@ -334,6 +351,37 @@ class ImplementationStage(StageRunner):
             tasks.append(("docs", self._run_tagged(run, "docs", docs_prompt)))
         return tasks
 
+    @staticmethod
+    async def _test_story(
+        run: _Run, us: UserStory, res: Any, artifacts: list[Artifact], run_test_suite: Any
+    ) -> tuple[list[Artifact], bool]:
+        """One story's test outcome: (the artifacts with its tests added, whether the story failed).
+
+        A crashed test agent, missing test files or missing sources fail the story (no tests is not a pass). Only Go
+        suites are run: the vitest path has no package.json or node_modules.
+        """
+        if isinstance(res, BaseException):
+            logger.error(f"Test agent for {us.id} failed: {res}")
+            run.test_output[us.id] = f"The test agent crashed: {res}"
+            return artifacts, True
+        res.metadata["user_story_id"] = res.metadata.get("user_story_id", "?")
+        artifacts = _replace_test_artifact(artifacts, res)
+
+        sources = _story_sources(artifacts, res.metadata["user_story_id"])
+        if not (res.files and sources):
+            reason = "the test agent returned no test files." if not res.files else "no source files were generated."
+            run.test_output[us.id] = f"No tests ran: {reason}"
+            return artifacts, True
+        if not any(name.endswith(".go") for name in res.files):
+            logger.warning(f"Tests for {us.id} are not Go tests; they are kept but not executed.")
+            return artifacts, False
+        outcome = await run_test_suite(sources, dict(res.files))
+        if outcome.passed:
+            return artifacts, False
+        run.test_output[us.id] = outcome.error or outcome.output
+        logger.warning(f"Test suite failed for {us.id}: {(outcome.error or outcome.output)[:200]}...")
+        return artifacts, True
+
     async def _run_test_phase(self, run: _Run, artifacts: list[Artifact]) -> tuple[list[Artifact], list[str]]:
         """Per-story test agents in parallel (failures isolated), then each story's suite against every source
         file of the story; returns the new artifact list and the ids of the stories whose suite failed or could
@@ -348,18 +396,9 @@ class ImplementationStage(StageRunner):
 
         failed_stories: list[str] = []
         for us, res in zip(user_stories, test_results, strict=False):
-            if isinstance(res, BaseException):
-                logger.error(f"Test agent for {us.id} failed: {res}")
-                continue
-            res.metadata["user_story_id"] = res.metadata.get("user_story_id", "?")
-            artifacts = _replace_test_artifact(artifacts, res)
-
-            sources = _story_sources(artifacts, res.metadata["user_story_id"])
-            if res.files and sources:
-                outcome = await run_test_suite(sources, dict(res.files))
-                if not outcome.passed:
-                    failed_stories.append(us.id)
-                    logger.warning(f"Test suite failed for {us.id}: {(outcome.error or outcome.output)[:200]}...")
+            artifacts, failed = await self._test_story(run, us, res, artifacts, run_test_suite)
+            if failed:
+                failed_stories.append(us.id)
         return artifacts, failed_stories
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:
@@ -379,9 +418,20 @@ class ImplementationStage(StageRunner):
         results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
         artifacts = _collect_artifacts(artifacts, tasks, results, run.is_retry)
 
+        if not artifacts:
+            # Every generation task failed: say so instead of testing nothing and reporting "All tests passed".
+            state.failure_report = FailureReport(
+                source="implementation",
+                error_type="runtime_error",
+                trace="No implementation agent produced an artifact (see the logs for each agent's error).",
+            )
+            state.approved = False
+            state.stage = "implementation"
+            return state
+
         # ── Test phase ──────────────────────────────────────────────────────
         artifacts, failed_stories = await self._run_test_phase(run, artifacts)
-        _record_test_outcome(state, failed_stories, len(state.user_stories or []))
+        _record_test_outcome(state, failed_stories, len(state.user_stories or []), run.test_output)
 
         state.artifacts = artifacts
         state.stage = "implementation"

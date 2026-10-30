@@ -34,6 +34,12 @@ class _Conn:
         self.calls.append(("fetchval", sql, args))
         return self.fetchval_result
 
+    async def executemany(self, sql, rows):
+        self.calls.append(("executemany", sql, rows))
+
+    def transaction(self):
+        return _Ctx(self)
+
 
 class _Ctx:
     def __init__(self, conn):
@@ -149,9 +155,9 @@ async def test_hybrid_issues_vector_and_text_queries_with_same_filters(
     assert "embedding <=> $1::vector" in vec_sql
     assert "LIMIT $2" in vec_sql
     assert vec_args == ("[0.1,0.2]", expect_limit, *expect_params)
-    assert "ts_rank_cd(content_tsv, plainto_tsquery('english', $1))" in txt_sql
-    assert "content_tsv @@ plainto_tsquery('english', $1)" in txt_sql
-    assert txt_args == ("the query", expect_limit, *expect_params)
+    assert "ts_rank_cd(content_tsv, to_tsquery('english', $1))" in txt_sql
+    assert "content_tsv @@ to_tsquery('english', $1)" in txt_sql
+    assert txt_args == ("the | query", expect_limit, *expect_params)
     # Metadata placeholders start at $3 in both queries and the filter clauses are identical.
     for key, value in {**(filters or {}), **({"project": project} if project else {})}.items():
         clause = f"metadata->>'{key}' IS NULL" if value is None else f"metadata->>'{key}' = $"
@@ -278,10 +284,8 @@ async def test_add_documents_embeds_batch_once_and_inserts_each(monkeypatch, no_
     await vdb.vector_db._add_documents("c", ["d1", "d2"], [{"k": "v"}, {}], ["i1", "i2"])
 
     embed.assert_awaited_once_with(["d1", "d2"])
-    inserts = [(sql, args) for kind, sql, args in pool.calls if kind == "execute"]
-    assert len(inserts) == 2
-    assert inserts[0][1] == ("i1", '{"k": "v"}', "[0.1]", "d1")
-    assert inserts[1][1] == ("i2", "{}", "[0.2]", "d2")
+    (batch,) = [rows for kind, _sql, rows in pool.calls if kind == "executemany"]
+    assert batch == [("i1", '{"k": "v"}', "[0.1]", "d1"), ("i2", "{}", "[0.2]", "d2")]
 
 
 # ── table setup and dimension guard ────────────────────────────────────────
@@ -428,3 +432,41 @@ def test_require_vector_deps_skips_numpy_for_litellm(monkeypatch):
     monkeypatch.setattr(settings, "embedding_provider", "local")
     with pytest.raises(OrgitrationDependencyError):
         vdb._require_vector_deps()
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("the query", "the | query"),
+        ("add a favourites panel; DROP TABLE x --", "add | a | favourites | panel | drop | table | x"),
+        ("repeat repeat Repeat", "repeat"),
+        ("!!! ???", ""),
+        ("", ""),
+    ],
+)
+def test_or_tsquery_ors_plain_words_only(query, expected):
+    assert vdb._or_tsquery(query) == expected
+
+
+async def test_a_query_without_words_skips_the_text_search(monkeypatch, no_table):
+    monkeypatch.setattr(settings, "retrieval_hybrid", True)
+    monkeypatch.setattr(settings, "rerank_model", "")
+    pool = _Pool(fetch_results=[_rows("v1")])
+    monkeypatch.setattr(vdb, "_get_pool", AsyncMock(return_value=pool))
+    monkeypatch.setattr(vdb, "_embed_texts", AsyncMock(return_value=[[0.1]]))
+
+    assert await vdb.vector_db._search("adrs", "???", 3) == ["v1"]
+    assert len(_fetches(pool)) == 1
+
+
+async def test_search_domains_embeds_the_query_once(monkeypatch, no_table):
+    monkeypatch.setattr(settings, "retrieval_hybrid", False)
+    pool = _Pool(fetch_results=[_rows("a")])
+    monkeypatch.setattr(vdb, "_get_pool", AsyncMock(return_value=pool))
+    embed = AsyncMock(return_value=[[0.1]])
+    monkeypatch.setattr(vdb, "_embed_texts", embed)
+
+    out = await vdb.vector_db._search_domains(["adrs", "architecture"], "q", 3, None)
+
+    embed.assert_awaited_once_with(["q"])
+    assert out == [["a"], ["a"]]  # one result list per domain, in order
