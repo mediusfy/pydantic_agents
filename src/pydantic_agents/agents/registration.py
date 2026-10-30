@@ -30,6 +30,11 @@ def register_all_agents() -> None:
     # Either we never registered, or a test cleared the registry — reset.
     _registered = False
 
+    # Fail at startup (and in `make smoke` / CI), not mid-pipeline, if pydantic_ai changed how agents store tools.
+    from pydantic_agents.core.pydantic_ai_compat import check_pydantic_ai_compatibility
+
+    check_pydantic_ai_compatibility()
+
     _register_sdlc_agents()
     _register_utility_agents()
     _register_platform_intelligence_agents()
@@ -41,9 +46,9 @@ def _register_sdlc_agents() -> None:
     """Register all technical SDLC pipeline agents."""
     from pydantic_agents.agents.api_contract import api_contract_agent
     from pydantic_agents.agents.ba import ba_agent
-    from pydantic_agents.agents.backend import ProjectState, backend_agent
+    from pydantic_agents.agents.backend import backend_agent, default_project_state
     from pydantic_agents.agents.critic import critic_agent
-    from pydantic_agents.agents.cto import OrgContext, cto_agent
+    from pydantic_agents.agents.cto import cto_agent, default_org_context
     from pydantic_agents.agents.database import DatabaseDeps, database_agent
     from pydantic_agents.agents.devops import DevopsDeps, devops_agent
     from pydantic_agents.agents.docs import docs_agent
@@ -62,22 +67,9 @@ def _register_sdlc_agents() -> None:
     from pydantic_agents.agents.ux import ux_agent
 
     registry.register("ba", ba_agent, ["ba", "requirements"])
-    registry.register(
-        "cto",
-        cto_agent,
-        ["cto", "architecture", "advisory"],
-        lambda: OrgContext(
-            tech_stack=["Go", "Vue 3", "PostgreSQL", "NATS", "gRPC"],
-            compliance_tier="Standard",
-            monthly_cloud_budget=5000.0,
-        ),
-    )
-    registry.register(
-        "backend",
-        backend_agent,
-        ["backend", "implementation.backend"],
-        lambda: ProjectState(base_path=".", environment="development", team_owner="platform"),
-    )
+    # Default deps for calls that pass none; documented, settings-driven placeholders (see default_org_context).
+    registry.register("cto", cto_agent, ["cto", "architecture", "advisory"], default_org_context)
+    registry.register("backend", backend_agent, ["backend", "implementation.backend"], default_project_state)
     registry.register("frontend", frontend_agent, ["frontend", "implementation.frontend"])
     registry.register("frontend_component", component_gen, ["frontend_component"])
     registry.register("database", database_agent, ["database", "db_schema", "migrations"], lambda: DatabaseDeps())

@@ -16,6 +16,20 @@ class OrgContext:
     monthly_cloud_budget: float
 
 
+def default_org_context() -> OrgContext:
+    """The OrgContext used when a caller passes none (``registry.run`` without deps: MCP, delegation, evals).
+
+    Built from the ``ORG_TECH_STACK``, ``ORG_COMPLIANCE_TIER`` and ``ORG_MONTHLY_CLOUD_BUDGET`` settings. Their
+    defaults are placeholders, not any organisation's real policy; the CTO approves or rejects against them, so set
+    them per deployment.
+    """
+    return OrgContext(
+        tech_stack=[s.strip() for s in settings.org_tech_stack.split(",") if s.strip()],
+        compliance_tier=settings.org_compliance_tier,
+        monthly_cloud_budget=settings.org_monthly_cloud_budget,
+    )
+
+
 cto_prompt = """You are the Chief Technology Officer (CTO) agent. You are sharp, highly experienced, and possess deep architectural foresight.
 
 Your job is to review product requirements and user stories BEFORE any code is written, to identify bottlenecks, scale issues, and mistakes before they occur.
@@ -75,7 +89,10 @@ def _org_context(ctx: RunContext[OrgContext | None]) -> str:
 @cto_agent.tool
 async def search_existing_adrs(ctx: RunContext[Any], query: str, n_results: int = 5) -> str:
     """Search past Architecture Decision Records (ADRs) for related context before approving an architecture."""
-    results = await vector_db.async_search("adrs", query, n_results=max(1, min(n_results, 20)))
+    try:
+        results = await vector_db.async_search("adrs", query, n_results=max(1, min(n_results, 20)))
+    except Exception as exc:  # best-effort, like the memory tools: an unreachable store must not abort the review
+        return f"ADR search unavailable ({type(exc).__name__}); continue without past ADRs."
     if not results:
         return f"No ADRs found for query: {query}"
     return "Found past architectural context:\n" + "\n---\n".join(results)

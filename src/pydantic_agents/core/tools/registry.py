@@ -121,9 +121,12 @@ def _tool_takes_context(fn: Callable) -> bool:
 
 
 def apply_tools(agent, categories: list[str]):
+    from pydantic_agents.core.pydantic_ai_compat import agent_tool_names
+
     tools = get_tools_for_agent(categories)
+    attached = agent_tool_names(agent)
     for name, fn in tools:
-        if not hasattr(agent, "_function_toolset") or name not in agent._function_toolset.tools:
+        if name not in attached:
             wrapped = _wrap_tool_with_tracing(fn, name)
             if _tool_takes_context(fn):
                 agent.tool(wrapped)

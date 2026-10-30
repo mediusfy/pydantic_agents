@@ -146,17 +146,10 @@ class BridgeAgent:
 
     @staticmethod
     def _iter_agent_tools(agent: Any) -> list[Any]:
-        """Return tool objects attached to ``agent`` (``_function_toolset.tools`` or legacy ``_function_tools``)."""
-        if agent is None:
-            return []
-        toolset = getattr(agent, "_function_toolset", None)
-        tool_map = getattr(toolset, "tools", None)
-        if isinstance(tool_map, dict):
-            return list(tool_map.values())
-        legacy = getattr(agent, "_function_tools", None)
-        if isinstance(legacy, (list, tuple)):
-            return list(legacy)
-        return []
+        """Tool objects attached to ``agent``; raises if a real pydantic_ai Agent changed its tool storage."""
+        from pydantic_agents.core.pydantic_ai_compat import agent_tools
+
+        return agent_tools(agent)
 
     def _wrap_tools(self):
         """Intercepts internal pydantic_ai tool calls to trigger hooks."""

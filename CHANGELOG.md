@@ -182,7 +182,10 @@ fresh **Unreleased** section above it.
   knowledge domains (`adrs`, `architecture`, `conventions`, `project`), closing a SQL injection vector.
 - Build, vet, lint and test subprocesses (`core/tools/test_tools.py`, `core/verifier.py`, `core/tools/go_common.py`,
   `core/tools/gobuild.py`, `core/tools/frontend_tools.py`) now run with `sanitized_subprocess_env()`, stripping API
-  keys and `DATABASE_URL` so generated code/tests cannot exfiltrate credentials via test output.
+  keys, `DATABASE_URL`, and Go/Node/XDG redirect variables (`GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GOFLAGS`,
+  `NODE_PATH`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`), forcing `GOENV=off`, and pinning `GOPROXY`/`GOSUMDB` from
+  `UNTRUSTED_GOPROXY`/`UNTRUSTED_GOSUMDB` so generated code/tests cannot exfiltrate credentials or reach internal
+  module proxies.
 - `mcp_server` populates `TransportSecuritySettings.allowed_hosts` and `allowed_origins` from
   `Settings.mcp_allowed_hosts` / `Settings.mcp_allowed_origins` (defaulting to `127.0.0.1:*`, `localhost:*`,
   `[::1]:*`) instead of leaving them empty and rejecting every HTTP/SSE request with HTTP 421.
@@ -211,8 +214,15 @@ fresh **Unreleased** section above it.
   `cto` no longer receive `documentation` (`update_documentation`), the nine personal utility agents no longer
   receive local codebase `search`, and `update_documentation`/`read_and_memorize_pdf` resolve paths against
   `sandbox_root()`.
-- `BridgeAgent` (`core/agy_bridge/bridge_agent.py`) discovers and wraps tools on `pydantic_ai`'s
-  `_function_toolset.tools` (`tool.function`) in addition to legacy `_function_tools`.
+- `core/pydantic_ai_compat.py` centralizes access to `pydantic_ai`'s private tool storage (`_function_toolset.tools`,
+  `Tool.function`) for `autogen_bridge`, `crewai_bridge`, `tools.registry.apply_tools`, and `BridgeAgent`, and runs a
+  startup compatibility probe (`check_pydantic_ai_compatibility`) from `register_all_agents()` that raises
+  `PydanticAICompatibilityError` instead of silently dropping tools if a future `pydantic_ai` upgrade moves those
+  attributes.
+- `agents/registration.py` provides default `deps_factory` callables for `cto` (`default_org_context`, backed by
+  `ORG_*` settings), `backend` (`default_project_state`, rooted at `sandbox_root()`), `review`, `database`,
+  `devops` and `security`, `cto_agent` has `search_existing_adrs`, and `qa_executor`'s prompt no longer attributes
+  source/test fixes to `go_test`.
 - `.github/workflows/changelog.yml` passes `github.base_ref` through an environment variable instead of inline shell
   interpolation, and both `ci.yml` and `changelog.yml` declare `permissions: contents: read`.
 - `vector_db.ingest_url`, `ingest_pdf`, `async_ingest_url` and `async_ingest_pdf` compute deterministic SHA-256 document
@@ -224,9 +234,10 @@ fresh **Unreleased** section above it.
 - `healthcheck.validate_api_keys` checks `settings.litellm_virtual_key`/`litellm_master_key` and `deepseek_api_key`,
   `Settings.resolve_model` maps `deepseek` through `_NATIVE_MODEL_PREFIXES` and handles `provider="test"`, and
   `PydanticAIAgentProvider.run_agent` preserves an agent's own `_model_settings["max_tokens"]`.
-- `agents/registration.py` provides default `deps_factory` callables for `cto`, `backend`, `review`, `database`,
-  `devops` and `security`, `cto_agent` has `search_existing_adrs`, and `qa_executor`'s prompt no longer attributes
-  source/test fixes to `go_test`.
+- `tests/unit/test_web_fetch.py`, `tests/unit/test_secrets_scan.py`, `tests/unit/test_vector_db_collection_names.py`,
+  and `tests/unit/test_review_2026_10_29.py`: dedicated unit tests for SSRF validation/redirects/size caps
+  (`web_fetch.py` branch coverage 56% → 94%), secret scanning and redaction, pgvector SQL identifier validation, and
+  the review's Medium/Low and CTO review fixes.
 - `LocalDiskStateRepository.clear` runs `_ensure_migrated()` and matches `f"{run_id}__"` so `clear("run1")` does not
   delete `run10` checkpoints, `run_existing_code_pipeline` closes its `recorder` in `finally:`, and
   `mcp_server.cancel_pipeline_run` falls back to `get_run(run_id)`.
@@ -239,6 +250,14 @@ fresh **Unreleased** section above it.
 - `TestRunResult` sets `__test__ = False`, `test_langgraph_pipeline.py` uses `MagicMock` for `record_span.__aenter__`
   (clearing 6 pytest warnings), and `test_state_repository_contract.py` runs `LocalDiskStateRepository` contract tests
   even when the optional `turso` extra is not installed.
+- `PydanticAIAgentProvider.run_agent` reads the agent's public `model_settings` (pydantic-ai has no `_model_settings`),
+  so `database_agent`'s 8192 `max_tokens` cap now actually survives the per-call 16384 default; the CTO's
+  `search_existing_adrs` is best-effort and reports an unreachable ADR store instead of aborting the review.
+- `tests/unit/test_review_2026_10_29.py`: regression tests for the review's Medium/Low fixes plus the SSRF guard's DNS,
+  redirect, size-cap and error paths (`web_fetch.py` branch coverage 56% → 94%).
+- Promptfoo: `qa_executor` provider with two cases (per-criterion results and the derived verdict from supplied
+  output; no test rewrite when asked for one) and two more `cto` cases (a sound design inside the approved stack is
+  approved; a component outside the approved stack is flagged).
 - `run_store`, `platform_metrics` and `platform_findings` now reach the database through
   `vector_db.with_connection`, which runs the query on the background loop that owns the cached asyncpg pool.
   They used to acquire that pool from the caller's loop, so once a vector search had created it there, every

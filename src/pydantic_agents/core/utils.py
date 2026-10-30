@@ -26,8 +26,18 @@ def safe_path_join(base: str | Path, *parts: str) -> Path:
 # these instead of raising.
 WRITE_NAME_ERRORS: tuple[type[BaseException], ...] = (PathTraversalError, OSError, ValueError)
 
-# Allowlisted environment variables forwarded to untrusted build/test subprocesses (go test, go build, vitest, eslint).
-# Credentials (LITELLM_*, OPENAI_API_KEY, DATABASE_URL, etc.) are never inherited by generated code or tests.
+# Environment for untrusted build/test subprocesses (go test, go build, vitest, eslint) running model-generated code.
+#
+# This allowlist is a trust boundary, not just credential hygiene: anything forwarded here is visible to, and steers,
+# code we did not write. So:
+# - credentials (LITELLM_*, OPENAI_API_KEY, DATABASE_URL, cloud tokens, ...) are never forwarded;
+# - variables that point the Go toolchain at private infrastructure are never forwarded (GOPRIVATE, GONOPROXY,
+#   GONOSUMDB, GOFLAGS, GOINSECURE, GOAUTH), GOENV is forced off so the operator's `go env -w` file (which can set
+#   all of those) is ignored, and GOPROXY/GOSUMDB are pinned from settings (`UNTRUSTED_GOPROXY`, default the public
+#   proxy without `direct`, so a generated go.mod cannot make `go mod tidy` fetch from an internal VCS host or proxy);
+# - NODE_PATH and XDG_CONFIG_HOME are not forwarded (module resolution / tool config from the operator's machine);
+# - HOME and the cache locations stay, because go and npm need a writable cache; they hold build caches, not secrets.
+# Add a variable only after asking what generated code could do with it.
 _SAFE_SUBPROCESS_ENV_KEYS: frozenset[str] = frozenset(
     {
         "PATH",
@@ -47,29 +57,25 @@ _SAFE_SUBPROCESS_ENV_KEYS: frozenset[str] = frozenset(
         "GOROOT",
         "GOCACHE",
         "GOMODCACHE",
-        "GOENV",
-        "GOPROXY",
-        "GOSUMDB",
-        "GONOPROXY",
-        "GONOSUMDB",
-        "GOPRIVATE",
-        "GOFLAGS",
         "CGO_ENABLED",
         "GOOS",
         "GOARCH",
-        "NODE_PATH",
         "NPM_CONFIG_CACHE",
         "npm_config_cache",
         "XDG_CACHE_HOME",
-        "XDG_CONFIG_HOME",
-        "XDG_DATA_HOME",
     }
 )
 
 
 def sanitized_subprocess_env() -> dict[str, str]:
-    """Return a minimal environment for untrusted build/test subprocesses, stripping credentials."""
-    return {k: v for k, v in os.environ.items() if k in _SAFE_SUBPROCESS_ENV_KEYS}
+    """A minimal environment for untrusted build/test subprocesses (see ``_SAFE_SUBPROCESS_ENV_KEYS``)."""
+    from pydantic_agents.core.settings import settings
+
+    env = {k: v for k, v in os.environ.items() if k in _SAFE_SUBPROCESS_ENV_KEYS}
+    env["GOENV"] = "off"
+    env["GOPROXY"] = settings.untrusted_goproxy
+    env["GOSUMDB"] = settings.untrusted_gosumdb
+    return env
 
 
 # The codebase root of the pipeline running in the current task. A ContextVar (not an environment variable) so two

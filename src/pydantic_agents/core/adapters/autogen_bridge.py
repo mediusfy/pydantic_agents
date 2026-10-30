@@ -18,6 +18,7 @@ from pydantic_agents.core.adapters.crewai_bridge import (
     _needs_run_context,
 )
 from pydantic_agents.core.models.factory import _litellm_connection
+from pydantic_agents.core.pydantic_ai_compat import agent_tools, tool_function
 from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -81,13 +82,8 @@ def _register_tool_functions(agent: PydanticAgent) -> dict[str, Callable[..., An
     pydantic_ai ``RunContext`` are skipped.
     """
     functions: dict[str, Callable[..., Any]] = {}
-    toolset = getattr(agent, "_function_toolset", None)
-    tool_map = getattr(toolset, "tools", None) or {}
-    items = tool_map.values() if isinstance(tool_map, dict) else tool_map
-    for tool in items:
-        fn = getattr(tool, "function", None) or getattr(tool, "run", None) or getattr(tool, "fn", None)
-        if fn is None or not callable(fn):
-            continue
+    for tool in agent_tools(agent):
+        fn = tool_function(tool)
         name = str(getattr(tool, "name", "") or getattr(fn, "__name__", ""))
         if not name:
             continue

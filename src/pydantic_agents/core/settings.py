@@ -164,6 +164,20 @@ class Settings(BaseSettings):
     # Pinned tool versions for generated CI (the review agent rejects unpinned 'latest').
     golangci_lint_version: str = "v1.64.8"
     govulncheck_version: str = "v1.1.4"
+    # Module proxy and checksum DB for go builds/tests of generated code (core/utils.py::sanitized_subprocess_env).
+    # A trust boundary: no `direct`, so generated go.mod files can only pull public modules through this proxy.
+    # An air-gapped deployment points it at its public-module mirror, never at a proxy that serves private modules.
+    untrusted_goproxy: str = "https://proxy.golang.org"
+    untrusted_gosumdb: str = "sum.golang.org"
+
+    # Default deps for SDLC agents called without any (standalone MCP calls, delegation, evals). The CTO verifies
+    # architecture against these, so they are an organisation policy: the defaults are placeholders, set them per
+    # deployment. A pipeline that passes its own OrgContext / ProjectState is not affected.
+    org_tech_stack: str = "Go,Vue 3,PostgreSQL,NATS,gRPC"  # comma-separated
+    org_compliance_tier: str = "standard"
+    org_monthly_cloud_budget: float = 5000.0  # USD
+    org_environment: str = "development"
+    org_team_owner: str = "unassigned"
 
     # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
     # to live here were removed. They were never actually read by
