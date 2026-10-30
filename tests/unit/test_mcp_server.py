@@ -1,3 +1,4 @@
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -176,3 +177,24 @@ async def test_approve_cto_gate_reports_a_save_adr_failure_without_approving():
     mock_save.assert_called_once_with("0002", "# Decision")
     mock_write.assert_not_called()
     assert "approved" in result
+
+
+@pytest.mark.parametrize(
+    ("output", "is_explanation"),
+    [
+        ([], True),
+        (["story"], False),
+        ("plain text answer", False),
+        ({"approved": True}, False),
+    ],
+)
+def test_an_empty_list_result_is_explained_and_everything_else_is_unchanged(output, is_explanation):
+    from types import SimpleNamespace
+
+    from pydantic_agents.mcp_server import _tool_result
+
+    text = _tool_result("ba", SimpleNamespace(output=output))
+
+    assert ("returned no results" in text) is is_explanation
+    if not is_explanation:
+        assert text == output if isinstance(output, str) else json.loads(text) == output

@@ -107,7 +107,7 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         try:
             with logfire.span("mcp.run_agent", **span_attrs, _level="info"):
                 result = await registry.run(agent_name, enriched_request)
-                return serialize_output(result)
+                return _tool_result(agent_name, result)
         except Exception as e:
             logger.warning("Agent '%s' failed: %s", agent_name, e)
             raise AgentExecutionError(f"Agent '{agent_name}' failed: {e}", is_retryable=False) from e
@@ -115,6 +115,21 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
         run_id_var.reset(run_token)
         # The platform_metrics row (duration, tokens, verdict) is written by the agent provider, once per agent run,
         # so pipeline and delegated runs are recorded too and not only the calls that arrive over MCP.
+
+
+def _tool_result(agent_name: str, result: Any) -> str:
+    """The tool's text: the serialized result, or an explanation when a list-valued agent returned nothing.
+
+    A bare ``[]`` (what the BA agent returns for a request that holds no requirement, such as a ping) looks like a
+    failure and says nothing about why. Every other result is unchanged, so callers that parse JSON still get JSON.
+    """
+    output = getattr(result, "output", result)
+    if isinstance(output, list) and not output:
+        return (
+            f"The {agent_name} agent returned no results: nothing in this request was something it produces "
+            "(an empty list). Send a concrete task; this is not an error."
+        )
+    return serialize_output(result)
 
 
 AGENT_DOCSTRINGS = {
@@ -202,7 +217,8 @@ RESULT_FORMAT_NOTE = (
     "\n\nArgs: request (the task); project (optional: the seeded project name whose ADRs, conventions and "
     "architecture notes should be retrieved as context; empty searches every project)."
     "\n\nReturns: plain text for agents that answer in text; otherwise JSON (a structured result such as an "
-    "Artifact is a JSON object, a list of results is a JSON array)."
+    "Artifact is a JSON object, a list of results is a JSON array; an agent that finds nothing to return says so in "
+    "plain text instead of returning an empty array)."
 )
 
 
