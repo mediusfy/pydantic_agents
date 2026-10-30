@@ -6,6 +6,7 @@ Usage in pipeline (main.py):
 """
 
 import asyncio
+import contextlib
 import logging
 import os
 from pathlib import Path
@@ -15,6 +16,8 @@ from pydantic_agents.core.models.core import PipelineState
 logger = logging.getLogger(__name__)
 
 _APPROVAL_FILE = ".cto_approved"
+# ORCHESTRATION_CTO_OVERRIDE=false (or 0, or empty) must not bypass the gate.
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 STATUS_WAITING_CTO = "waiting_cto_approval"
 _APPROVAL_FILE_PATH: Path | None = None
 
@@ -42,6 +45,20 @@ def write_approval(project: str, approved: bool = True) -> Path:
     return path
 
 
+def consume_marker(filepath: Path) -> bool | None:
+    """``read_marker``, then delete the marker when it held a decision.
+
+    A marker answers one gate, not every later run of the project: left in place, one approval would wave through
+    every future run whose CTO said no, and one rejection would block the project for good. An unreadable marker
+    (no decision) is left alone so the gate keeps waiting.
+    """
+    decision = read_marker(filepath)
+    if decision is not None:
+        with contextlib.suppress(OSError):
+            filepath.unlink()
+    return decision
+
+
 def read_marker(filepath: Path) -> bool | None:
     """The decision in an approval marker: True (approved), False (explicitly rejected), None (no marker, or
     content that is neither, which keeps the gate waiting). An empty file counts as approved, as `touch` creates it."""
@@ -65,7 +82,7 @@ async def _poll_for_file_approval(filepath: Path, poll_interval: float = 10.0, t
     """
     deadline = asyncio.get_event_loop().time() + timeout_seconds
     while asyncio.get_event_loop().time() < deadline:
-        decision = read_marker(filepath)
+        decision = consume_marker(filepath)
         if decision is True:
             logger.info("CTO approval marker file detected — proceeding.")
             return True
@@ -100,13 +117,13 @@ async def apply(state: PipelineState, project: str = "default", timeout_seconds:
 
     _log_gate_blocked(state)
 
-    if os.environ.get("ORCHESTRATION_CTO_OVERRIDE"):
+    if os.environ.get("ORCHESTRATION_CTO_OVERRIDE", "").strip().lower() in _TRUTHY:
         logger.warning("ORCHESTRATION_CTO_OVERRIDE set — bypassing gate.")
         return True
 
     # Check for a marker file left by an earlier decision (a rejection stops the run, it is not an approval)
     filepath = _approval_file_path(project)
-    decision = read_marker(filepath)
+    decision = consume_marker(filepath)
     if decision is True:
         logger.info("Approval marker file found — proceeding.")
         return True

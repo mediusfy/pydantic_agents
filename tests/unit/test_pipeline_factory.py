@@ -47,12 +47,12 @@ class TestPipelineFactory:
         import importlib
 
         original = importlib.util.find_spec
-        importlib.util.find_spec = lambda name: None if name == "pyautogen" else original(name)
+        importlib.util.find_spec = lambda name: None if name == "autogen" else original(name)
         try:
             from pydantic_agents.core.pipeline.factory import build_pipeline
 
             cfg = PipelineConfig(blueprint="autogen_sdlc", framework="autogen")
-            with pytest.raises(ImportError, match="pyautogen"):
+            with pytest.raises(ImportError, match="autogen"):
                 build_pipeline(cfg)
         finally:
             importlib.util.find_spec = original

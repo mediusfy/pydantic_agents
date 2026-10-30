@@ -15,7 +15,19 @@ from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
-_COLUMNS = ("status", "project", "requirement", "result", "error", "started_at", "completed_at", "elapsed_seconds")
+_COLUMNS = (
+    "status",
+    "project",
+    "requirement",
+    "blueprint",
+    "framework",
+    "resume_attempts",
+    "result",
+    "error",
+    "started_at",
+    "completed_at",
+    "elapsed_seconds",
+)
 # Per process: skips CREATE TABLE IF NOT EXISTS after the first success. Two concurrent first calls both run it,
 # which is harmless because the statement is idempotent.
 _table_ready = False
@@ -45,6 +57,12 @@ async def _ensure_table(conn: Any) -> None:
         )
         """
     )
+    # Added later: a resume after a restart must rebuild the same pipeline (blueprint, framework), and the autopilot
+    # must be able to stop resuming a run that keeps getting interrupted. Idempotent for tables that predate them.
+    await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS blueprint TEXT")
+    await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS framework TEXT")
+    await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS resume_attempts INTEGER NOT NULL DEFAULT 0")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated ON pipeline_runs (status, updated_at)")
     _table_ready = True
 
 
@@ -62,10 +80,12 @@ async def save_run(run_id: str, run: dict[str, Any]) -> None:
         await conn.execute(
             """
             INSERT INTO pipeline_runs
-                (run_id, status, project, requirement, result, error, started_at, completed_at, elapsed_seconds)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+                (run_id, status, project, requirement, result, error, started_at, completed_at, elapsed_seconds,
+                 blueprint, framework, resume_attempts)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             ON CONFLICT (run_id) DO UPDATE SET
                 status = EXCLUDED.status, result = EXCLUDED.result, error = EXCLUDED.error,
+                resume_attempts = EXCLUDED.resume_attempts,
                 completed_at = EXCLUDED.completed_at, elapsed_seconds = EXCLUDED.elapsed_seconds,
                 updated_at = now()
             """,
@@ -78,6 +98,9 @@ async def save_run(run_id: str, run: dict[str, Any]) -> None:
             _ts(run.get("started_at")),
             _ts(run.get("completed_at")),
             run.get("elapsed_seconds"),
+            run.get("blueprint"),
+            run.get("framework"),
+            int(run.get("resume_attempts") or 0),
         )
 
     try:

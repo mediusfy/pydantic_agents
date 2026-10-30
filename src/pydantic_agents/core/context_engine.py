@@ -9,7 +9,6 @@ past decisions, and dependencies without manual file hunting.
 Knowledge domains:
   - adrs: Architecture Decision Records (past decisions)
   - architecture: Architecture rules and patterns
-  - dependencies: External dependency configurations
   - conventions: Coding conventions and standards
   - project: Project-specific context
 
@@ -29,15 +28,15 @@ logger = logging.getLogger(__name__)
 
 # Mapping: agent_name → knowledge domains to query for that agent
 AGENT_CONTEXT_DOMAINS: dict[str, list[str]] = {
-    "backend": ["adrs", "architecture", "dependencies", "conventions"],
-    "frontend": ["adrs", "architecture", "dependencies"],
+    "backend": ["adrs", "architecture", "conventions"],
+    "frontend": ["adrs", "architecture"],
     "database": ["adrs", "architecture"],
-    "service_engineer": ["adrs", "architecture", "dependencies", "project"],
+    "service_engineer": ["adrs", "architecture", "project"],
     "security": ["adrs", "architecture"],
     "review": ["adrs", "architecture", "conventions"],
     "quality_gate": ["adrs", "architecture", "conventions"],
-    "sre": ["adrs", "architecture", "dependencies"],
-    "devops": ["adrs", "dependencies"],
+    "sre": ["adrs", "architecture"],
+    "devops": ["adrs", "architecture"],
     "test_eng": ["conventions", "architecture"],
     "test_gen": ["conventions"],
     "docs": ["conventions"],
@@ -68,15 +67,13 @@ def _usable(snippet: Any) -> bool:
     return isinstance(snippet, str) and bool(snippet.strip()) and _UNAVAILABLE_MARKER not in snippet
 
 
-async def _search_domain(domain: str, agent_name: str, request: str, top_k: int, project: str | None) -> list[str]:
-    """The usable text snippets one knowledge domain returns for a request; a failing search yields none."""
-    with logfire.span("context_engine.retrieve", domain=domain, agent_name=agent_name, _level="debug"):
-        try:
-            results = await vector_db.async_search(domain, request[:MAX_QUERY_CHARS], n_results=top_k, project=project)
-        except Exception as e:
-            logger.debug("Context retrieval failed for domain '%s': %s", domain, e)
-            return []
-    return [snippet for snippet in results or [] if _usable(snippet)]
+def _interleave(per_domain: list[list[str]]) -> list[str]:
+    """Round-robin over the domains' ranked snippets: the best of each domain first. Concatenating them let the
+    first domain fill the whole ``top_k`` and silently discarded the other domains' results."""
+    out: list[str] = []
+    for rank in range(max((len(snippets) for snippets in per_domain), default=0)):
+        out.extend(snippets[rank] for snippets in per_domain if rank < len(snippets))
+    return out
 
 
 def _unique_snippets(snippets: list[str]) -> list[str]:
@@ -104,7 +101,17 @@ async def retrieve_context(agent_name: str, request: str, top_k: int = 3, projec
         Formatted context string, or empty string if nothing relevant found.
     """
     domains = AGENT_CONTEXT_DOMAINS.get(agent_name, ["architecture", "project"])
-    all_snippets = [s for domain in domains for s in await _search_domain(domain, agent_name, request, top_k, project)]
+    with logfire.span("context_engine.retrieve", domains=domains, agent_name=agent_name, _level="debug"):
+        # One embedding of the request, the domains searched concurrently.
+        outcomes = await vector_db.async_search_domains(domains, request[:MAX_QUERY_CHARS], top_k, project)
+    per_domain: list[list[str]] = []
+    for domain, outcome in zip(domains, outcomes, strict=True):
+        if isinstance(outcome, BaseException):
+            # Warning, not debug: a dimension mismatch or a down database otherwise just means "no context".
+            logger.warning("Context retrieval failed for domain '%s': %s", domain, outcome)
+            continue
+        per_domain.append([snippet for snippet in outcome or [] if _usable(snippet)])
+    all_snippets = _interleave(per_domain)
 
     if not all_snippets:
         return ""

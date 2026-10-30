@@ -63,9 +63,11 @@ class AgentRunRecord:
     duration_sec: float = 0.0
     error: str | None = None
     token_usage: dict[str, int] = field(default_factory=dict)
+    written: bool = field(default=False, repr=False)  # a record is written once: the first finish wins
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
+        d.pop("written", None)
         # Truncate prompt to keep files manageable
         d["prompt_truncated"] = len(d["prompt"]) > 100_000
         if d["prompt_truncated"]:
@@ -163,7 +165,11 @@ class SessionRecorder:
         error: str | None = None,
         token_usage: dict[str, int] | None = None,
     ) -> dict[str, Any]:
-        """Finalize a record and write it to JSONL. Called once per span; a second call writes a second line."""
+        """Finalize a record and write it to JSONL. Only the first call for a record writes: a stage that catches its
+        own failure calls ``abort_run`` inside the span, and the span's exit must not overwrite it as a success."""
+        if record.written:
+            return record.to_dict()
+        record.written = True
         record.success = success
         record.duration_sec = time.time() - record.timestamp
         record.error = error
@@ -230,9 +236,9 @@ class SessionRecorder:
             finished = False
             try:
                 yield span
-            except Exception as e:
+            except BaseException as e:  # incl. CancelledError: a cancelled run is not a success
                 finished = True
-                self._finish(record, success=False, error=str(e))
+                self._finish(record, success=False, error=str(e) or type(e).__name__)
                 raise
             finally:
                 if not finished:

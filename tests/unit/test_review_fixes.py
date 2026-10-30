@@ -206,35 +206,51 @@ class TestRetrieveContext:
     async def test_the_project_and_a_capped_query_reach_the_store(self, monkeypatch):
         calls = []
 
-        async def search(domain, query, n_results=3, project=None, filters=None):
-            calls.append((domain, len(query), n_results, project))
-            return [f"{domain} snippet"]
+        async def search_domains(domains, query, n_results=3, project=None):
+            calls.append((list(domains), len(query), n_results, project))
+            return [[f"{d} snippet"] for d in domains]
 
-        monkeypatch.setattr(context_engine.vector_db, "async_search", search)
+        monkeypatch.setattr(context_engine.vector_db, "async_search_domains", search_domains)
 
         text = await context_engine.retrieve_context("database", "x" * 5_000, top_k=2, project="rufkis")
 
-        assert calls == [("adrs", 1_000, 2, "rufkis"), ("architecture", 1_000, 2, "rufkis")]
+        # One call for every domain: the query is embedded once and the domains are searched together.
+        assert calls == [(["adrs", "architecture"], 1_000, 2, "rufkis")]
         assert "adrs snippet" in text
         assert "architecture snippet" in text
 
     async def test_the_store_s_unavailability_notice_never_becomes_context(self, monkeypatch):
-        async def search(*_a, **_k):
-            return ["Vector DB not available — install heavy dependencies", "", "real"]
+        async def search_domains(domains, *_a, **_k):
+            return [["Vector DB not available — install heavy dependencies", "", "real"] for _ in domains]
 
-        monkeypatch.setattr(context_engine.vector_db, "async_search", search)
+        monkeypatch.setattr(context_engine.vector_db, "async_search_domains", search_domains)
 
         assert (await context_engine.retrieve_context("cto", "q")).strip() == "real"
 
-    async def test_a_failing_domain_is_skipped(self, monkeypatch):
-        async def search(domain, *_a, **_k):
-            if domain == "adrs":
-                raise ConnectionError("down")
-            return ["ok"]
+    async def test_a_failing_domain_is_skipped_and_reported(self, monkeypatch, caplog):
+        async def search_domains(domains, *_a, **_k):
+            return [ConnectionError("down") if d == "adrs" else ["ok"] for d in domains]
 
-        monkeypatch.setattr(context_engine.vector_db, "async_search", search)
+        monkeypatch.setattr(context_engine.vector_db, "async_search_domains", search_domains)
 
-        assert "ok" in await context_engine.retrieve_context("cto", "q")
+        with caplog.at_level("WARNING", logger=context_engine.logger.name):
+            assert "ok" in await context_engine.retrieve_context("cto", "q")
+        assert any("Context retrieval failed for domain 'adrs'" in r.getMessage() for r in caplog.records)
+
+    async def test_every_domain_contributes_before_one_domain_fills_top_k(self, monkeypatch):
+        async def search_domains(domains, *_a, **_k):
+            return [[f"{d}-{i}" for i in range(3)] for d in domains]
+
+        monkeypatch.setattr(context_engine.vector_db, "async_search_domains", search_domains)
+
+        text = await context_engine.retrieve_context("review", "q", top_k=3)
+
+        # review searches adrs, architecture and conventions: the best of each, not adrs three times.
+        assert [line for line in text.split("\n") if line.strip() and line.strip() != "---"] == [
+            "adrs-0",
+            "architecture-0",
+            "conventions-0",
+        ]
 
 
 # --- LangGraph: the run id is the thread id, so a checkpointer accepts the run --------------------------------

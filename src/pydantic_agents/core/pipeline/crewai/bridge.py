@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 from collections.abc import Awaitable, Callable
@@ -6,7 +5,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from pydantic_agents.core.limits import llm_semaphore
+from pydantic_agents.core.limits import run_blocking_with_permit
 from pydantic_agents.core.models.core import (
     AgentAdvice,
     Artifact,
@@ -93,21 +92,36 @@ async def run_crewai_pipeline(
             state.context_history.append(cf)
 
             state.stage = "implementation"
-        except Exception as e:
+        except BaseException as e:
             logger.exception("CrewAI pipeline failed: %s", e)
             state.errors.append(f"crewai: {e}")
             state.failure_report = FailureReport(source="crewai", error_type="runtime_error", trace=str(e))
             state.approved = False
+            rec.abort_run(str(e) or type(e).__name__)  # the span would otherwise be recorded as a success
+            if not isinstance(e, Exception):
+                raise
 
+    _finalize_approval(state, crew_class_name)
     return state
 
 
+# Crews with no review verdict or test gate of their own: they finish when they finish without errors. A run that
+# reports "failed: finished without approval" for a completed research or audit crew was a status bug.
+_UNGATED_CREWS = frozenset({"ResearchCrew", "AuditCrew"})
+
+
+def _finalize_approval(state: PipelineState, crew_class_name: str) -> None:
+    """Set ``approved`` for crews whose output has no verdict (the others set it from their verdict or gate)."""
+    if state.failure_report is not None:
+        state.approved = False
+    elif crew_class_name in _UNGATED_CREWS:
+        state.approved = not state.errors
+    elif crew_class_name == "ArchitectureReviewCrew":
+        state.approved = state.cto_approved and not state.errors
+
+
 async def _run_crew_async(crew: Any) -> Any:
-    async with llm_semaphore():
-        return await asyncio.wait_for(
-            asyncio.to_thread(crew.kickoff),
-            timeout=settings.agent_timeout_seconds,
-        )
+    return await run_blocking_with_permit(crew.kickoff, settings.agent_timeout_seconds)
 
 
 def _qa_gate_reason(report: TestRunReport | None) -> str | None:

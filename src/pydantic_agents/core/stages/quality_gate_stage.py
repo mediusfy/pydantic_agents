@@ -11,6 +11,7 @@ Order and fail-closed rules:
    stage with that gate's failure report.
 """
 
+import asyncio
 import logging
 from collections.abc import Sequence
 from typing import Any
@@ -76,7 +77,13 @@ class QualityGateStage(StageRunner):
     async def _retrieved(self, agent: str, state: PipelineState, config: PipelineConfig, heading: str) -> str:
         from pydantic_agents.core.context_engine import retrieve_context
 
-        ctx = await retrieve_context(agent, _context_query(state), project=config.project)
+        # The same query is asked once per gate and batch; the answer does not change within a run.
+        cache: dict[tuple[str, str, str], str] = self.__dict__.setdefault("_ctx_cache", {})
+        query = _context_query(state)
+        key = (agent, state.run_id, query)
+        if key not in cache:
+            cache[key] = await retrieve_context(agent, query, project=config.project)
+        ctx = cache[key]
         return f"\n\nRetrieved {heading}:\n{ctx}" if ctx else ""
 
     async def _run_sre(self, state: PipelineState, config: PipelineConfig, artifacts: list[Artifact]) -> None:
@@ -94,6 +101,8 @@ class QualityGateStage(StageRunner):
         sre_artifact = sre_output.model_copy(deep=True)
         sre_artifact.metadata["user_story_id"] = "infrastructure"
         sre_artifact.agent_name = "infrastructure"
+        # A retry runs this gate again on the same list: replace the earlier infrastructure artifact, do not stack.
+        artifacts[:] = [a for a in artifacts if a.agent_name != "infrastructure"]
         artifacts.append(sre_artifact)
 
     async def _security(self, state, config, text: str, verification: str) -> list[str] | None:
@@ -128,6 +137,15 @@ class QualityGateStage(StageRunner):
         )
         return None if result.approved else list(result.feedback)
 
+    @staticmethod
+    async def _run_gate(gate: Any, state: Any, config: Any, batches: list[list[Artifact]], verification: str):
+        """One gate over every batch: the first batch's findings, or None when all batches pass."""
+        for batch in batches:
+            findings = await gate(state, config, format_artifacts(batch, max_chars=GATE_BATCH_CHARS), verification)
+            if findings is not None:
+                return findings
+        return None
+
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:
         logger.info("--- Running Quality Gate Stage ---")
 
@@ -137,8 +155,18 @@ class QualityGateStage(StageRunner):
             state.stage = "quality_gate"
             return state
 
-        artifacts = state.artifacts or []
+        artifacts = state.artifacts
         state.stage = "quality_gate"
+
+        if not artifacts:
+            # Nothing was generated (every implementation agent failed): there is nothing to approve, and the SRE
+            # agent's own output must not stand in for the code.
+            return _reject(
+                state,
+                "quality_gate_validation",
+                "empty",
+                "No implementation artifacts were produced; nothing to review. Re-run the implementation.",
+            )
 
         logger.info("Running Code Validation...")
         if not await CodeValidator.run_all_async(artifacts):
@@ -172,14 +200,16 @@ class QualityGateStage(StageRunner):
         )
         batches = _batches(artifacts)
         logger.info("Reviewing %d artifacts in %d batch(es)", len(artifacts), len(batches))
-        for name, source, error_type, prefix, gate in gates:
-            logger.info("Running %s...", name)
-            for batch in batches:
-                text = format_artifacts(batch, max_chars=GATE_BATCH_CHARS)
-                findings = await gate(state, config, text, verification)
-                if findings is not None:
-                    logger.warning("%s rejected.", name)
-                    return _reject(state, source, error_type, prefix + "\n".join(findings))
+        # The three gates are independent, so they run side by side (each still walks its batches in order); the
+        # first rejection in gate order is reported, as before. Trade-off: a rejection no longer saves the calls
+        # of the gates after it.
+        outcomes = await asyncio.gather(
+            *(self._run_gate(gate, state, config, batches, verification) for *_, gate in gates)
+        )
+        for (name, source, error_type, prefix, _), findings in zip(gates, outcomes, strict=True):
+            if findings is not None:
+                logger.warning("%s rejected.", name)
+                return _reject(state, source, error_type, prefix + "\n".join(findings))
 
         state.approved = True
         state.feedback = None

@@ -356,7 +356,7 @@ async def test_a_failing_suite_records_the_failed_stories(env, caplog):
     assert (report.source, report.error_type, report.trace) == (
         "test_suite",
         "test_failure",
-        "Failed stories: US-1, US-3",
+        "Failed stories: US-1, US-3\n\n--- US-1 ---\nFAILED: assertion\n\n--- US-3 ---\n'go mod init' timed out.",
     )
     assert report.relevant_files == ["US-1", "US-3"]
     assert state.approved is False
@@ -365,13 +365,14 @@ async def test_a_failing_suite_records_the_failed_stories(env, caplog):
     assert any("Test failures in 2/3 stories: US-1, US-3" in m for m in messages)
 
 
-async def test_a_story_with_no_source_files_is_not_run(env):
+async def test_a_story_with_no_source_files_fails_instead_of_passing_untested(env):
     provider = FakeProvider(failures={"backend": RuntimeError("no backend"), "frontend": RuntimeError("no ui")})
 
     state = await _run(env, _state(_story(1)), provider=provider)
 
     env.run_tests.assert_not_awaited()
-    assert state.failure_report is None
+    assert state.failure_report.source == "test_suite"
+    assert "no source files were generated" in state.failure_report.trace
 
 
 async def test_every_source_file_of_the_story_is_given_to_the_test_run(env):
@@ -389,7 +390,7 @@ async def test_every_source_file_of_the_story_is_given_to_the_test_run(env):
     assert sources["api.go"] == "package api"
 
 
-async def test_a_test_agent_that_raises_is_skipped_and_not_counted_as_a_failure(env, caplog):
+async def test_a_test_agent_that_raises_counts_as_a_failed_story(env, caplog):
     provider = FakeProvider(failures={"test_eng": RuntimeError("no tests today")})
 
     with caplog.at_level(logging.ERROR, logger=impl.logger.name):
@@ -397,7 +398,8 @@ async def test_a_test_agent_that_raises_is_skipped_and_not_counted_as_a_failure(
 
     assert "test_eng" not in _by_agent(state)
     env.run_tests.assert_not_awaited()
-    assert state.failure_report is None
+    assert state.failure_report.source == "test_suite"
+    assert "The test agent crashed: no tests today" in state.failure_report.trace
     assert any("Test agent for US-1 failed: no tests today" in r.getMessage() for r in caplog.records)
 
 
