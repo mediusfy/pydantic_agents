@@ -358,6 +358,12 @@ fresh **Unreleased** section above it.
     state as JSON + base64 under `CHECKPOINT_DIR/<project>/<thread_id>__langgraph.ckpt` on every run; on
     `resume=True`, `_GraphPipelineWrapper.execute()` resolves the latest saved thread ID when `run_id` is omitted and
     resumes from the latest clean checkpoint in `aget_state_history` without re-running completed stages.
+- `vector_db` and test suite (`core/vector_db.py`, `tests/conftest.py`, `tests/integration/test_pipeline_integration.py`):
+  `_get_pool` no longer falls back to connecting to `postgresql://localhost:5432/orchestration` without a timeout when
+  `DATABASE_URL` is unset (which caused `asyncpg.create_pool` to hang in CI when `_test_pool_override` leaked or when
+  `sentence-transformers` was installed via `--extra vector`), and `conftest.py` stubs `_embeddings` and resets
+  `_test_pool_override`/`_initialized_tables` between tests so tests never download HuggingFace weights or leak mock
+  pools across modules.
 - Promptfoo: `qa_executor` provider with two cases (per-criterion results and the derived verdict from supplied
   output; no test rewrite when asked for one) and two more `cto` cases (a sound design inside the approved stack is
   approved; a component outside the approved stack is flagged).

@@ -148,3 +148,21 @@ def temp_checkpoint_dir(tmp_path, monkeypatch) -> Path:
 def temp_telemetry_file(tmp_path) -> str:
     telemetry_file = tmp_path / "telemetry.jsonl"
     return str(telemetry_file)
+
+
+@pytest.fixture(autouse=True)
+def _stub_local_embeddings_and_reset_vector_db(monkeypatch):
+    """Avoid downloading HuggingFace weights or connecting to localhost:5432 during tests.
+
+    Tests that exercise ``_get_embeddings`` or ``_get_pool`` directly override these attributes themselves.
+    """
+    from pydantic_agents.core import vector_db
+
+    fake_encoder = MagicMock()
+    fake_encoder.encode.return_value = [0.1, 0.2, 0.3]
+    monkeypatch.setattr(vector_db, "_embeddings", fake_encoder)
+    monkeypatch.setattr(vector_db, "_test_pool_override", None)
+    monkeypatch.setattr(vector_db, "_initialized_tables", set())
+    yield
+    vector_db._set_test_pool(None)
+
