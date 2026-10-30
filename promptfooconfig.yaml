@@ -407,6 +407,75 @@ tests:
       - type: llm-rubric
         value: Every story has a measurable acceptance criterion and the events are past-tense and namespaced.
 
+  # --- calibration cases from the 2026-10-30 live test (written without a live run; recalibrate after one) ---
+
+  - description: ba - one small request is one or two stories with no invented events
+    providers: [ba]
+    vars:
+      request: |
+        Requirement: add GET /healthz to a Go order-service. It returns 200 only if Postgres is reachable,
+        otherwise 503, and the whole check must finish within a 100ms budget.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const stories = JSON.parse(output);
+          return Array.isArray(stories) && stories.length >= 1 && stories.length <= 2
+            && stories.every(s => /Given/.test(s.gherkin) && /Then/.test(s.gherkin));
+      - type: javascript
+        value: |
+          const stories = JSON.parse(output);
+          const events = stories.flatMap(s => s.event_triggers || []);
+          return !events.some(e => /health|ready|probe|check/i.test(e.name));
+      - type: javascript
+        value: |
+          const stories = JSON.parse(output);
+          const text = JSON.stringify(stories);
+          const refs = [...text.matchAll(/\bFlag\s+F\d+/g)];
+          return refs.length === 0;
+      - type: llm-rubric
+        value: >-
+          Passes only if the stories state the 200 versus 503 behaviour and the 100ms budget as measurable
+          criteria, treat the request as being about a Go order-service (not about the repository or workspace the
+          agent runs in), and do not say the work is blocked or provisional because no Go service is visible.
+          Open questions or assumptions, if any, are listed in the open_questions/assumptions fields.
+
+  - description: review - a small Go health handler gets the real findings and none of the invented ones
+    providers: [review]
+    vars:
+      request: |
+        Review this Go readiness probe handler for production readiness. It is a readiness probe for Kubernetes,
+        not a liveness probe.
+
+        func readyz(db *sql.DB) http.HandlerFunc {
+            return func(w http.ResponseWriter, r *http.Request) {
+                if err := db.Ping(); err != nil {
+                    w.WriteHeader(http.StatusServiceUnavailable)
+                    return
+                }
+                w.WriteHeader(http.StatusOK)
+                w.Write([]byte("ok"))
+            }
+        }
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.risk_level !== "HIGH" && r.risk_level !== "CRITICAL" && r.security_score >= 60;
+      - type: llm-rubric
+        value: >-
+          Passes only if the findings (a) point out that db.Ping() has no context or timeout (PingContext with a
+          deadline), (b) point out the missing Content-Type header on the response body, and (c) point out that the
+          write error is discarded or the Ping error is not logged. Each finding gives a concrete failure scenario.
+      - type: llm-rubric
+        value: >-
+          Fails if the response does ANY of: rejects the code because provenance or origin cannot be verified or
+          because no Go code exists in the workspace; demands gRPC, CloudEvents, event-driven or hexagonal
+          architecture; says the readiness probe is wired to liveness; claims a panic in the handler would crash the
+          goroutine or the process; reports Terraform checks as failed or not satisfied. A Terraform or mTLS entry
+          listed as not applicable is fine.
+
   - description: cto - an unscalable design is not approved and the blockers are concrete
     providers: [cto]
     vars:

@@ -15,7 +15,7 @@ import logging
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic_agents.agents.review import ReviewCriteria
+from pydantic_agents.agents.review import REVIEW_BLUEPRINT_SUMMARY, ReviewCriteria
 from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import Artifact, FailureReport, PipelineState
 from pydantic_agents.core.pipeline.config import PipelineConfig
@@ -122,7 +122,12 @@ class QualityGateStage(StageRunner):
             prompt += f"\n\nPrevious feedback to verify as resolved (report it only if still present): {state.feedback}"
         prompt += await self._retrieved("review", state, config, "Review Context/Conventions")
         contexts = sorted({us.bounded_context for us in state.user_stories if us.bounded_context})
-        result = await self._run_agent(state, "review", prompt, deps=ReviewCriteria(bounded_contexts=contexts))
+        result = await self._run_agent(
+            state,
+            "review",
+            prompt,
+            deps=ReviewCriteria(bounded_contexts=contexts, blueprint_summary=REVIEW_BLUEPRINT_SUMMARY, strict=True),
+        )
         logger.info(
             f"Review: approved={result.approved}, risk={result.risk_level}, security_score={result.security_score}"
         )

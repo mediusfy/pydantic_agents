@@ -45,8 +45,8 @@ def _captured_instructions(agent, deps):
         ),
         (
             review_agent,
-            ReviewCriteria(bounded_contexts=["orders", "billing"]),
-            ["orders, billing", "Strict mode is ENABLED"],
+            ReviewCriteria(bounded_contexts=["orders", "billing"], blueprint_summary="Hexagonal, gRPC", strict=True),
+            ["orders, billing", "Strict mode is ENABLED", "Approved blueprint: Hexagonal, gRPC"],
         ),
     ],
 )
@@ -54,6 +54,21 @@ def test_deps_are_rendered_into_instructions(agent, deps, expected):
     text = _captured_instructions(agent, deps)
     for fragment in expected:
         assert fragment in text
+
+
+@pytest.mark.parametrize(
+    "deps, present, absent",
+    [
+        (None, ["No architecture blueprint was supplied", "Strict mode is disabled"], ["Approved blueprint", "gRPC"]),
+        (ReviewCriteria(), ["No architecture blueprint was supplied"], ["Approved blueprint", "CloudEvents"]),
+    ],
+)
+def test_review_without_a_blueprint_makes_no_architecture_demand(deps, present, absent):
+    text = _captured_instructions(review_agent, deps)
+    for fragment in present:
+        assert fragment in text
+    for fragment in absent:
+        assert fragment not in text
 
 
 def test_review_prompt_has_no_hardcoded_contexts():
@@ -250,3 +265,49 @@ async def test_search_codebase_maps_ripgrep_exit_codes(returncode, stdout, stder
     proc = MagicMock(returncode=returncode, communicate=AsyncMock(return_value=(stdout, stderr)))
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
         assert await search_codebase(MagicMock(), "x", ".") == expected
+
+
+@pytest.mark.parametrize(
+    "kwargs, expected_triggers, expected_questions",
+    [
+        ({}, [], []),
+        ({"open_questions": ["Which Postgres pool?"], "assumptions": ["Go 1.22"]}, [], ["Which Postgres pool?"]),
+    ],
+)
+def test_user_story_events_and_questions_are_optional(kwargs, expected_triggers, expected_questions):
+    story = UserStory(id="HEALTH-01", title="t", gherkin="Given a When b Then c", **kwargs)
+    assert story.event_triggers == expected_triggers
+    assert story.open_questions == expected_questions
+
+
+@pytest.mark.parametrize(
+    "payload, expect_approved, expect_not_applicable",
+    [
+        (
+            {"approved": True, "feedback": [], "security_score": 80, "risk_level": "MEDIUM"},
+            True,
+            [],
+        ),
+        (
+            {
+                "approved": True,
+                "feedback": [],
+                "security_score": 80,
+                "risk_level": "LOW",
+                "not_applicable": ["Terraform: none submitted"],
+            },
+            True,
+            ["Terraform: none submitted"],
+        ),
+        ({"approved": True, "feedback": [], "security_score": 60, "risk_level": "LOW"}, False, []),
+        ({"approved": True, "feedback": [], "security_score": 90, "risk_level": "HIGH"}, False, []),
+    ],
+)
+def test_review_result_not_applicable_is_optional_and_verdict_rules_hold(
+    payload, expect_approved, expect_not_applicable
+):
+    from pydantic_agents.core.models.core import ReviewResult
+
+    result = ReviewResult.model_validate(payload)
+    assert result.approved is expect_approved
+    assert result.not_applicable == expect_not_applicable
