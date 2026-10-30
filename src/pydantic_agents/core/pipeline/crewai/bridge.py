@@ -133,37 +133,8 @@ async def _run_qa_staged_gate(state: PipelineState) -> str:
     """
     qa = QaCrew()
 
-    tests_result = await _run_crew_async(qa.build_tests(state))
-    tests_outputs = list(getattr(tests_result, "tasks_output", None) or [])
-    for task_out in tests_outputs:
-        target = _owner_and_kind(task_out)
-        if target and target[1] == "artifact":
-            _merge_artifact(state, _artifact_from_output(target[0], _output_text(task_out)))
-    tests_output = _output_text(tests_outputs[-1]) if tests_outputs else ""
-
-    report: TestRunReport | None = None
-    fix_rounds = 0
-    for round_num in range(settings.qa_max_fix_rounds + 1):
-        exec_result = await _run_crew_async(qa.build_execution(tests_output))
-        exec_outputs = list(getattr(exec_result, "tasks_output", None) or [])
-        raw_report = _output_text(exec_outputs[0]) if exec_outputs else ""
-        report, reason = _parse_json_model(TestRunReport, raw_report)
-        if report is None:
-            state.errors.append(f"crewai qa_executor: {reason}")
-            logger.warning("QaCrew execution report rejected on round %d: %s", round_num, reason)
-            # qa_executor's output didn't parse, not the tests failing: a fix round would hand go_test a
-            # meaningless empty failing-id list, so stop retrying and let the fail-closed gate below block.
-            break
-        if _qa_gate_reason(report) is None or round_num >= settings.qa_max_fix_rounds:
-            break
-
-        fix_rounds += 1
-        fix_result = await _run_crew_async(qa.build_fix(tests_output, report))
-        fix_outputs = list(getattr(fix_result, "tasks_output", None) or [])
-        if fix_outputs:
-            fix_text = _output_text(fix_outputs[0])
-            _merge_artifact(state, _artifact_from_output("test_eng", fix_text))
-            tests_output = fix_text
+    tests_output = await _run_qa_tests(state, qa)
+    report, fix_rounds, tests_output = await _qa_execute_and_fix(state, qa, tests_output)
     state.test_run_report = report
 
     signoff_result = await _run_crew_async(qa.build_signoff(tests_output, report))
@@ -185,6 +156,46 @@ async def _run_qa_staged_gate(state: PipelineState) -> str:
         f"QaCrew finished: report=parsed fix_rounds={fix_rounds} all_passed={report.all_passed} "
         f"coverage={report.coverage_percent} approved={state.approved}"
     )
+
+
+async def _run_qa_tests(state: PipelineState, qa: QaCrew) -> str:
+    """Run the test-writing crew, merge its artifacts into the state, and return the last task's output."""
+    tests_result = await _run_crew_async(qa.build_tests(state))
+    tests_outputs = list(getattr(tests_result, "tasks_output", None) or [])
+    for task_out in tests_outputs:
+        target = _owner_and_kind(task_out)
+        if target and target[1] == "artifact":
+            _merge_artifact(state, _artifact_from_output(target[0], _output_text(task_out)))
+    return _output_text(tests_outputs[-1]) if tests_outputs else ""
+
+
+async def _qa_execute_and_fix(
+    state: PipelineState, qa: QaCrew, tests_output: str
+) -> tuple[TestRunReport | None, int, str]:
+    """The bounded execute-and-fix loop: (the last parsed report or None, fix rounds run, the latest test output)."""
+    report: TestRunReport | None = None
+    fix_rounds = 0
+    for round_num in range(settings.qa_max_fix_rounds + 1):
+        exec_result = await _run_crew_async(qa.build_execution(tests_output))
+        exec_outputs = list(getattr(exec_result, "tasks_output", None) or [])
+        raw_report = _output_text(exec_outputs[0]) if exec_outputs else ""
+        report, reason = _parse_json_model(TestRunReport, raw_report)
+        if report is None:
+            state.errors.append(f"crewai qa_executor: {reason}")
+            logger.warning("QaCrew execution report rejected on round %d: %s", round_num, reason)
+            # qa_executor's output didn't parse, not the tests failing: a fix round would hand go_test a
+            # meaningless empty failing-id list, so stop retrying and let the fail-closed gate block.
+            break
+        if _qa_gate_reason(report) is None or round_num >= settings.qa_max_fix_rounds:
+            break
+
+        fix_rounds += 1
+        fix_result = await _run_crew_async(qa.build_fix(tests_output, report))
+        fix_outputs = list(getattr(fix_result, "tasks_output", None) or [])
+        if fix_outputs:
+            tests_output = _output_text(fix_outputs[0])
+            _merge_artifact(state, _artifact_from_output("test_eng", tests_output))
+    return report, fix_rounds, tests_output
 
 
 # Crews whose stages the bridge orchestrates itself instead of one ``build(state)`` + ``kickoff``. Keyed by class,

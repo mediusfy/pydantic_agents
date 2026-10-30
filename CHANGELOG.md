@@ -358,6 +358,9 @@ fresh **Unreleased** section above it.
   only `go` left the test binary running and the process as a zombie.
 - `modify_existing_code`: a retry whose engineer returns no files no longer counts as a pass over the failures it was
   asked to fix.
+- Sonar cognitive-complexity findings on this PR: `_run_qa_staged_gate` is split into `_run_qa_tests` and
+  `_qa_execute_and_fix`, `query_context` takes its per-domain work from `_query_domain`, and an exception test with
+  two calls in one `pytest.raises` builds its argument outside the block. Behaviour is unchanged.
 - `.claw-checkpoints/` is git-ignored: the test suite writes run state there and an earlier commit of this change
   picked it up by mistake (removed).
 - Not addressed, by decision: LLM-generated Go still runs unsandboxed on the host (needs a sandbox such as gVisor, not

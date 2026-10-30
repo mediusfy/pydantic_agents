@@ -829,24 +829,28 @@ def query_context(query: str, domain: str = "", top_k: int = 5, project: str = "
     if domain and domain not in _KNOWN_CONTEXT_DOMAINS:
         return f"Invalid domain {domain!r}: must be one of {', '.join(_KNOWN_CONTEXT_DOMAINS)} (or empty for all)."
     domains = [domain] if domain else list(_KNOWN_CONTEXT_DOMAINS)
-    all_results = []
-
+    all_results: list[str] = []
     for d in domains:
-        with logfire.span("mcp.query_context", domain=d, query_length=len(query), _level="info"):
-            try:
-                results = vector_db.search(d, query, n_results=top_k, project=project or None)
-                if results:
-                    all_results.append(f"\n=== Domain: {d} ===")
-                    for i, r in enumerate(results, 1):
-                        snippet = r[:300] + "..." if len(r) > 300 else r
-                        all_results.append(f"[{i}] {snippet}")
-            except Exception as e:
-                all_results.append(f"[Domain {d}] Error: {e}")
+        all_results.extend(_query_domain(d, query, top_k, project))
 
     if not all_results:
         return f"No context found for: {query}"
 
     return "\n".join(all_results)
+
+
+def _query_domain(domain: str, query: str, top_k: int, project: str) -> list[str]:
+    """The formatted lines one domain contributes to ``query_context``: nothing, snippets, or its error."""
+    with logfire.span("mcp.query_context", domain=domain, query_length=len(query), _level="info"):
+        try:
+            results = vector_db.search(domain, query, n_results=top_k, project=project or None)
+        except Exception as e:
+            return [f"[Domain {domain}] Error: {e}"]
+    if not results:
+        return []
+    lines = [f"\n=== Domain: {domain} ==="]
+    lines.extend(f"[{i}] {r[:300] + '...' if len(r) > 300 else r}" for i, r in enumerate(results, 1))
+    return lines
 
 
 # ── Cross-Runtime Memory Bridge Tools ─────────────────────────────────────
