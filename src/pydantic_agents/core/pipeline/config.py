@@ -151,6 +151,7 @@ _BLUEPRINT_SPECS: list[BlueprintSpec] = [
         name="composite",
         description="LangGraph orchestration with CrewAI implementation",
         stages=[STAGES.BA, STAGES.ADVISORY, STAGES.IMPLEMENTATION, STAGES.QUALITY_GATE],
+        crew_class="ImplementationCrew",
         framework=Framework.COMPOSITE,
     ),
 ]

@@ -11,7 +11,7 @@ import importlib.util
 import logging
 from typing import Any
 
-from pydantic_agents.core.models.core import PipelineState
+from pydantic_agents.core.models.core import FailureReport, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, STAGES, PipelineConfig
 from pydantic_agents.core.pipeline.orchestrator import OrgitrationPipeline
 from pydantic_agents.core.pipeline.protocols import PipelineOrchestrator
@@ -122,14 +122,78 @@ class _GraphPipelineWrapper:
         self._graph = graph
         self._config = config
 
-    async def execute(self) -> PipelineState:
+    def _resolve_run_id(self) -> str:
         import uuid
 
         from pydantic_agents.core.limits import run_id_var
 
-        run_id = run_id_var.get() or f"run-{uuid.uuid4().hex[:8]}"
-        initial = PipelineState(run_id=run_id, stage="init", requirement=self._config.requirement or "")
-        # A graph compiled with a checkpointer refuses to run without a thread id; the run id is the thread, so a
-        # resume of the same run continues its saved state.
-        final = await self._graph.ainvoke(initial, config={"configurable": {"thread_id": run_id}})
-        return PipelineState.model_validate(final) if isinstance(final, dict) else final
+        run_id = self._config.run_id or run_id_var.get()
+        if self._config.resume and run_id is None:
+            saver = getattr(self._graph, "checkpointer", None)
+            finder = getattr(saver, "find_latest_run_id", None)
+            if callable(finder):
+                run_id = finder()
+            if run_id is None:
+                logger.warning(
+                    "Resume requested for project %s but no checkpoint exists; starting a fresh run.",
+                    self._config.project,
+                )
+        run_id = run_id or f"run-{uuid.uuid4().hex[:8]}"
+        if run_id_var.get() is None:
+            run_id_var.set(run_id)
+        return run_id
+
+    async def _find_resume_config(self, run_id: str) -> dict[str, Any] | None:
+        """Latest clean checkpoint config in ``run_id``'s history that still has work to run, or None."""
+        get_history = getattr(self._graph, "aget_state_history", None)
+        if not callable(get_history):
+            return None
+        base_cfg = {"configurable": {"thread_id": run_id}}
+        async for snap in get_history(base_cfg):
+            nxt = getattr(snap, "next", None)
+            values = getattr(snap, "values", None) or {}
+            if nxt and nxt != ("__start__",) and not values.get("errors") and not values.get("failure_report"):
+                return dict(snap.config)
+        return None
+
+    def _initial_state(self, run_id: str) -> PipelineState:
+        req = self._config.requirement or ""
+        initial = PipelineState(run_id=run_id, stage="init", requirement=req)
+        bp = BLUEPRINTS.get(self._config.blueprint, {})
+        stages = {str(getattr(s, "value", s)) for s in (bp.get("stages") or [])}
+        if self._config.step == "all" and "ba" not in stages and req:
+            initial.user_stories = [UserStory(id="US-001", title=req[:80], gherkin=req)]
+        return initial
+
+    @staticmethod
+    def _fill_blocked_failure(result: PipelineState, step: str) -> None:
+        if step != "all" or result.approved or result.failure_report is not None:
+            return
+        if result.stage == "ba" and not result.user_stories:
+            result.failure_report = FailureReport(
+                source="ba",
+                error_type="blocked",
+                trace="The BA stage produced no user stories; nothing to design or implement.",
+            )
+        elif result.stage == "advisory" and not result.cto_approved:
+            result.failure_report = FailureReport(
+                source="advisory",
+                error_type="blocked",
+                trace="The CTO gate did not approve the run.",
+            )
+
+    async def execute(self) -> PipelineState:
+        from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter
+
+        run_id = self._resolve_run_id()
+        resume_cfg = await self._find_resume_config(run_id) if self._config.resume else None
+        if resume_cfg is not None:
+            logger.info("Resuming LangGraph pipeline run %s from saved checkpoint.", run_id)
+            final = await self._graph.ainvoke(None, config=resume_cfg)
+        else:
+            initial = self._initial_state(run_id)
+            final = await self._graph.ainvoke(initial, config={"configurable": {"thread_id": run_id}})
+        result = PipelineState.model_validate(final) if isinstance(final, dict) else final
+        self._fill_blocked_failure(result, self._config.step)
+        ArtifactStorageAdapter(str(self._config.output_dir())).write_artifacts(result.artifacts)
+        return result

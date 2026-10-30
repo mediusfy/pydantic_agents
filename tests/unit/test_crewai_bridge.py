@@ -834,3 +834,26 @@ class TestQaCrewStagedGate:
 
         assert state.approved is approved
         assert any("below floor" in err for err in state.errors) is not approved
+
+
+def test_implementation_crew_builds_tasks_from_state(fake_crewai, litellm_env, registered_agents):
+    from pydantic_agents.core.models.core import UserStory
+
+    crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+    bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+    assert bridge._CREW_MAP["ImplementationCrew"] is crews.ImplementationCrew
+
+    state = PipelineState(
+        run_id="r1",
+        stage="implementation",
+        requirement="Build health endpoint",
+        user_stories=[UserStory(id="US-001", title="Health", gherkin="Given /healthz")],
+        advisory_results={"cto": "use stdlib net/http"},
+        feedback="Add timeout on server",
+    )
+    crew = crews.ImplementationCrew().build(state)
+    assert [t.name for t in crew.tasks] == ["backend/artifact", "frontend/artifact", "test_eng/artifact"]
+    assert "US-001" in crew.tasks[0].description
+    assert "use stdlib net/http" in crew.tasks[0].description
+    assert "Add timeout on server" in crew.tasks[0].description
+

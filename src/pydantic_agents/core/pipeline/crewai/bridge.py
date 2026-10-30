@@ -20,6 +20,7 @@ from pydantic_agents.core.pipeline.crewai.approval import finalize_approval as _
 from pydantic_agents.core.pipeline.crewai.crews import (
     ArchitectureReviewCrew,
     AuditCrew,
+    ImplementationCrew,
     QaCrew,
     ResearchCrew,
     SdlcCrew,
@@ -33,6 +34,7 @@ logger = logging.getLogger(__name__)
 
 _CREW_MAP: dict[str, Any] = {
     "SdlcCrew": SdlcCrew,
+    "ImplementationCrew": ImplementationCrew,
     "ResearchCrew": ResearchCrew,
     "SecurityReviewCrew": SecurityReviewCrew,
     "QaCrew": QaCrew,

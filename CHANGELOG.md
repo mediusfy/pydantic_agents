@@ -362,6 +362,21 @@ fresh **Unreleased** section above it.
   `search_existing_adrs` is best-effort and reports an unreachable ADR store instead of aborting the review.
 - `tests/unit/test_review_2026_10_29.py`: regression tests for the review's Medium/Low fixes plus the SSRF guard's DNS,
   redirect, size-cap and error paths (`web_fetch.py` branch coverage 56% → 94%).
+- LangGraph and composite pipelines (`core/pipeline/langgraph/graphs.py`, `core/pipeline/langgraph/nodes.py`,
+  `core/pipeline/langgraph/checkpointer.py`, `core/pipeline/factory.py`, `core/pipeline/crewai/crews.py`,
+  `core/pipeline/crewai/bridge.py`, `core/pipeline/config.py`, #76):
+  - `build_full_graph` builds only the stages listed in the selected blueprint, wires edges between surviving stages
+    dynamically, fails closed (`ValueError`) on unknown or stage-less blueprints, wraps async node callables with
+    `_async_node` so LangGraph awaits them without overwriting `config` with `RunnableConfig`, and seeds a single
+    `UserStory` (`US-001`) from `requirement` when `"ba"` is absent.
+  - The `composite` blueprint (`framework="composite"`, `crew_class="ImplementationCrew"`) now executes its
+    implementation step via `crewai_implementation_node` (`ImplementationCrew`: backend, frontend and test-engineering
+    artifact tasks consuming `user_stories`, `advisory_results` and `feedback`) inside `build_implementation_subgraph`
+    while keeping LangGraph's quality-gate retry loop and outer stages.
+  - `build_full_graph` defaults to `DiskCheckpointSaver(config.project)`, which atomically persists LangGraph thread
+    state as JSON + base64 under `CHECKPOINT_DIR/<project>/<thread_id>__langgraph.ckpt` on every run; on
+    `resume=True`, `_GraphPipelineWrapper.execute()` resolves the latest saved thread ID when `run_id` is omitted and
+    resumes from the latest clean checkpoint in `aget_state_history` without re-running completed stages.
 - `vector_db`, `utils.kill_and_reap` and test suite (`core/vector_db.py`, `core/utils.py`, `tests/conftest.py`,
   `tests/integration/test_pipeline_integration.py`):
   - `kill_and_reap` now checks `isinstance(pid, int) and not isinstance(pid, bool) and pid > 1` before calling
