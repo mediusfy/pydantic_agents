@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from pydantic_agents.core.limits import llm_semaphore
 from pydantic_agents.core.models.core import (
     AgentAdvice,
     Artifact,
@@ -102,7 +103,11 @@ async def run_crewai_pipeline(
 
 
 async def _run_crew_async(crew: Any) -> Any:
-    return await asyncio.to_thread(crew.kickoff)
+    async with llm_semaphore():
+        return await asyncio.wait_for(
+            asyncio.to_thread(crew.kickoff),
+            timeout=settings.agent_timeout_seconds,
+        )
 
 
 def _qa_gate_reason(report: TestRunReport | None) -> str | None:

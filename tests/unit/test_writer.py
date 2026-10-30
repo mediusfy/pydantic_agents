@@ -44,3 +44,25 @@ def test_path_traversal_absolute(tmp_path):
     )
     with pytest.raises(PathTraversalError, match="Path traversal"):
         writer.write(art)
+
+
+@pytest.mark.parametrize(
+    "bad_agent_name",
+    [
+        "../escaped",
+        "../../etc",
+        "/tmp/escaped",
+        "backend/../../escaped",
+        "backend/nested",
+        ".",
+        "",
+    ],
+)
+def test_path_traversal_in_agent_name_is_rejected(tmp_path, bad_agent_name):
+    writer = ArtifactWriter(str(tmp_path))
+    art = Artifact(
+        agent_name=bad_agent_name,
+        files={"main.go": "package main"},
+    )
+    with pytest.raises(PathTraversalError, match="Path traversal"):
+        writer.write(art)

@@ -6,6 +6,10 @@ LiteLLM proxy (LITELLM_BASE_URL / LITELLM_VIRTUAL_KEY), not Postgres.
 Select the agent per provider with ``config.agent`` in promptfooconfig.yaml.
 Structured outputs are returned as JSON so ``is-json`` / ``javascript``
 assertions can inspect fields.
+
+Agents run through ``registry.run``, the guarded production path (deps factory, usage caps, concurrency permit,
+transport retry), with a timeout below promptfoo's 300 s worker limit so a stalled run (for example a delegation
+stuck behind a gateway rate limit) reports an error instead of being killed silently.
 """
 
 import os
@@ -17,7 +21,10 @@ from pydantic import BaseModel
 os.environ.setdefault("LOGFIRE_IGNORE_NO_CONFIG", "1")
 
 from pydantic_agents.agents.registration import register_all_agents
+from pydantic_agents.core.exceptions import AgentNotFoundError
 from pydantic_agents.core.registry import registry
+
+_EVAL_TIMEOUT_SECONDS = float(os.environ.get("EVAL_AGENT_TIMEOUT_SECONDS", "240"))
 
 
 async def call_api(prompt: str, options: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:  # noqa: ARG001 - promptfoo signature
@@ -27,15 +34,11 @@ async def call_api(prompt: str, options: dict[str, Any], context: dict[str, Any]
 
     register_all_agents()
     try:
-        agent = registry.get(agent_name)
-    except ValueError as e:
+        result = await registry.run(agent_name, prompt, timeout_seconds=_EVAL_TIMEOUT_SECONDS)
+    except AgentNotFoundError as e:
         return {"error": str(e)}
-
-    deps_factory = registry._agents[agent_name][2]
-    deps = deps_factory() if callable(deps_factory) else {}
-
-    try:
-        result = await agent.run(prompt, deps=deps)
+    except TimeoutError:
+        return {"error": f"agent '{agent_name}' timed out after {_EVAL_TIMEOUT_SECONDS:.0f}s"}
     except Exception as e:
         return {"error": f"agent '{agent_name}' failed: {e}"}
 

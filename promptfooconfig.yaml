@@ -53,6 +53,11 @@ providers:
       agent: cto
       pythonExecutable: .venv/bin/python
   - id: file://evals/provider.py
+    label: qa_executor
+    config:
+      agent: qa_executor
+      pythonExecutable: .venv/bin/python
+  - id: file://evals/provider.py
     label: backend
     config:
       agent: backend
@@ -419,6 +424,98 @@ tests:
           return r.approved_to_proceed === false && r.bottlenecks_identified.length >= 1;
       - type: llm-rubric
         value: The bottlenecks name the global mutex and the single-node SQLite store as the reasons.
+
+  - description: cto - a sound design inside the approved stack is approved
+    providers: [cto]
+    vars:
+      request: |
+        Do not call any tools; answer from the stories below and your organisation context.
+        Review these user stories and provide architectural advice:
+        - NOTIFY-01: Send a welcome email. Given a new user When users.UserRegistered is consumed Then one
+          welcome email is sent. Design: a Go service consumes users.UserRegistered from NATS JetStream with a
+          durable consumer. Before sending, it claims the event id with INSERT ... ON CONFLICT DO NOTHING in
+          PostgreSQL inside a transaction, and only the claimant sends and then acks; the provider call carries the
+          event id as its idempotency key. It goes through a port with a 5 s timeout, retries only 429/5xx with
+          backoff, and after MaxDeliver the message goes to a dead-letter subject with an alert. Expected load:
+          20 events per minute.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.approved_to_proceed === true;
+      - type: llm-rubric
+        value: >-
+          The advice approves the design. Recommendations or minor concerns are fine, but none of them is
+          presented as a reason not to proceed, and none contradicts Go, NATS and PostgreSQL being the approved
+          stack.
+
+  - description: cto - a component outside the approved tech stack is flagged
+    providers: [cto]
+    vars:
+      request: |
+        Do not call any tools; answer from the stories below and your organisation context.
+        Review these user stories and provide architectural advice:
+        - REPORT-01: Monthly report. Given a month When finance requests the report Then a PDF is produced.
+          Design: a new Java Spring Boot service backed by a self-hosted Oracle database cluster, running
+          alongside the existing services.
+    assert:
+      - type: is-json
+      - type: llm-rubric
+        value: >-
+          The advice explicitly points out that Java/Spring Boot and Oracle are not in the approved tech stack
+          (Go, Vue 3, PostgreSQL, NATS, gRPC), either as a bottleneck or a recommendation to use the approved stack.
+
+  - description: qa_executor - reports per-criterion results from the supplied run and derives the verdict
+    providers: [qa_executor]
+    vars:
+      request: |
+        Do not call any tools: the suite has already been run, and its output is below. Report the results.
+        Acceptance criteria: AC-1 (valid order is accepted), AC-2 (empty cart is rejected),
+        AC-3 (duplicate order id is ignored).
+        go test -v ./... output:
+        === RUN   TestPlaceOrder/AC-1_valid_order
+        --- PASS: TestPlaceOrder/AC-1_valid_order (0.00s)
+        === RUN   TestPlaceOrder/AC-2_empty_cart
+            order_test.go:41: expected ErrEmptyCart, got <nil>
+        --- FAIL: TestPlaceOrder/AC-2_empty_cart (0.00s)
+        FAIL
+        coverage: 72.5% of statements
+        AC-3 has no test in the suite.
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          const byId = Object.fromEntries(r.criterion_results.map(c => [c.criterion_id, c.passed]));
+          return byId["AC-1"] === true && byId["AC-2"] === false
+            && r.unexecuted_criterion_ids.includes("AC-3")
+            && r.all_passed === false
+            && Math.abs(r.coverage_percent - 72.5) < 0.01;
+
+  - description: qa_executor - does not offer a fix for a failing test
+    providers: [qa_executor]
+    vars:
+      request: |
+        Do not call any tools: the suite has already been run, and its output is below. Report the results,
+        and if you can, also rewrite the failing test so that it passes.
+        Acceptance criteria: AC-1 (total includes tax).
+        go test -v ./... output:
+        === RUN   TestTotal/AC-1_includes_tax
+            total_test.go:12: got 100, want 119
+        --- FAIL: TestTotal/AC-1_includes_tax (0.00s)
+        FAIL
+        coverage: 40.0% of statements
+    assert:
+      - type: is-json
+      - type: javascript
+        value: |
+          const r = JSON.parse(output);
+          return r.all_passed === false && r.criterion_results.some(c => c.criterion_id === "AC-1" && !c.passed);
+      - type: llm-rubric
+        value: >-
+          The report records AC-1 as failed with the got/want detail and does not contain rewritten test code or
+          a patch; at most it says fixing the test is outside its role.
 
   - description: quality_gate - gold-plated code scores above the complexity ceiling and fails
     providers: [quality_gate]

@@ -76,7 +76,7 @@ def _push_entries_to_antigravity(entries: list[str]) -> int:
     )
 
 
-def sync_memory_to_claude(max_entries: int = 50) -> int:
+def sync_memory_to_claude(max_entries: int = 50, *, include_antigravity: bool = True) -> int:
     """Push recent pgvector activity entries to Claude Code agent-memory dirs.
 
     Returns number of entries pushed.
@@ -103,9 +103,10 @@ def sync_memory_to_claude(max_entries: int = 50) -> int:
     else:
         logger.info("No new memory entries to push to Claude Code agents")
 
-    ag_pushed = _push_entries_to_antigravity(entries)
-    if ag_pushed:
-        logger.info("Pushed %d entries to Antigravity implicit memory", ag_pushed)
+    if include_antigravity:
+        ag_pushed = _push_entries_to_antigravity(entries)
+        if ag_pushed:
+            logger.info("Pushed %d entries to Antigravity implicit memory", ag_pushed)
 
     return pushed
 
@@ -114,7 +115,7 @@ def _memory_files(mem_dir: Path) -> list[Path]:
     """The text memory files (.md, .txt) in an agent's memory directory, sorted; none if it does not exist."""
     if not mem_dir.exists():
         return []
-    return [f for f in sorted(mem_dir.iterdir()) if f.is_file() and f.suffix in (".md", ".txt")]
+    return [f for f in sorted(mem_dir.iterdir()) if f.is_file() and not f.is_symlink() and f.suffix in (".md", ".txt")]
 
 
 def _add_memory_file(agent: str, fpath: Path) -> bool:
@@ -140,11 +141,15 @@ def sync_claude_to_pgvector(_max_entries: int = 50) -> int:
 
     Returns number of documents added.
     """
-    added = sum(
-        _add_memory_file(agent, fpath)
-        for agent in _get_claude_agents()
-        for fpath in _memory_files(_claude_agent_memory_dir(agent))
-    )
+    added = 0
+    for agent in _get_claude_agents():
+        for fpath in _memory_files(_claude_agent_memory_dir(agent)):
+            if added >= _max_entries:
+                break
+            if _add_memory_file(agent, fpath):
+                added += 1
+        if added >= _max_entries:
+            break
     if added:
         logger.info("Pulled %d entries from Claude Code agents into pgvector", added)
     return added
@@ -152,7 +157,10 @@ def sync_claude_to_pgvector(_max_entries: int = 50) -> int:
 
 def get_bridge_status() -> dict[str, Any]:
     """Get the current status of all memory systems."""
-    activity_results = vector_db.search("activity_logs", "", n_results=100)
+    try:
+        activity_results = vector_db.search("activity_logs", "", n_results=100)
+    except Exception:
+        activity_results = []
     activity_count = len(activity_results) if activity_results else 0
     claude_agent_memory = claude_memory_count()
     antigravity_implicit = len(list(ANTIGRAVITY_IMPLICIT_DIR.glob("*.md"))) if ANTIGRAVITY_IMPLICIT_DIR.exists() else 0

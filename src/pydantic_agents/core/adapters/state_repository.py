@@ -159,9 +159,11 @@ class LocalDiskStateRepository(StateRepositoryPort):
     def clear(self, run_id: str) -> None:
         if not os.path.isdir(self.checkpoint_dir):
             return
+        self._ensure_migrated()
+        prefix = f"{run_id}__"
         count = 0
         for filename in os.listdir(self.checkpoint_dir):
-            if filename.startswith(run_id):
+            if filename.startswith(prefix):
                 os.remove(os.path.join(self.checkpoint_dir, filename))
                 count += 1
         logger.info(f"State cleared: {count} files for run {run_id}")

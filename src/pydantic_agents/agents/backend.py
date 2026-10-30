@@ -15,6 +15,16 @@ class ProjectState:
     team_owner: str
 
 
+def default_project_state() -> ProjectState:
+    """The ProjectState used when a caller passes none: the current sandbox root, plus the ``ORG_ENVIRONMENT`` and
+    ``ORG_TEAM_OWNER`` settings (placeholders by default; set them per deployment)."""
+    from pydantic_agents.core.utils import sandbox_root
+
+    return ProjectState(
+        base_path=str(sandbox_root()), environment=settings.org_environment, team_owner=settings.org_team_owner
+    )
+
+
 backend_prompt = f"""You are a Lead Go Backend Engineer specializing in high-concurrency, event-driven systems.
 
 Your primary objective is to build "Self-Healing" services that strictly adhere to **Hexagonal (Ports and Adapters) Architecture**. Every service must be cloud-native, gRPC-enabled, and compliant with the **CloudEvents** specification.

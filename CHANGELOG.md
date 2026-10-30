@@ -187,6 +187,90 @@ fresh **Unreleased** section above it.
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
 
 ### Fixed
+- `ArtifactWriter.write` (`core/writer.py`) now validates `artifact.agent_name` through `safe_path_join` and rejects
+  multi-segment or empty names, preventing a model-chosen `agent_name` (`../...` or `/abs/...`) from writing outside
+  `base_dir`.
+- `vector_db` validates `collection_name` as a plain ASCII SQL identifier (`[A-Za-z_]\w{0,60}`) before interpolating
+  it into `v_<collection_name>` DDL/DML queries, and `mcp_server.query_context` restricts `domain` to the known
+  knowledge domains (`adrs`, `architecture`, `conventions`, `project`), closing a SQL injection vector.
+- Build, vet, lint and test subprocesses (`core/tools/test_tools.py`, `core/verifier.py`, `core/tools/go_common.py`,
+  `core/tools/gobuild.py`, `core/tools/frontend_tools.py`) now run with `sanitized_subprocess_env()`, stripping API
+  keys, `DATABASE_URL`, and Go/Node/XDG redirect variables (`GOPRIVATE`, `GONOPROXY`, `GONOSUMDB`, `GOFLAGS`,
+  `NODE_PATH`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`), forcing `GOENV=off`, and pinning `GOPROXY`/`GOSUMDB` from
+  `UNTRUSTED_GOPROXY`/`UNTRUSTED_GOSUMDB` so generated code/tests cannot exfiltrate credentials or reach internal
+  module proxies.
+- `mcp_server` populates `TransportSecuritySettings.allowed_hosts` and `allowed_origins` from
+  `Settings.mcp_allowed_hosts` / `Settings.mcp_allowed_origins` (defaulting to `127.0.0.1:*`, `localhost:*`,
+  `[::1]:*`) instead of leaving them empty and rejecting every HTTP/SSE request with HTTP 421.
+- `product_strategist` is registered under the `product_strategy` capability instead of colliding with
+  `innovation_scout` on `platform_intelligence`, and `test_agent_consistency.py` asserts every capability has a
+  single owner.
+- AutoGen adapter (`core/adapters/autogen_bridge.py`, `core/pipeline/autogen/groups.py`,
+  `core/pipeline/autogen/bridge.py`): `_build_llm_config` and `_get_manager_llm_config` now unwrap `LazyModel` and
+  resolve the LiteLLM proxy `base_url`/`api_key` via `_litellm_connection`, `_register_tool_functions` iterates
+  `_function_toolset.tools.values()`, skips `RunContext` tools and bridges async tools through `_call_tool_function`,
+  and both `run_autogen_pipeline` and `run_crewai_pipeline` acquire `llm_semaphore()` and enforce
+  `settings.agent_timeout_seconds`.
+- `fetch_url` (`core/tools/web_fetch.py`), `read_and_memorize_url` (`core/tools/memory.py`) and
+  `vector_db.ingest_url`/`async_ingest_url` now validate URLs with `validate_public_http_url` (blocking loopback,
+  RFC1918, link-local/cloud metadata, and internal hostnames on both the initial request and any redirect hop),
+  enforce timeouts, and cap response size.
+- `scan_for_secrets` (`core/tools/secrets.py`) redacts matched credentials in `snippet` (`[REDACTED]`) and catches
+  `sk-proj-`/`sk-ant-` keys, spaces around `=`/`:`, unquoted `.env` keys, and dotted/hyphenated database hosts.
+- `mcp_server.modify_existing_code` validates `codebase_path` against `_check_codebase_root` (`SEED_ROOTS`,
+  `output_dir`, or `ORCHESTRATION_CODEBASE_ROOT`), and `scaffold_and_build_service` validates `service_name` and
+  constructs the pipeline via `build_pipeline(config)`.
+- `Settings` declares `litellm_base_url`, `litellm_virtual_key`, `litellm_master_key`, `litellm_env` and
+  `litellm_cloud_url` so `LITELLM_*` entries in `.env` are honoured by `factory._litellm_connection`.
+- Tool grants and sandboxing (`core/tool_assignments.py`, `core/tools/memory.py`, `core/tools/docs.py`):
+  `read_and_memorize_url` and `read_and_memorize_pdf` are no longer attached to the `memory` category, `review` and
+  `cto` no longer receive `documentation` (`update_documentation`), the nine personal utility agents no longer
+  receive local codebase `search`, and `update_documentation`/`read_and_memorize_pdf` resolve paths against
+  `sandbox_root()`.
+- `core/pydantic_ai_compat.py` centralizes access to `pydantic_ai`'s private tool storage (`_function_toolset.tools`,
+  `Tool.function`) for `autogen_bridge`, `crewai_bridge`, `tools.registry.apply_tools`, and `BridgeAgent`, and runs a
+  startup compatibility probe (`check_pydantic_ai_compatibility`) from `register_all_agents()` that raises
+  `PydanticAICompatibilityError` instead of silently dropping tools if a future `pydantic_ai` upgrade moves those
+  attributes.
+- `agents/registration.py` provides default `deps_factory` callables for `cto` (`default_org_context`, backed by
+  `ORG_*` settings), `backend` (`default_project_state`, rooted at `sandbox_root()`), `review`, `database`,
+  `devops` and `security`, `cto_agent` has `search_existing_adrs`, and `qa_executor`'s prompt no longer attributes
+  source/test fixes to `go_test`.
+- `.github/workflows/changelog.yml` passes `github.base_ref` through an environment variable instead of inline shell
+  interpolation, and both `ci.yml` and `changelog.yml` declare `permissions: contents: read`.
+- `vector_db.ingest_url`, `ingest_pdf`, `async_ingest_url` and `async_ingest_pdf` compute deterministic SHA-256 document
+  IDs instead of using `id(s)` memory addresses.
+- `MergeStage._merge_file` resolves `target_root` before calling `dest.relative_to(...)`, and `sandbox_root()` returns
+  `root.resolve()` when `sandbox_root_var` is set.
+- `memory_bridge` honours `all_runtimes` and `max_entries` across both sync directions, skips symlinks in
+  `_memory_files`, and handles vector DB errors in `get_bridge_status`.
+- `healthcheck.validate_api_keys` checks `settings.litellm_virtual_key`/`litellm_master_key` and `deepseek_api_key`,
+  `Settings.resolve_model` maps `deepseek` through `_NATIVE_MODEL_PREFIXES` and handles `provider="test"`, and
+  `PydanticAIAgentProvider.run_agent` preserves an agent's own `_model_settings["max_tokens"]`.
+- `tests/unit/test_web_fetch.py`, `tests/unit/test_secrets_scan.py`, `tests/unit/test_vector_db_collection_names.py`,
+  and `tests/unit/test_review_2026_10_29.py`: dedicated unit tests for SSRF validation/redirects/size caps
+  (`web_fetch.py` branch coverage 56% → 94%), secret scanning and redaction, pgvector SQL identifier validation, and
+  the review's Medium/Low and CTO review fixes.
+- `LocalDiskStateRepository.clear` runs `_ensure_migrated()` and matches `f"{run_id}__"` so `clear("run1")` does not
+  delete `run10` checkpoints, `run_existing_code_pipeline` closes its `recorder` in `finally:`, and
+  `mcp_server.cancel_pipeline_run` falls back to `get_run(run_id)`.
+- `AgentRunRecord.to_dict` slices `d["prompt"]` to 100,000 characters when `prompt_truncated` is `True`, and
+  `observability._instrument` calls `logfire.instrument_pydantic_ai(include_content=False)`.
+- `BridgeAgent` loads hooks registered via `agy_bridge.hooks` (`get_hooks(name)`), and `agy_bridge.server._respond_to`
+  rejects non-dict JSON payloads cleanly instead of raising `AttributeError`.
+- `scripts/check_changelog.py` and `scripts/seed_projects.py` enforce subprocess timeouts and validate org/repo names
+  with `safe_path_join`.
+- `TestRunResult` sets `__test__ = False`, `test_langgraph_pipeline.py` uses `MagicMock` for `record_span.__aenter__`
+  (clearing 6 pytest warnings), and `test_state_repository_contract.py` runs `LocalDiskStateRepository` contract tests
+  even when the optional `turso` extra is not installed.
+- `PydanticAIAgentProvider.run_agent` reads the agent's public `model_settings` (pydantic-ai has no `_model_settings`),
+  so `database_agent`'s 8192 `max_tokens` cap now actually survives the per-call 16384 default; the CTO's
+  `search_existing_adrs` is best-effort and reports an unreachable ADR store instead of aborting the review.
+- `tests/unit/test_review_2026_10_29.py`: regression tests for the review's Medium/Low fixes plus the SSRF guard's DNS,
+  redirect, size-cap and error paths (`web_fetch.py` branch coverage 56% → 94%).
+- Promptfoo: `qa_executor` provider with two cases (per-criterion results and the derived verdict from supplied
+  output; no test rewrite when asked for one) and two more `cto` cases (a sound design inside the approved stack is
+  approved; a component outside the approved stack is flagged).
 - `run_store`, `platform_metrics` and `platform_findings` now reach the database through
   `vector_db.with_connection`, which runs the query on the background loop that owns the cached asyncpg pool.
   They used to acquire that pool from the caller's loop, so once a vector search had created it there, every

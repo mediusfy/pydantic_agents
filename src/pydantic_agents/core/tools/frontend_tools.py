@@ -6,7 +6,7 @@ import os
 import tempfile
 
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
 
 FRONTEND_VALIDATE_TIMEOUT = 60.0
 
@@ -39,6 +39,7 @@ async def validate_frontend_code(file_name: str, source_code: str) -> str:
             "eslint",
             filepath,
             cwd=cwd,
+            env=sanitized_subprocess_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
@@ -60,6 +61,7 @@ async def validate_frontend_code(file_name: str, source_code: str) -> str:
             "--noEmit",
             filepath,
             cwd=cwd,
+            env=sanitized_subprocess_env(),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )

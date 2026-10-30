@@ -177,3 +177,26 @@ def test_an_unresolved_agent_has_an_empty_system_prompt(monkeypatch):
     agent._agent = None
 
     assert agent.get_system_prompt() == ""
+
+
+async def test_real_pydantic_ai_agent_tools_are_discovered_and_hooked():
+    from pydantic_ai import Agent
+
+    real_agent = Agent("test", system_prompt="real agent", defer_model_check=True)
+
+    @real_agent.tool_plain
+    def ping(x: str) -> str:
+        return f"pong:{x}"
+
+    bridge = make(real_agent)
+    assert bridge.get_tool_names() == ["ping"]
+
+    seen = []
+
+    async def on_post(payload):
+        seen.append(payload["result"])
+
+    bridge.hooks.on_post_tool_call(on_post)
+    tool_obj = real_agent._function_toolset.tools["ping"]
+    assert await tool_obj.function("ctx", "hi") == "pong:hi"
+    assert seen == ["pong:hi"]

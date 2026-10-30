@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -25,16 +26,28 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
+from pydantic_agents.core.utils import safe_path_join
+
 COLLECTIONS = ("adrs", "architecture", "conventions", "project")
+_REPO_NAME = re.compile(r"[A-Za-z0-9_.\-]+", re.ASCII)
+
+
+def _validate_repo_identifier(value: str, label: str = "name") -> str:
+    if not _REPO_NAME.fullmatch(value) or value in (".", ".."):
+        raise ValueError(f"Invalid {label}: {value!r}")
+    return value
 
 
 def active_repos(org: str, days: int, exclude: set[str]) -> list[str]:
+    _validate_repo_identifier(org, "org")
     out = subprocess.check_output(
-        ["gh", "repo", "list", org, "--limit", "500", "--json", "name,pushedAt,isArchived"], text=True
+        ["gh", "repo", "list", org, "--limit", "500", "--json", "name,pushedAt,isArchived"],
+        text=True,
+        timeout=60,
     )
     cutoff = datetime.now(UTC) - timedelta(days=days)
     names = [
-        r["name"]
+        _validate_repo_identifier(r["name"], "repo name")
         for r in json.loads(out)
         if not r["isArchived"]
         and r["name"] not in exclude
@@ -44,11 +57,17 @@ def active_repos(org: str, days: int, exclude: set[str]) -> list[str]:
 
 
 def sync_clone(org: str, name: str, clones_dir: Path) -> Path:
-    dest = clones_dir / name
+    _validate_repo_identifier(org, "org")
+    _validate_repo_identifier(name, "repo name")
+    dest = safe_path_join(clones_dir, name)
     if (dest / ".git").is_dir():
-        subprocess.run(["git", "-C", str(dest), "pull", "--ff-only", "-q"], check=False)
+        subprocess.run(["git", "-C", str(dest), "pull", "--ff-only", "-q"], check=False, timeout=120)
     else:
-        subprocess.run(["gh", "repo", "clone", f"{org}/{name}", str(dest), "--", "--depth", "1", "-q"], check=True)
+        subprocess.run(
+            ["gh", "repo", "clone", f"{org}/{name}", str(dest), "--", "--depth", "1", "-q"],
+            check=True,
+            timeout=120,
+        )
     return dest
 
 

@@ -84,3 +84,55 @@ async def test_the_event_loop_is_not_blocked_by_file_writes():
     with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())):
         await asyncio.gather(execute_test_suite("a.spec.ts", "x", "a.ts", "y"), ticker())
     assert len(ticks) == 3
+
+
+async def test_subprocesses_do_not_inherit_secret_env_vars(monkeypatch):
+    monkeypatch.setenv("LITELLM_VIRTUAL_KEY", "sk-secret-litellm")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-openai")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://secret@db/prod")
+    spawn = AsyncMock(return_value=_proc(0, b"PASS"))
+    with patch("asyncio.create_subprocess_exec", spawn):
+        await execute_test_suite("a.spec.ts", "test('x')", "a.ts", "export const a = 1")
+
+    passed_env = spawn.await_args.kwargs["env"]
+    assert "LITELLM_VIRTUAL_KEY" not in passed_env
+    assert "OPENAI_API_KEY" not in passed_env
+    assert "DATABASE_URL" not in passed_env
+
+
+def test_sanitized_subprocess_env_allowlist_and_trust_boundary_pins(monkeypatch):
+    from pydantic_agents.core.settings import settings
+    from pydantic_agents.core.utils import _SAFE_SUBPROCESS_ENV_KEYS, sanitized_subprocess_env
+
+    # Dangerous Go/Node/XDG override vars must not be in the allowlist or leak through.
+    forbidden = (
+        "GOPRIVATE",
+        "GONOPROXY",
+        "GONOSUMDB",
+        "GOFLAGS",
+        "GOENV",
+        "NODE_PATH",
+        "NODE_OPTIONS",
+        "XDG_CONFIG_HOME",
+        "XDG_DATA_HOME",
+    )
+    for key in forbidden:
+        assert key not in _SAFE_SUBPROCESS_ENV_KEYS
+        monkeypatch.setenv(key, "attacker-controlled")
+
+    monkeypatch.setenv("GOPROXY", "http://internal-proxy.corp.local")
+    monkeypatch.setenv("GOSUMDB", "off")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    monkeypatch.setattr(settings, "untrusted_goproxy", "https://proxy.golang.org,direct")
+    monkeypatch.setattr(settings, "untrusted_gosumdb", "sum.golang.org")
+
+    env = sanitized_subprocess_env()
+
+    for key in forbidden:
+        if key != "GOENV":
+            assert key not in env
+    assert env["GOENV"] == "off"
+    assert env["GOPROXY"] == "https://proxy.golang.org,direct"
+    assert env["GOSUMDB"] == "sum.golang.org"
+    assert env["PATH"] == "/usr/bin:/bin"
+    assert set(env).issubset(_SAFE_SUBPROCESS_ENV_KEYS | {"GOENV", "GOPROXY", "GOSUMDB"})

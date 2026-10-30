@@ -37,6 +37,7 @@ when the extras are missing.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -52,8 +53,16 @@ _T = TypeVar("_T")
 
 logger = logging.getLogger(__name__)
 
-# Metadata filter keys are interpolated into SQL, so they must be plain identifiers.
+# Metadata filter keys and collection names are interpolated into SQL, so they must be plain identifiers.
 _METADATA_KEY = re.compile(r"[A-Za-z_]\w*", re.ASCII)
+_COLLECTION_NAME = re.compile(r"[A-Za-z_]\w{0,60}", re.ASCII)
+
+
+def _validate_collection_name(collection_name: str) -> str:
+    """Reject collection names that are not plain ASCII SQL identifiers."""
+    if not _COLLECTION_NAME.fullmatch(collection_name):
+        raise ValueError(f"Invalid collection name: {collection_name!r}")
+    return collection_name
 
 # Reciprocal rank fusion constant (Cormack et al. 2009); 60 is the conventional value.
 _RRF_K = 60
@@ -244,6 +253,7 @@ async def _ensure_table(collection_name: str):
     search, and raises ``ConfigurationError`` when an existing table's vector column
     does not match ``settings.embedding_dim`` (the operator must re-seed).
     """
+    _validate_collection_name(collection_name)
     if collection_name in _initialized_tables:
         return
     dim = int(settings.embedding_dim)
@@ -373,6 +383,7 @@ class VectorDBManager:
         metadatas: list[dict],
         ids: list[str],
     ):
+        _validate_collection_name(collection_name)
         try:
             _require_vector_deps()
             await _ensure_table(collection_name)
@@ -425,6 +436,7 @@ class VectorDBManager:
         project: str | None = None,
         filters: dict[str, str | None] | None = None,
     ) -> list[str]:
+        _validate_collection_name(collection_name)
         # `project` is the long-standing filter; `filters` adds any other metadata equality filters.
         conditions: dict[str, str | None] = dict(filters or {})
         if project:
@@ -515,15 +527,23 @@ class VectorDBManager:
                 "vector_db.ingest_url requires extra dependencies. Install with:  pip install pydantic-agents[ingest]"
             ) from exc
         else:
+            from pydantic_agents.core.tools.web_fetch import validate_public_http_url
+
+            err = validate_public_http_url(url)
+            if err:
+                raise ValueError(err)
             _require_vector_deps()
-            loader = WebBaseLoader(url)
+            loader = WebBaseLoader(url, requests_kwargs={"timeout": 15, "allow_redirects": False})
             docs = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
             texts = [d.page_content for d in splits]
             metas = [{"source": url} for _ in splits]
-            ids = [f"url_{id(s)}" for s in splits]
+            ids = [
+                f"url_{hashlib.sha256(f'{url}:{i}:{s.page_content}'.encode()).hexdigest()[:16]}"
+                for i, s in enumerate(splits)
+            ]
 
             self._run_sync(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from {url}"
@@ -546,7 +566,10 @@ class VectorDBManager:
 
             texts = [d.page_content for d in splits]
             metas = [{"source": file_path} for _ in splits]
-            ids = [f"pdf_{id(s)}" for s in splits]
+            ids = [
+                f"pdf_{hashlib.sha256(f'{file_path}:{i}:{s.page_content}'.encode()).hexdigest()[:16]}"
+                for i, s in enumerate(splits)
+            ]
 
             self._run_sync(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from PDF."
@@ -561,15 +584,23 @@ class VectorDBManager:
                 "Install with:  pip install pydantic-agents[ingest]"
             ) from exc
         else:
+            from pydantic_agents.core.tools.web_fetch import validate_public_http_url
+
+            err = validate_public_http_url(url)
+            if err:
+                raise ValueError(err)
             _require_vector_deps()
-            loader = WebBaseLoader(url)
+            loader = WebBaseLoader(url, requests_kwargs={"timeout": 15, "allow_redirects": False})
             docs = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
             splits = text_splitter.split_documents(docs)
 
             texts = [d.page_content for d in splits]
             metas = [{"source": url} for _ in splits]
-            ids = [f"url_{id(s)}" for s in splits]
+            ids = [
+                f"url_{hashlib.sha256(f'{url}:{i}:{s.page_content}'.encode()).hexdigest()[:16]}"
+                for i, s in enumerate(splits)
+            ]
 
             await _bridge(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from {url}"
@@ -592,7 +623,10 @@ class VectorDBManager:
 
             texts = [d.page_content for d in splits]
             metas = [{"source": file_path} for _ in splits]
-            ids = [f"pdf_{id(s)}" for s in splits]
+            ids = [
+                f"pdf_{hashlib.sha256(f'{file_path}:{i}:{s.page_content}'.encode()).hexdigest()[:16]}"
+                for i, s in enumerate(splits)
+            ]
 
             await _bridge(self._add_documents(collection_name, texts, metas, ids))
             return f"Ingested {len(splits)} chunks from PDF."

@@ -81,10 +81,11 @@ class MergeStage(StageRunner):
     ) -> None:
         """Write one artifact file into the project, backing up a different existing file first."""
         clean_path = _clean_artifact_path(filepath)
-        dest = (target_root / subdir / clean_path).resolve()
+        target_root_resolved = target_root.resolve()
+        dest = (target_root_resolved / subdir / clean_path).resolve()
 
         # Safety: never write outside target root
-        if not dest.is_relative_to(target_root.resolve()):
+        if not dest.is_relative_to(target_root_resolved):
             self.result.errors.append(f"Path escape blocked: {clean_path} → {dest}")
             return
 
@@ -92,7 +93,7 @@ class MergeStage(StageRunner):
             if dest.read_text(encoding="utf-8", errors="replace").strip() == content.strip():
                 self.result.files_skipped += 1  # content identical — skip writing
                 return
-            backup_path = backup_dir / dest.relative_to(target_root)
+            backup_path = backup_dir / dest.relative_to(target_root_resolved)
             backup_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(str(dest), str(backup_path))
             self.result.backups_created += 1
@@ -100,7 +101,7 @@ class MergeStage(StageRunner):
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
         self.result.files_written += 1
-        logger.info(f"  Merged: {dest.relative_to(target_root)}")
+        logger.info(f"  Merged: {dest.relative_to(target_root_resolved)}")
         _store_merged_context(agent, clean_path, content, project)
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:

@@ -94,6 +94,13 @@ def test_reregistering_the_same_function_is_allowed():
         ("backend", {"validate_frontend_code", "execute_test_suite"}),
         ("sre", {"run_go_build", "run_go_vet", "execute_test_suite"}),
         ("test_eng", {"validate_frontend_code"}),
+        ("review", {"update_documentation", "read_and_memorize_url", "read_and_memorize_pdf"}),
+        ("cto", {"update_documentation", "read_and_memorize_url", "read_and_memorize_pdf"}),
+        ("product_strategist", {"read_and_memorize_url", "read_and_memorize_pdf", "update_documentation"}),
+        ("observer", {"read_and_memorize_url", "read_and_memorize_pdf", "update_documentation"}),
+        ("weather", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
+        ("accountant", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
+        ("holiday_planner", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
     ],
 )
 def test_tool_sets_are_trimmed(agent, absent):

@@ -36,7 +36,7 @@ class TestLangGraphNodes:
         from pydantic_agents.core.pipeline.langgraph.nodes import ba_node
 
         with patch("pydantic_agents.core.pipeline.langgraph.nodes.recorder") as mock_rec:
-            mock_rec.record_span.return_value.__aenter__.return_value = AsyncMock()
+            mock_rec.record_span.return_value.__aenter__.return_value = MagicMock()
             result = await ba_node(state, config, mock_provider)
         assert isinstance(result, dict)
         assert result["stage"] == "ba"
@@ -46,7 +46,7 @@ class TestLangGraphNodes:
         from pydantic_agents.core.pipeline.langgraph.nodes import merge_node
 
         with patch("pydantic_agents.core.pipeline.langgraph.nodes.recorder") as mock_rec:
-            mock_rec.record_span.return_value.__aenter__.return_value = AsyncMock()
+            mock_rec.record_span.return_value.__aenter__.return_value = MagicMock()
             result = await merge_node(state, config)
         assert isinstance(result, dict)
         assert "stage" in result
@@ -65,7 +65,7 @@ class TestLangGraphNodes:
         from pydantic_agents.core.pipeline.langgraph.nodes import quality_gate_node
 
         with patch("pydantic_agents.core.pipeline.langgraph.nodes.recorder") as mock_rec:
-            mock_rec.record_span.return_value.__aenter__.return_value = AsyncMock()
+            mock_rec.record_span.return_value.__aenter__.return_value = MagicMock()
             result = await quality_gate_node(state, config, mock_provider)
         assert isinstance(result, dict)
         assert "approved" in result
@@ -75,7 +75,7 @@ class TestLangGraphNodes:
         from pydantic_agents.core.pipeline.langgraph.nodes import implementation_node
 
         with patch("pydantic_agents.core.pipeline.langgraph.nodes.recorder") as mock_rec:
-            mock_rec.record_span.return_value.__aenter__.return_value = AsyncMock()
+            mock_rec.record_span.return_value.__aenter__.return_value = MagicMock()
             result = await implementation_node(state, config, mock_provider)
         assert result.get("refinement_attempts") == 1
 
@@ -84,7 +84,7 @@ class TestLangGraphNodes:
         from pydantic_agents.core.pipeline.langgraph.nodes import advisory_node
 
         with patch("pydantic_agents.core.pipeline.langgraph.nodes.recorder") as mock_rec:
-            mock_rec.record_span.return_value.__aenter__.return_value = AsyncMock()
+            mock_rec.record_span.return_value.__aenter__.return_value = MagicMock()
             result = await advisory_node(state, config, mock_provider)
         assert isinstance(result, dict)
         assert "cto_approved" in result

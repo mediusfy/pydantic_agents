@@ -27,7 +27,19 @@ def validate_api_keys() -> list[str]:
     errors: list[str] = []
 
     if settings.model_provider == "litellm":
-        litellm_key = os.environ.get("LITELLM_VIRTUAL_KEY") or os.environ.get("LITELLM_MASTER_KEY")
+        litellm_key = next(
+            (
+                v
+                for v in (
+                    os.environ.get("LITELLM_VIRTUAL_KEY"),
+                    os.environ.get("LITELLM_MASTER_KEY"),
+                    getattr(settings, "litellm_virtual_key", None),
+                    getattr(settings, "litellm_master_key", None),
+                )
+                if isinstance(v, str) and v
+            ),
+            None,
+        )
         if not litellm_key or _is_placeholder(litellm_key):
             errors.append("Model provider is 'litellm' but LITELLM_VIRTUAL_KEY or LITELLM_MASTER_KEY is not set.")
         return errors
@@ -36,15 +48,19 @@ def validate_api_keys() -> list[str]:
         "OPENAI_API_KEY": settings.openai_api_key,
         "ANTHROPIC_API_KEY": settings.anthropic_api_key,
         "GEMINI_API_KEY": settings.gemini_api_key,
+        "DEEPSEEK_API_KEY": settings.deepseek_api_key,
     }
     configured = []
     for name, value in keys.items():
-        if value and not _is_placeholder(value):
+        if isinstance(value, str) and value and not _is_placeholder(value):
             configured.append(name)
-        elif _is_placeholder(value):
+        elif isinstance(value, str) and _is_placeholder(value):
             errors.append(f"{name} appears to be a placeholder value. Set a real key in .env")
     if not configured:
-        errors.append("No API keys configured. Set at least one of: OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY")
+        errors.append(
+            "No API keys configured. Set at least one of: "
+            "OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, DEEPSEEK_API_KEY"
+        )
     return errors
 
 

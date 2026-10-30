@@ -30,6 +30,11 @@ def register_all_agents() -> None:
     # Either we never registered, or a test cleared the registry — reset.
     _registered = False
 
+    # Fail at startup (and in `make smoke` / CI), not mid-pipeline, if pydantic_ai changed how agents store tools.
+    from pydantic_agents.core.pydantic_ai_compat import check_pydantic_ai_compatibility
+
+    check_pydantic_ai_compatibility()
+
     _register_sdlc_agents()
     _register_utility_agents()
     _register_platform_intelligence_agents()
@@ -41,11 +46,11 @@ def _register_sdlc_agents() -> None:
     """Register all technical SDLC pipeline agents."""
     from pydantic_agents.agents.api_contract import api_contract_agent
     from pydantic_agents.agents.ba import ba_agent
-    from pydantic_agents.agents.backend import backend_agent
+    from pydantic_agents.agents.backend import backend_agent, default_project_state
     from pydantic_agents.agents.critic import critic_agent
-    from pydantic_agents.agents.cto import cto_agent
-    from pydantic_agents.agents.database import database_agent
-    from pydantic_agents.agents.devops import devops_agent
+    from pydantic_agents.agents.cto import cto_agent, default_org_context
+    from pydantic_agents.agents.database import DatabaseDeps, database_agent
+    from pydantic_agents.agents.devops import DevopsDeps, devops_agent
     from pydantic_agents.agents.docs import docs_agent
     from pydantic_agents.agents.finops import finops_agent
     from pydantic_agents.agents.frontend import component_gen, frontend_agent
@@ -54,27 +59,28 @@ def _register_sdlc_agents() -> None:
     from pydantic_agents.agents.qa_executor import qa_executor_agent
     from pydantic_agents.agents.quality_gate import quality_gate_agent
     from pydantic_agents.agents.release_manager import release_manager_agent
-    from pydantic_agents.agents.review import review_agent
-    from pydantic_agents.agents.security import security_agent
+    from pydantic_agents.agents.review import ReviewCriteria, review_agent
+    from pydantic_agents.agents.security import SecurityDeps, security_agent
     from pydantic_agents.agents.service_engineer import service_engineer_agent
     from pydantic_agents.agents.sre import sre_agent
     from pydantic_agents.agents.test_eng import go_test_gen, test_eng_agent, test_gen
     from pydantic_agents.agents.ux import ux_agent
 
     registry.register("ba", ba_agent, ["ba", "requirements"])
-    registry.register("cto", cto_agent, ["cto", "architecture", "advisory"])
-    registry.register("backend", backend_agent, ["backend", "implementation.backend"])
+    # Default deps for calls that pass none; documented, settings-driven placeholders (see default_org_context).
+    registry.register("cto", cto_agent, ["cto", "architecture", "advisory"], default_org_context)
+    registry.register("backend", backend_agent, ["backend", "implementation.backend"], default_project_state)
     registry.register("frontend", frontend_agent, ["frontend", "implementation.frontend"])
     registry.register("frontend_component", component_gen, ["frontend_component"])
-    registry.register("database", database_agent, ["database", "db_schema", "migrations"])
-    registry.register("devops", devops_agent, ["devops", "ci_cd", "deployment"])
+    registry.register("database", database_agent, ["database", "db_schema", "migrations"], lambda: DatabaseDeps())
+    registry.register("devops", devops_agent, ["devops", "ci_cd", "deployment"], lambda: DevopsDeps())
     registry.register("docs", docs_agent, ["docs", "documentation"])
     registry.register("sre", sre_agent, ["sre", "infrastructure"])
     registry.register("test_eng", test_eng_agent, ["test", "testing"])
     registry.register("test_gen", test_gen, ["test_gen", "test_generation"])
     registry.register("go_test", go_test_gen, ["go_test", "go_testing"])
-    registry.register("review", review_agent, ["review", "code_review"])
-    registry.register("security", security_agent, ["security", "audit"])
+    registry.register("review", review_agent, ["review", "code_review"], lambda: ReviewCriteria())
+    registry.register("security", security_agent, ["security", "audit"], lambda: SecurityDeps())
     registry.register("ux", ux_agent, ["ux", "design"])
     registry.register("qa_executor", qa_executor_agent, ["qa_executor", "test_execution"])
     registry.register("quality_gate", quality_gate_agent, ["quality_gate"])
@@ -99,7 +105,7 @@ def _register_platform_intelligence_agents() -> None:
     registry.register("observer", observer_agent, ["observer", "platform_observability"])
     registry.register("sre_autopilot", sre_autopilot_agent, ["sre_autopilot", "platform_health"])
     registry.register("innovation_scout", innovation_scout_agent, ["innovation_scout", "platform_intelligence"])
-    registry.register("product_strategist", product_strategist_agent, ["product_strategist", "platform_intelligence"])
+    registry.register("product_strategist", product_strategist_agent, ["product_strategist", "product_strategy"])
 
 
 def _register_utility_agents() -> None:

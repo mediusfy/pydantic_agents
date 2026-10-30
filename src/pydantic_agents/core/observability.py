@@ -75,7 +75,10 @@ def _instrument() -> None:
     # The instrumentation that matters most: per-model-call spans (with token usage), per-tool-call spans, and
     # parent/child structure under the manually opened mcp.* / pipeline.* / agent.run spans.
     with contextlib.suppress(AttributeError, ModuleNotFoundError):
-        logfire.instrument_pydantic_ai()
+        try:
+            logfire.instrument_pydantic_ai(include_content=False)
+        except TypeError:
+            logfire.instrument_pydantic_ai()
 
 
 def configure_observability() -> None:

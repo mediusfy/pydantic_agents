@@ -105,3 +105,8 @@ def test_every_registered_agent_has_the_tools_its_categories_grant():
         attached = set(registry.get(name)._function_toolset.tools)
         # Agents may add tools of their own, but never lack a granted one.
         assert granted <= attached, f"{name} is missing granted tools: {sorted(granted - attached)}"
+
+
+def test_every_capability_has_a_single_owner():
+    collisions = {cap: owners for cap, owners in registry.capabilities() if len(owners) > 1}
+    assert collisions == {}, f"capabilities claimed by more than one agent: {collisions}"

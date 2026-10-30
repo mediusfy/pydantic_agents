@@ -3,12 +3,9 @@ import uuid
 import pytest
 
 from pydantic_agents.core.adapters.state_repository import LocalDiskStateRepository, build_state_repository
+from pydantic_agents.core.adapters.turso_state_repository import TursoStateRepository
 from pydantic_agents.core.checkpoint import CheckpointManager
 from pydantic_agents.core.models.core import PipelineState
-
-turso = pytest.importorskip("turso")
-
-from pydantic_agents.core.adapters.turso_state_repository import TursoStateRepository  # noqa: E402
 
 BACKENDS = ["disk", "turso"]
 
@@ -20,6 +17,7 @@ def make_repo(tmp_path, monkeypatch):
 
     def _make(backend: str, project: str = "proj"):
         if backend == "turso":
+            pytest.importorskip("turso")
             return TursoStateRepository(project)
         return LocalDiskStateRepository(project)
 
@@ -128,15 +126,27 @@ def test_turso_state_survives_reopen(make_repo):
     [("disk", LocalDiskStateRepository), ("turso", TursoStateRepository)],
 )
 def test_build_state_repository_selects_backend(make_repo, monkeypatch, backend, expected_type):
+    if backend == "turso":
+        pytest.importorskip("turso")
     make_repo("disk")  # applies checkpoint_dir patches
     monkeypatch.setattr("pydantic_agents.core.adapters.state_repository.settings.state_backend", backend)
     assert isinstance(build_state_repository("proj"), expected_type)
 
 
-def test_checkpoint_manager_works_with_turso(make_repo):
-    mgr = CheckpointManager(repository=make_repo("turso"), run_id="run1")
+@pytest.mark.parametrize("backend", BACKENDS)
+def test_checkpoint_manager_works_with_repository(make_repo, backend):
+    mgr = CheckpointManager(repository=make_repo(backend), run_id="run1")
     mgr.save("s", _state("run1"))
     assert mgr.stage_exists("s")
     assert mgr.load("s") is not None
     mgr.clear()
     assert not mgr.stage_exists("s")
+
+
+def test_disk_clear_only_removes_matching_run_id_prefix_with_double_underscore(make_repo):
+    repo = make_repo("disk")
+    repo.save("run1", "a", _state("run1"))
+    repo.save("run10", "a", _state("run10"))
+    repo.clear("run1")
+    assert not repo.exists("run1", "a")
+    assert repo.exists("run10", "a")

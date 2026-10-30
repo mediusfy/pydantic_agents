@@ -147,3 +147,132 @@ def test_an_sdlc_result_without_chat_history_only_records_the_conversation(apply
 
     assert state.advisory_results["conversation"] == "s"
     assert state.artifacts == []
+
+
+def test_autogen_llm_config_resolves_lazy_model_and_litellm_proxy(monkeypatch):
+    from pydantic_ai import Agent
+
+    from pydantic_agents.core.adapters.autogen_bridge import _build_llm_config
+    from pydantic_agents.core.models.factory import create_model
+    from pydantic_agents.core.settings import settings
+
+    monkeypatch.setenv("MODEL_PROVIDER", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm.test:4000")
+    monkeypatch.setenv("LITELLM_VIRTUAL_KEY", "sk-test-virtual")
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setattr(settings, "model_provider", "litellm")
+
+    agent = Agent(create_model("openai:deepseek-v4-pro"), system_prompt="hi", defer_model_check=True)
+    (cfg,) = _build_llm_config(agent)
+
+    assert cfg["model"] == "deepseek-v4-pro"
+    assert cfg["base_url"] == "http://litellm.test:4000/v1"
+    assert cfg["api_key"] == "sk-test-virtual"
+    assert cfg["api_type"] == "openai"
+
+
+async def test_autogen_tool_bridging_extracts_values_skips_runcontext_and_awaits_async():
+    import asyncio
+
+    from pydantic_ai import Agent, RunContext
+
+    from pydantic_agents.core.adapters.autogen_bridge import _register_tool_functions
+
+    agent = Agent("test", system_prompt="tool tester", defer_model_check=True)
+
+    def sync_tool(x: int) -> int:
+        return x + 1
+
+    async def async_tool(x: int) -> int:
+        await asyncio.sleep(0)
+        return x * 2
+
+    def ctx_tool(ctx: RunContext[None], x: int) -> int:
+        return x
+
+    agent.tool_plain(sync_tool)
+    agent.tool_plain(async_tool)
+    agent.tool(ctx_tool)
+
+    fns = _register_tool_functions(agent)
+
+    assert set(fns) == {"sync_tool", "async_tool"}
+    assert fns["sync_tool"](3) == 4
+    assert fns["async_tool"](5) == 10
+
+
+def test_manager_llm_config_uses_cto_litellm_connection(monkeypatch):
+    from pydantic_agents.agents.registration import register_all_agents
+    from pydantic_agents.core.settings import settings
+
+    register_all_agents()
+    monkeypatch.setenv("MODEL_PROVIDER", "litellm")
+    monkeypatch.setenv("LITELLM_BASE_URL", "http://litellm.test:4000")
+    monkeypatch.setenv("LITELLM_VIRTUAL_KEY", "sk-test-virtual")
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setattr(settings, "model_provider", "litellm")
+    monkeypatch.setitem(sys.modules, "autogen", MagicMock())
+    for name in _AUTOGEN_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    groups = importlib.import_module("pydantic_agents.core.pipeline.autogen.groups")
+    try:
+        (cfg,) = groups._get_manager_llm_config()["config_list"]
+        assert cfg["model"] == settings.cto_model
+        assert cfg["base_url"] == "http://litellm.test:4000/v1"
+        assert cfg["api_key"] == "sk-test-virtual"
+    finally:
+        for name in _AUTOGEN_MODULES:
+            sys.modules.pop(name, None)
+
+
+def test_manager_llm_config_with_native_provider_omits_litellm_proxy(monkeypatch):
+    from pydantic_ai import Agent
+
+    from pydantic_agents.agents.registration import register_all_agents
+    from pydantic_agents.core.models.factory import create_model
+    from pydantic_agents.core.registry import registry
+    from pydantic_agents.core.settings import settings
+
+    register_all_agents()
+    monkeypatch.setenv("MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-native-openai")
+    monkeypatch.setattr(settings, "model_provider", "openai")
+    monkeypatch.setattr(settings, "openai_api_key", "sk-native-openai")
+    monkeypatch.setitem(sys.modules, "autogen", MagicMock())
+    for name in _AUTOGEN_MODULES:
+        monkeypatch.delitem(sys.modules, name, raising=False)
+
+    native_cto = Agent(create_model("openai:gpt-5.4"), system_prompt="cto", defer_model_check=True)
+    monkeypatch.setattr(registry, "get", lambda name: native_cto if name == "cto" else None)
+
+    groups = importlib.import_module("pydantic_agents.core.pipeline.autogen.groups")
+    try:
+        (cfg,) = groups._get_manager_llm_config()["config_list"]
+        assert cfg["model"] == "gpt-5.4"
+        assert cfg["api_type"] == "openai"
+        assert cfg["temperature"] == 0.1
+        assert cfg.get("base_url") == "https://api.openai.com/v1/"
+    finally:
+        for name in _AUTOGEN_MODULES:
+            sys.modules.pop(name, None)
+
+
+def test_build_llm_config_raises_configuration_error_when_litellm_key_missing_on_lazy_model(monkeypatch):
+    from pydantic_ai import Agent
+
+    from pydantic_agents.core.adapters.autogen_bridge import _build_llm_config
+    from pydantic_agents.core.exceptions import ConfigurationError
+    from pydantic_agents.core.models.factory import create_model
+    from pydantic_agents.core.settings import settings
+
+    monkeypatch.setenv("MODEL_PROVIDER", "litellm")
+    monkeypatch.delenv("LITELLM_VIRTUAL_KEY", raising=False)
+    monkeypatch.delenv("LITELLM_MASTER_KEY", raising=False)
+    monkeypatch.setattr(settings, "model_provider", "litellm")
+    monkeypatch.setattr(settings, "litellm_virtual_key", None)
+    monkeypatch.setattr(settings, "litellm_master_key", None)
+
+    agent = Agent(create_model("openai:deepseek-v4-pro"), system_prompt="hi", defer_model_check=True)
+    with pytest.raises(ConfigurationError, match="LITELLM_VIRTUAL_KEY"):
+        _build_llm_config(agent)

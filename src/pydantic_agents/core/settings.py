@@ -22,8 +22,14 @@ _NATIVE_MODEL_PREFIXES = {
     "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
     "gemini": ("gemini-",),
     "vertexai": ("gemini-",),
+    "deepseek": ("deepseek-chat", "deepseek-reasoner", "deepseek-coder"),
 }
-_PROVIDER_DEFAULT_MODELS = {"openai": "gpt-4o", "gemini": "gemini-2.0-flash", "vertexai": "gemini-2.0-flash"}
+_PROVIDER_DEFAULT_MODELS = {
+    "openai": "gpt-4o",
+    "gemini": "gemini-2.0-flash",
+    "vertexai": "gemini-2.0-flash",
+    "deepseek": "deepseek-chat",
+}
 
 
 @cache
@@ -50,6 +56,11 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
     deepseek_api_key: str | None = None
+    litellm_base_url: str | None = None
+    litellm_virtual_key: str | None = None
+    litellm_master_key: str | None = None
+    litellm_env: str = "local"
+    litellm_cloud_url: str = "https://litellm-proxy.run.app"
     logfire_token: str | None = None
     logfire_api_key: str | None = None
 
@@ -107,6 +118,9 @@ class Settings(BaseSettings):
     # Directories the MCP tool seed_project_context may read, separated by os.pathsep (":" on Linux/macOS). Empty means
     # only output_dir. scripts/seed_projects.py is not restricted: it seeds clones it made itself.
     seed_roots: str = ""
+    # Host and Origin header patterns accepted by the MCP server's DNS-rebinding middleware (comma-separated).
+    mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
+    mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     # QaCrew's bounded fix loop (KAN-487): go_test gets at most this many rounds to make a failing TestRunReport
     # pass before the review stage runs regardless; coverage below the floor fails the gate even if tests pass.
@@ -154,6 +168,20 @@ class Settings(BaseSettings):
     # Pinned tool versions for generated CI (the review agent rejects unpinned 'latest').
     golangci_lint_version: str = "v1.64.8"
     govulncheck_version: str = "v1.1.4"
+    # Module proxy and checksum DB for go builds/tests of generated code (core/utils.py::sanitized_subprocess_env).
+    # A trust boundary: no `direct`, so generated go.mod files can only pull public modules through this proxy.
+    # An air-gapped deployment points it at its public-module mirror, never at a proxy that serves private modules.
+    untrusted_goproxy: str = "https://proxy.golang.org"
+    untrusted_gosumdb: str = "sum.golang.org"
+
+    # Default deps for SDLC agents called without any (standalone MCP calls, delegation, evals). The CTO verifies
+    # architecture against these, so they are an organisation policy: the defaults are placeholders, set them per
+    # deployment. A pipeline that passes its own OrgContext / ProjectState is not affected.
+    org_tech_stack: str = "Go,Vue 3,PostgreSQL,NATS,gRPC"  # comma-separated
+    org_compliance_tier: str = "standard"
+    org_monthly_cloud_budget: float = 5000.0  # USD
+    org_environment: str = "development"
+    org_team_owner: str = "unassigned"
 
     # NOTE: The _FAST_TIER/_REASONER_TIER capability-tier frozensets that used
     # to live here were removed. They were never actually read by
@@ -191,6 +219,8 @@ class Settings(BaseSettings):
         - backend_model="gpt-4.1"  → "openai:gpt-4.1"
         """
         provider = self.model_provider
+        if provider == "test":
+            return "test"
         if provider == "litellm":
             # Route everything through LiteLLM's OpenAI-compatible proxy interface
             return f"openai:{model_name}"

@@ -9,20 +9,20 @@ The agents act on text from MCP callers, web pages and a vector store, and some 
 
 ## Filesystem and processes
 
-- Paths chosen by a model or a caller go through `safe_path_join` / `safe_write` (`core/utils.py`). `core/writer.py`, `tools/docs.py` and `tools/memory.py` do; `tools/fs_tools.py` (`read_file`, `write_file`, `list_dir`) takes raw paths and is attached to most SDLC agents, and the MCP tool `modify_existing_code` takes a caller-supplied path. `seed_project_context` is confined to `SEED_ROOTS` (default `OUTPUT_DIR`) and skips symlinks that leave the project; `scripts/seed_projects.py` calls the unrestricted `seed_project_files` on its own clones. Do not widen this; new file tools must be confined to a base directory.
-- `safe_path_join` compares resolved paths with a string prefix check; keep that in mind when choosing base directories.
-- Processes are started with argument lists (`asyncio.create_subprocess_exec`, `subprocess.run([...])`), never through a shell. Keep it that way and set a timeout.
-- `fetch_url` accepts only `http://` and `https://` but follows redirects and does not restrict hosts. Do not give it credentials or headers from the environment.
+- Paths chosen by a model or a caller go through `safe_path_join` / `safe_write` / `resolve_sandboxed` (`core/utils.py`). `core/writer.py`, `tools/fs_tools.py` (`read_file`, `write_file`, `list_dir`, split into `fs_read` and `fs_write` categories), `tools/docs.py` and `tools/memory.py` are all confined to `sandbox_root()`. `mcp_server.modify_existing_code` and `seed_project_context` are confined to `SEED_ROOTS` (default `OUTPUT_DIR`, plus `ORCHESTRATION_CODEBASE_ROOT` for `modify_existing_code`) and skip symlinks that leave the project; `scripts/seed_projects.py` calls `seed_project_files` on its own validated clones. Do not widen this; new file tools must be confined to a base directory.
+- `safe_path_join` checks containment with `Path.is_relative_to` on resolved paths.
+- Processes are started with argument lists (`asyncio.create_subprocess_exec`, `subprocess.run([...])`), never through a shell, with a timeout and `sanitized_subprocess_env()` for untrusted code/tests so credentials are not inherited.
+- `fetch_url` (`tools/web_fetch.py`) and `ingest_url` validate URLs with `validate_public_http_url` (blocking loopback, RFC1918, link-local/cloud metadata, and internal hostnames on both the initial request and any redirect hop) and cap response size. Do not give them credentials or headers from the environment.
 
 ## MCP server
 
-- DNS rebinding protection is on unless `MCP_DNS_REBINDING_PROTECTION` is set to something other than `1`.
-- Every agent run is capped at `UsageLimits(request_limit=500)`.
+- DNS rebinding protection is on unless `MCP_DNS_REBINDING_PROTECTION` is set to something other than `1`, with allowed `Host`/`Origin` patterns configured via `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS`.
+- Every agent run is capped by `usage_limits(agent_name)` (`request_limit=40`, `60` for `backend`, `frontend` and `service_engineer`, `total_tokens_limit=2_000_000`).
 
 ## Model routing and keys
 
 - Keys come from settings or the environment: `LITELLM_VIRTUAL_KEY` / `LITELLM_MASTER_KEY` for the proxy, or direct provider keys. `.env` is gitignored; `.env.example` holds empty placeholders only.
-- With `MODEL_PROVIDER=litellm` and no proxy key, `create_model` falls back to the raw model spec, so pydantic_ai may use whatever provider key is in the environment and bypass the proxy. Do not rely on that path, and prefer failing loudly when changing it.
+- With `MODEL_PROVIDER=litellm` and no proxy key, `create_model` raises `ConfigurationError` on first model use instead of falling back to direct provider calls.
 
 ## Workflows
 

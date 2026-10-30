@@ -19,6 +19,7 @@ from typing import Any
 from pydantic_ai import Agent as PydanticAgent
 
 from pydantic_agents.core.models.factory import _litellm_connection
+from pydantic_agents.core.pydantic_ai_compat import agent_tools
 from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
@@ -75,9 +76,7 @@ def _extract_backstory(agent: PydanticAgent) -> str:
 def _extract_tool_defs(agent: PydanticAgent) -> list[Any]:
     """Bridge every function tool of a pydantic_ai Agent that CrewAI can call."""
     tools: list[Any] = []
-    toolset = getattr(agent, "_function_toolset", None)
-    tool_map = getattr(toolset, "tools", None) or {}
-    for tool in tool_map.values():
+    for tool in agent_tools(agent):
         try:
             crew_tool = _pydantic_tool_to_crewai(tool)
         except Exception as exc:

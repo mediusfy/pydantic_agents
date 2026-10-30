@@ -6,7 +6,7 @@ from pydantic_ai import RunContext
 
 from pydantic_agents.core.exceptions import PathTraversalError
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import safe_path_join
+from pydantic_agents.core.utils import safe_path_join, sandbox_root
 
 _DOC_MODES = ("append", "overwrite")
 
@@ -25,7 +25,7 @@ async def update_documentation(ctx: RunContext, file_path: str, content: str, mo
     """Updates project documentation. Use this to proactively document decisions or implementation details."""
     if mode not in _DOC_MODES:
         return f"Error: mode must be one of {', '.join(_DOC_MODES)}, got {mode!r}"
-    base_docs_dir = os.path.realpath("docs")
+    base_docs_dir = sandbox_root() / "docs"
     safe_file = file_path.lstrip("/")
     try:
         full_path = safe_path_join(base_docs_dir, safe_file)

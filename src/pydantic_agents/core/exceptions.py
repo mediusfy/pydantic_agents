@@ -60,3 +60,7 @@ class PathTraversalError(OrgitrationError):
 
 class OrgitrationDependencyError(ImportError):
     """Raised when an optional dependency required by a runtime path is missing."""
+
+
+class PydanticAICompatibilityError(ConfigurationError):
+    """The installed pydantic_ai no longer exposes agent tools the way ``core/pydantic_ai_compat.py`` reads them."""

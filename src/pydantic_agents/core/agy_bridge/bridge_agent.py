@@ -16,6 +16,7 @@ Usage:
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 import time
 from collections.abc import Awaitable, Callable
@@ -113,11 +114,13 @@ class BridgeAgent:
         name: str,
         model: str = "",
     ) -> None:
+        from pydantic_agents.core.agy_bridge.hooks import get_hooks
+
         self._name = name
         self._model = model or settings.resolve_model(settings.ba_model)
         self._agent = None
         self._deps_factory = None
-        self._hooks = Hooks()
+        self._hooks = get_hooks(name) or Hooks()
         self._tools_wrapped = False
 
         try:
@@ -141,12 +144,22 @@ class BridgeAgent:
                 self._deps_factory = agent_tuple[2]
             self._wrap_tools()
 
+    @staticmethod
+    def _iter_agent_tools(agent: Any) -> list[Any]:
+        """Tool objects attached to ``agent``; raises if a real pydantic_ai Agent changed its tool storage."""
+        from pydantic_agents.core.pydantic_ai_compat import agent_tools
+
+        return agent_tools(agent)
+
     def _wrap_tools(self):
         """Intercepts internal pydantic_ai tool calls to trigger hooks."""
-        if self._tools_wrapped or not self._agent or not hasattr(self._agent, "_function_tools"):
+        if self._tools_wrapped or not self._agent:
+            return
+        tools = self._iter_agent_tools(self._agent)
+        if not tools:
             return
 
-        for tool in self._agent._function_tools:
+        for tool in tools:
             self._hook_tool(tool)
 
         self._tools_wrapped = True
@@ -160,8 +173,11 @@ class BridgeAgent:
         return None
 
     def _hook_tool(self, tool) -> None:
-        """Replace ``tool.func`` with a version that runs the pre- and post-tool-call hooks around the original."""
-        original_func = tool.func
+        """Replace ``tool.function`` (or legacy ``tool.func``) with a version that runs pre/post tool hooks."""
+        attr = "function" if callable(getattr(tool, "function", None)) else "func"
+        original_func = getattr(tool, attr, None)
+        if not callable(original_func):
+            return
 
         async def hooked_tool(run_context, *args, **kwargs):
             payload = {"tool": tool.name, "args": args, "kwargs": kwargs}
@@ -170,10 +186,12 @@ class BridgeAgent:
             if blocked is not None:
                 return blocked
             try:
-                tool_result = await original_func(run_context, *args, **kwargs)
+                res = original_func(run_context, *args, **kwargs)
+                tool_result = await res if inspect.isawaitable(res) else res
             except TypeError:
                 # Fallback if the tool doesn't expect run_context
-                tool_result = await original_func(*args, **kwargs)
+                res = original_func(*args, **kwargs)
+                tool_result = await res if inspect.isawaitable(res) else res
 
             payload["result"] = tool_result
             for hook in self._hooks.post_tool_call:
@@ -181,7 +199,9 @@ class BridgeAgent:
 
             return tool_result
 
-        tool.func = hooked_tool
+        setattr(tool, attr, hooked_tool)
+        if hasattr(tool, "_is_async"):
+            tool._is_async = True
 
     @property
     def hooks(self) -> Hooks:
@@ -223,9 +243,7 @@ class BridgeAgent:
 
     def get_tool_names(self) -> list[str]:
         self._resolve()
-        if self._agent and hasattr(self._agent, "_function_tools"):
-            return [t.name for t in self._agent._function_tools]
-        return []
+        return [t.name for t in self._iter_agent_tools(self._agent) if hasattr(t, "name")]
 
     def get_definition(self) -> dict[str, Any]:
         self._resolve()

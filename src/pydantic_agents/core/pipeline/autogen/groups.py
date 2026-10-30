@@ -3,33 +3,14 @@ from typing import Any
 
 from autogen import GroupChat, GroupChatManager, UserProxyAgent
 
-from pydantic_agents.core.adapters.autogen_bridge import as_autogen_assistant
+from pydantic_agents.core.adapters.autogen_bridge import _build_llm_config, as_autogen_assistant
 from pydantic_agents.core.registry import registry
 
 logger = logging.getLogger(__name__)
 
 
 def _get_manager_llm_config() -> dict[str, Any]:
-
-    from pydantic_ai.models.openai import OpenAIChatModel
-
-    from pydantic_agents.core.models.factory import create_model
-    from pydantic_agents.core.settings import settings
-
-    model_spec = settings.resolve_model(settings.cto_model)
-    real_model = model_spec.partition(":")[2] if ":" in model_spec else model_spec
-    m = create_model(model_spec)
-
-    config: dict[str, Any] = {"model": real_model, "temperature": 0.1, "api_type": "openai"}
-    provider = getattr(m, "provider", getattr(m, "_provider", None))
-    if isinstance(m, OpenAIChatModel) and provider:
-        base_url = getattr(provider, "base_url", None)
-        if base_url:
-            config["base_url"] = str(base_url)
-        api_key = getattr(provider, "api_key", None)
-        if api_key:
-            config["api_key"] = api_key
-    return {"config_list": [config]}
+    return {"config_list": _build_llm_config(registry.get("cto"))}
 
 
 class SdlcGroupChat:

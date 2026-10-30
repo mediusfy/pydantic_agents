@@ -17,13 +17,14 @@ PATTERNS = [
     ("github_old_token", r"github_pat_[0-9a-zA-Z]{22,}", "critical"),
     ("private_key", r"-----BEGIN\s?(?:RSA|DSA|EC|OPENSSH|PGP)?\s?PRIVATE KEY-----", "critical"),
     # General API & Tokens ---
+    ("llm_api_key", r"\bsk-(?:proj-|ant-|live-|test-)?[0-9a-zA-Z_\-]{20,}", "critical"),
     (
         "api_key_generic",
-        r"(?i)(api[_-]?key|apikey|secret[_-]?key|app[_-]?secret)[:=]\s*['\"][0-9a-zA-Z_\-]{16,}['\"]",
+        r"(?i)(?:api[_-]?key|apikey|secret[_-]?key|app[_-]?secret|client[_-]?secret|access[_-]?token|auth[_-]?token)\s*[:=]\s*['\"]?[0-9a-zA-Z_\-\.]{16,}['\"]?",
         "high",
     ),
     ("bearer_token", r"(?i)bearer\s+[0-9a-zA-Z\-_\.]{20,}", "high"),
-    ("password_in_code", r"(?i)(password|passwd|pwd)[:=]\s*['\"][^'\"]{6,}['\"]", "high"),
+    ("password_in_code", r"(?i)(?:password|passwd|pwd)\s*[:=]\s*['\"][^'\"]{6,}['\"]", "high"),
     ("jwt_token", r"eyJ[0-9a-zA-Z\-_]+\.eyJ[0-9a-zA-Z\-_]+\.[0-9a-zA-Z\-_]+", "medium"),
     ("npm_token", r"npm_[a-z0-9A-Z]{36}", "high"),
     # Communications & SaaS
@@ -42,10 +43,15 @@ PATTERNS = [
     ("stripe_key", r"(?:sk|rk)_(?:test|live)_[0-9a-zA-Z]{24}", "critical"),
     ("square_access_token", r"sqOatp-[0-9A-Za-z\-_]{22}", "high"),
     # Databases
-    ("pg_connection_string", r"postgres(ql)?://[^:]+:[^@]+@\w+:\d+/\w+", "critical"),
-    ("redis_connection_string", r"redis://:[^@]+@\w+:\d+", "critical"),
-    ("mongodb_connection_string", r"mongodb(\+srv)?://[^:]+:[^@]+@[\w\.-]+/\w+", "critical"),
+    ("pg_connection_string", r"postgres(?:ql)?://[^:\s]+:[^\s]+@[\w\.\-]+(?::\d+)?/[\w\.\-]+", "critical"),
+    ("redis_connection_string", r"rediss?://[^:\s]*:[^\s]+@[\w\.\-]+(?::\d+)?", "critical"),
+    ("mongodb_connection_string", r"mongodb(?:\+srv)?://[^:\s]+:[^\s]+@[\w\.\-]+(?::\d+)?(?:/[\w\.\-]*)?", "critical"),
 ]
+
+
+def _redact_line(line: str, pattern: str) -> str:
+    """Replace matched secret values on ``line`` with ``[REDACTED]`` so findings never echo raw credentials."""
+    return re.sub(pattern, "[REDACTED]", line.strip())[:120]
 
 
 def scan_for_secrets(ctx: RunContext[Any], content: str) -> list[dict]:
@@ -57,7 +63,7 @@ def scan_for_secrets(ctx: RunContext[Any], content: str) -> list[dict]:
                     {
                         "type": name,
                         "line": i,
-                        "snippet": line.strip()[:120],
+                        "snippet": _redact_line(line, pattern),
                         "severity": severity,
                     }
                 )
