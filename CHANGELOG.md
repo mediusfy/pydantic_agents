@@ -262,6 +262,11 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **CI `test` jobs hung after #75.** `VectorDBManager._search_domains` embedded the query before checking the database, so
+  a retrieval with no reachable database (every unit test, and CI) loaded or downloaded the local embedding model
+  instead of failing at the connection. It now ensures the tables first and returns the failure per collection, as
+  `_search` did. Found by reading the cancelled job (the `pytest` step never finished) and the order of the
+  calls; it passed locally only because the model is cached there.
 - `ArtifactWriter.write` (`core/writer.py`) now validates `artifact.agent_name` through `safe_path_join` and rejects
   multi-segment or empty names, preventing a model-chosen `agent_name` (`../...` or `/abs/...`) from writing outside
   `base_dir`.
