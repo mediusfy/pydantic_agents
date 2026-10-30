@@ -212,8 +212,8 @@ def _set_test_pool(pool: Any):
 
 
 def _dsn() -> str:
-    """Return the PostgreSQL connection string."""
-    return settings.database_url or os.environ.get("DATABASE_URL", "postgresql://localhost:5432/orchestration")
+    """Return the PostgreSQL connection string, or '' when unconfigured."""
+    return settings.database_url or os.environ.get("DATABASE_URL", "")
 
 
 async def _get_pool():
@@ -224,12 +224,18 @@ async def _get_pool():
     if _test_pool_override is not None:
         return _test_pool_override
 
+    dsn = _dsn()
+    if not dsn:
+        raise OrgitrationDependencyError("DATABASE_URL is not configured — pgvector store unavailable")
+
     import asyncpg
 
-    dsn = _dsn()
     if dsn not in _connection_pools:
-        _connection_pools[dsn] = await asyncpg.create_pool(dsn, min_size=1, max_size=5)
+        _connection_pools[dsn] = await asyncpg.create_pool(dsn, min_size=1, max_size=5, timeout=5)
     return _connection_pools[dsn]
+
+
+_DEFAULT_GET_POOL = _get_pool
 
 
 async def with_connection(fn: Callable[[Any], Awaitable[_T]]) -> _T:
@@ -547,6 +553,8 @@ class VectorDBManager:
     ) -> list[list[str] | BaseException]:
         """Search several collections for one query: it is embedded once, and the collections are queried
         concurrently. A collection that fails yields its exception in its slot instead of failing the others."""
+        if _test_pool_override is None and not _dsn() and _get_pool is _DEFAULT_GET_POOL:
+            return [[] for _ in collections]
         try:
             _require_vector_deps()
             (embedding,) = await _embed_texts([query])
