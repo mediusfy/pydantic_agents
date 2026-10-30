@@ -337,7 +337,6 @@ async def test_kill_and_reap_never_calls_killpg_on_a_magicmock_or_pid_1(monkeypa
     mock_proc.wait.assert_awaited_once()
 
 
-
 def test_rotating_a_log_keeps_only_the_newest_archives(tmp_path, monkeypatch):
     log = tmp_path / "telemetry.jsonl"
     for stamp in range(1, 8):

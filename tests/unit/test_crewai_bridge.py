@@ -856,4 +856,3 @@ def test_implementation_crew_builds_tasks_from_state(fake_crewai, litellm_env, r
     assert "US-001" in crew.tasks[0].description
     assert "use stdlib net/http" in crew.tasks[0].description
     assert "Add timeout on server" in crew.tasks[0].description
-

@@ -133,3 +133,61 @@ def test_no_backend_logs_a_warning(monkeypatch, caplog):
     records = [r for r in caplog.records if "telemetry disabled" in r.getMessage()]
     assert records
     assert all(r.levelname == "WARNING" for r in records)
+
+
+# --- instrumentation survives the installed Logfire's signatures ---------------------------------------------------
+
+
+def test_httpx_capture_kwargs_match_the_installed_logfire():
+    """The deployed pod failed with 'capture_request_headers has been removed' on Logfire 5.x: whatever is passed must
+    be a parameter the installed instrument_httpx declares."""
+    import inspect
+
+    import logfire
+
+    from pydantic_agents.core import observability
+
+    kwargs = observability._httpx_capture_kwargs(logfire.instrument_httpx)
+
+    declared = inspect.signature(logfire.instrument_httpx).parameters
+    assert kwargs  # headers and bodies are switched off explicitly
+    assert set(kwargs) <= set(declared)
+    assert not any(kwargs.values())
+    assert "capture_request_headers" not in kwargs
+
+
+def _logfire_5x(*, capture_headers=False, capture_request_body=False, capture_response_body=False):  # noqa: ARG001
+    """The shape of ``instrument_httpx`` in Logfire 5.x."""
+
+
+def _logfire_4x(*, capture_request_headers=False, capture_response_headers=False):  # noqa: ARG001
+    """The shape of ``instrument_httpx`` before the rename."""
+
+
+def _logfire_opaque(**kwargs):  # noqa: ARG001
+    """A signature that declares no capture parameter."""
+
+
+@pytest.mark.parametrize(("signature", "expected"), [(_logfire_5x, 3), (_logfire_4x, 2), (_logfire_opaque, 0)])
+def test_httpx_capture_kwargs_follow_whatever_the_version_declares(signature, expected):
+    from pydantic_agents.core import observability
+
+    assert len(observability._httpx_capture_kwargs(signature)) == expected
+
+
+def test_a_failing_httpx_instrumentation_does_not_skip_pydantic_ai(monkeypatch, caplog):
+    monkeypatch.setenv("LOGFIRE_TOKEN", "fake-token")
+    fake_logfire = MagicMock()
+    fake_logfire.instrument_httpx.side_effect = TypeError("the parameter has been removed")
+
+    with patch("pydantic_agents.core.observability.logfire", fake_logfire):
+        from pydantic_agents.core import observability
+
+        with caplog.at_level("WARNING", logger=observability.logger.name):
+            observability.configure_observability()
+
+    fake_logfire.instrument_pydantic_ai.assert_called_once()  # the per-model-call spans still get instrumented
+    assert observability.LOGFIRE_ENABLED is True  # exporters were configured before the failing step
+    assert "httpx" in observability.LOGFIRE_CONFIGURE_ERROR
+    assert "partly instrumented" in observability.LOGFIRE_CONFIGURE_ERROR
+    assert any("Could not instrument httpx" in r.getMessage() for r in caplog.records)

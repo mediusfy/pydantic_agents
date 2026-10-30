@@ -66,8 +66,7 @@ class DiskCheckpointSaver(MemorySaver):
         storage_out: dict[str, dict[str, Any]] = {}
         for ns, ns_map in self.storage.get(thread_id, {}).items():
             storage_out[ns] = {
-                cid: [_enc_typed(ckpt), _enc_typed(meta), parent_id]
-                for cid, (ckpt, meta, parent_id) in ns_map.items()
+                cid: [_enc_typed(ckpt), _enc_typed(meta), parent_id] for cid, (ckpt, meta, parent_id) in ns_map.items()
             }
         writes_out = [
             {

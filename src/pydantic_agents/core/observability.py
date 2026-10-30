@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import inspect
 import logging
 import os
+from typing import Any
 
 import logfire
 
@@ -83,25 +85,56 @@ def _langfuse_processor():
     return BatchSpanProcessor(OTLPSpanExporter(endpoint=endpoint, headers=headers))
 
 
-def _instrument() -> None:
-    """Instrument pydantic, httpx (bodies suppressed so generated code never leaves the host) and pydantic-ai."""
-    logfire.instrument_pydantic()
+# What the httpx instrumentation must not record: headers (they carry the LiteLLM key) and bodies (generated code).
+# Logfire renamed these parameters between releases (5.x has `capture_headers`; earlier ones had
+# `capture_request_headers` / `capture_response_headers`, and some lacked the body flags), and passing a name the
+# installed version does not have raises. So only the parameters the installed signature declares are passed.
+_HTTPX_CAPTURE_OFF = (
+    "capture_headers",
+    "capture_request_headers",
+    "capture_response_headers",
+    "capture_request_body",
+    "capture_response_body",
+)
+
+
+def _httpx_capture_kwargs(instrument_httpx: Any) -> dict[str, Any]:
+    """``capture_* = False`` for every capture parameter ``instrument_httpx`` declares."""
     try:
-        logfire.instrument_httpx(
-            capture_request_headers=False,
-            capture_response_headers=False,
-            capture_request_body=False,
-            capture_response_body=False,
-        )
-    except TypeError:  # older Logfire signatures lack the capture_*_body kwargs
-        logfire.instrument_httpx(capture_request_headers=False, capture_response_headers=False)
+        declared = inspect.signature(instrument_httpx).parameters
+    except (TypeError, ValueError):
+        return {}
+    return {name: False for name in _HTTPX_CAPTURE_OFF if name in declared}
+
+
+def _instrument() -> list[str]:
+    """Instrument pydantic, httpx (headers and bodies suppressed so generated code never leaves the host) and
+    pydantic-ai. Each step is independent: one that fails is reported in the returned list and does not stop the
+    others. (An httpx signature error used to abort the whole function, so pydantic-ai, the per-model-call spans
+    with token usage, was never instrumented.)"""
+    problems: list[str] = []
+
+    def attempt(name: str, step: Any) -> None:
+        try:
+            step()
+        except Exception as e:
+            logger.warning("Could not instrument %s: %s", name, e)
+            problems.append(f"{name}: {e}")
+
+    attempt("pydantic", logfire.instrument_pydantic)
+    attempt("httpx", lambda: logfire.instrument_httpx(**_httpx_capture_kwargs(logfire.instrument_httpx)))
+
     # The instrumentation that matters most: per-model-call spans (with token usage), per-tool-call spans, and
     # parent/child structure under the manually opened mcp.* / pipeline.* / agent.run spans.
-    with contextlib.suppress(AttributeError, ModuleNotFoundError):
-        try:
-            logfire.instrument_pydantic_ai(include_content=False)
-        except TypeError:
-            logfire.instrument_pydantic_ai()
+    def pydantic_ai() -> None:
+        with contextlib.suppress(AttributeError, ModuleNotFoundError):  # older Logfire: no such helper
+            try:
+                logfire.instrument_pydantic_ai(include_content=False)
+            except TypeError:
+                logfire.instrument_pydantic_ai()
+
+    attempt("pydantic-ai", pydantic_ai)
+    return problems
 
 
 def configure_observability() -> None:
@@ -139,14 +172,19 @@ def configure_observability() -> None:
             send_to_logfire=send_to_logfire,
             additional_span_processors=[langfuse_processor] if langfuse_processor else None,
         )
-        _instrument()
+        # The exporters are live once configure() returns, whatever the instrumentation below does.
         LOGFIRE_ENABLED = send_to_logfire
         LANGFUSE_ENABLED = langfuse_processor is not None
-        logger.info(
-            "Observability configured (logfire=%s, langfuse=%s) — pydantic-ai + pydantic + httpx instrumented",
-            LOGFIRE_ENABLED,
-            LANGFUSE_ENABLED,
-        )
+        problems = _instrument()
+        if problems:
+            LOGFIRE_CONFIGURE_ERROR = "Telemetry is only partly instrumented: " + "; ".join(problems)
+            logger.warning(LOGFIRE_CONFIGURE_ERROR)
+        else:
+            logger.info(
+                "Observability configured (logfire=%s, langfuse=%s) — pydantic-ai + pydantic + httpx instrumented",
+                LOGFIRE_ENABLED,
+                LANGFUSE_ENABLED,
+            )
     except Exception as e:
         LOGFIRE_CONFIGURE_ERROR = f"Logfire configuration failed: {e}"
         logger.warning(LOGFIRE_CONFIGURE_ERROR)
