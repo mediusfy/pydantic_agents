@@ -239,13 +239,6 @@ CREW_CASES = [
         id="security_review",
     ),
     pytest.param(
-        "QaCrew",
-        "sequential",
-        4,
-        ["ba/note", "test_eng/artifact", "test_eng/artifact", "review/verdict"],
-        id="qa",
-    ),
-    pytest.param(
         "ArchitectureReviewCrew",
         "hierarchical",
         5,
@@ -297,11 +290,39 @@ class TestCrews:
 
     def test_qa_tasks_require_criterion_ids(self, fake_crewai, litellm_env, registered_agents):
         crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+        from pydantic_agents.core.models.core import TestRunReport
 
-        crew = crews.QaCrew().build(_state())
+        qa = crews.QaCrew()
+        report = TestRunReport()
+        tests_crew = qa.build_tests(_state())
+        execution_crew = qa.build_execution("tests go here")
+        fix_crew = qa.build_fix("tests go here", report)
+        signoff_crew = qa.build_signoff("tests go here", report)
 
-        assert all("criterion id" in task.description for task in crew.tasks)
-        assert "approved" in crew.tasks[-1].expected_output
+        assert all("criterion id" in task.description for task in tests_crew.tasks)
+        assert "criterion id" in execution_crew.tasks[0].description
+        assert "criterion id" in fix_crew.tasks[0].description
+        assert "criterion id" in signoff_crew.tasks[0].description
+        assert "approved" in signoff_crew.tasks[0].expected_output
+
+    def test_qa_fix_names_only_the_failing_criteria(self, fake_crewai, litellm_env, registered_agents):
+        crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
+        from pydantic_agents.core.models.core import CriterionResult, TestRunReport
+
+        report = TestRunReport(
+            criterion_results=[
+                CriterionResult(criterion_id="ORDERS-01-AC-1", passed=True),
+                CriterionResult(criterion_id="ORDERS-01-AC-2", passed=False),
+            ],
+            unexecuted_criterion_ids=["ORDERS-01-AC-3"],
+        )
+
+        fix_crew = crews.QaCrew().build_fix("tests go here", report)
+
+        description = fix_crew.tasks[0].description
+        assert "ORDERS-01-AC-2" in description
+        assert "ORDERS-01-AC-3" in description
+        assert "ORDERS-01-AC-1" not in description
 
     def test_json_contract_tasks_name_the_schema(self, fake_crewai, litellm_env, registered_agents):
         crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
@@ -330,7 +351,9 @@ def _task_output(name: str | None, output: str, agent: str = "Someone") -> Simpl
 _VALID_VERDICT = json.dumps(
     {"approved": True, "feedback": ["ORDERS-01-AC-1 covered"], "security_score": 90, "risk_level": "LOW"}
 )
-_VALID_ADVICE = json.dumps({"bottlenecks_identified": [], "recommendations": ["ship"], "approved_to_proceed": True})
+_VALID_ADVICE = json.dumps(
+    {"bottlenecks_identified": [], "recommendations": ["ship"], "adr_id": "0002", "approved_to_proceed": True}
+)
 _BLOCKING_ADVICE = json.dumps({"bottlenecks_identified": ["CRITICAL: no auth"], "approved_to_proceed": False})
 _GO_TEST = "tests for ORDERS-01-AC-1\n\n`billing_test.go`\n```go\npackage billing\n```\n"
 
@@ -552,8 +575,8 @@ class TestRunCrewaiPipeline:
                 )
                 return crew
 
-        monkeypatch.setitem(bridge._CREW_MAP, "QaCrew", StubCrew)
-        config = PipelineConfig(blueprint="crew_qa", framework="crewai", requirement="Build a billing service")
+        monkeypatch.setitem(bridge._CREW_MAP, "SdlcCrew", StubCrew)
+        config = PipelineConfig(blueprint="crew_sdlc", framework="crewai", requirement="Build a billing service")
         state = _state()
 
         final = await bridge.run_crewai_pipeline(state, config)
@@ -565,3 +588,249 @@ class TestRunCrewaiPipeline:
         assert final.active_context is not None
         assert final.active_context.modified_files == ["billing_test.go"]
         assert final.stage == "implementation"
+
+    @pytest.mark.parametrize("crew_class_name", ["QaCrew", "RenamedQaCrew"])
+    async def test_staged_crews_dispatch_by_class_not_by_name(
+        self, fake_crewai, litellm_env, monkeypatch, crew_class_name
+    ):
+        """The QaCrew runner is keyed by class: renaming the blueprint's crew_class entry keeps the staged loop."""
+        from pydantic_agents.core.pipeline.config import BLUEPRINTS, BlueprintSpec, Framework, PipelineConfig
+
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        recorder = MagicMock()
+        recorder.record_span.return_value.__aenter__ = AsyncMock(return_value=MagicMock())
+        recorder.record_span.return_value.__aexit__ = AsyncMock(return_value=False)
+        monkeypatch.setattr(bridge, "recorder", recorder)
+        qa_cls = bridge._CREW_MAP["QaCrew"]
+        monkeypatch.setitem(bridge._CREW_MAP, crew_class_name, qa_cls)
+        monkeypatch.setitem(
+            BLUEPRINTS,
+            "crew_qa_test",
+            BlueprintSpec(
+                name="crew_qa_test", description="qa", crew_class=crew_class_name, framework=Framework.CREWAI
+            ).to_dict(),
+        )
+        ran_with: list[PipelineState] = []
+
+        async def fake_runner(state: PipelineState) -> str:
+            ran_with.append(state)
+            state.approved = True
+            return "QaCrew finished: report=parsed"
+
+        monkeypatch.setitem(bridge._STAGED_RUNNERS, qa_cls, fake_runner)
+        config = PipelineConfig(blueprint="crew_qa_test", framework="crewai", requirement="Build a billing service")
+        state = _state()
+
+        final = await bridge.run_crewai_pipeline(state, config)
+
+        assert ran_with == [state]
+        assert final.approved is True
+        assert final.stage == "implementation"
+        assert final.errors == []
+
+
+_PASSING_REPORT = json.dumps(
+    {
+        "criterion_results": [{"criterion_id": "ORDERS-01-AC-1", "passed": True}],
+        "coverage_percent": 90,
+    }
+)
+_FAILING_REPORT = json.dumps(
+    {
+        "criterion_results": [{"criterion_id": "ORDERS-01-AC-1", "passed": False}],
+        "coverage_percent": 50,
+    }
+)
+
+
+class TestQaCrewStagedGate:
+    @staticmethod
+    def _output_for(crew: FakeCrew, exec_output: str) -> SimpleNamespace:
+        names = [task.name for task in crew.tasks]
+        if names == ["ba/note", "test_eng/artifact"]:
+            return SimpleNamespace(
+                tasks_output=[_task_output("ba/note", "stories"), _task_output("test_eng/artifact", _GO_TEST)]
+            )
+        if names == ["qa_executor/note"]:
+            return SimpleNamespace(tasks_output=[_task_output("qa_executor/note", exec_output)])
+        if names == ["test_eng/artifact"]:
+            return SimpleNamespace(tasks_output=[_task_output("test_eng/artifact", _GO_TEST)])
+        if names == ["review/verdict"]:
+            return SimpleNamespace(tasks_output=[_task_output("review/verdict", _VALID_VERDICT)])
+        raise AssertionError(f"unexpected crew tasks: {names}")
+
+    async def test_gate_passes_without_a_fix_round_when_the_first_run_is_clean(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        calls: list[list[str]] = []
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            calls.append([task.name for task in crew.tasks])
+            return self._output_for(crew, _PASSING_REPORT)
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        summary = await bridge._run_qa_staged_gate(state)
+
+        assert calls == [["ba/note", "test_eng/artifact"], ["qa_executor/note"], ["review/verdict"]]
+        assert state.approved is True
+        assert state.test_run_report is not None
+        assert state.test_run_report.all_passed is True
+        assert state.errors == []
+        assert "all_passed=True" in summary
+
+    async def test_one_fix_round_then_the_gate_passes(self, fake_crewai, litellm_env, registered_agents, monkeypatch):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        reports = iter([_FAILING_REPORT, _PASSING_REPORT])
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            names = [task.name for task in crew.tasks]
+            if names == ["qa_executor/note"]:
+                return self._output_for(crew, next(reports))
+            return self._output_for(crew, "")
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        await bridge._run_qa_staged_gate(state)
+
+        assert state.approved is True
+        assert state.test_run_report is not None
+        assert state.test_run_report.all_passed is True
+
+    async def test_signoff_crew_sees_the_latest_report_after_a_fix_round(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        reports = iter([_FAILING_REPORT, _PASSING_REPORT])
+        signoff_crews: list[FakeCrew] = []
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            names = [task.name for task in crew.tasks]
+            if names == ["qa_executor/note"]:
+                return self._output_for(crew, next(reports))
+            if names == ["review/verdict"]:
+                signoff_crews.append(crew)
+            return self._output_for(crew, "")
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        await bridge._run_qa_staged_gate(state)
+
+        assert len(signoff_crews) == 1
+        description = signoff_crews[0].tasks[0].description
+        assert '"all_passed":true' in description.replace(" ", "")
+        assert '"coverage_percent":90' in description.replace(" ", "")
+
+    async def test_gate_blocks_approval_after_the_fix_loop_is_exhausted(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            return self._output_for(crew, _FAILING_REPORT)
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        await bridge._run_qa_staged_gate(state)
+
+        assert state.approved is False
+        assert state.test_run_report is not None
+        assert state.test_run_report.all_passed is False
+        assert any("fix loop exhausted" in err for err in state.errors)
+
+    async def test_unparseable_execution_report_skips_the_fix_round(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        """A qa_executor output that doesn't parse as TestRunReport is not a test failure: don't burn a fix
+        round feeding go_test a meaningless empty failing-id list, just fail the gate closed."""
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        calls: list[list[str]] = []
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            names = [task.name for task in crew.tasks]
+            calls.append(names)
+            if names == ["qa_executor/note"]:
+                return self._output_for(crew, "not json at all")
+            return self._output_for(crew, "")
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        await bridge._run_qa_staged_gate(state)
+
+        assert calls == [["ba/note", "test_eng/artifact"], ["qa_executor/note"], ["review/verdict"]]
+        assert state.approved is False
+        assert state.test_run_report is None
+        assert any("did not parse" in err for err in state.errors)
+        assert not any("fix loop exhausted" in err for err in state.errors)
+
+    async def test_signoff_is_told_when_no_report_parsed(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        signoff_crews: list[FakeCrew] = []
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            names = [task.name for task in crew.tasks]
+            if names == ["qa_executor/note"]:
+                return self._output_for(crew, "not json at all")
+            if names == ["review/verdict"]:
+                signoff_crews.append(crew)
+            return self._output_for(crew, "")
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+
+        summary = await bridge._run_qa_staged_gate(_state())
+
+        assert "did not parse" in signoff_crews[0].tasks[0].description
+        assert summary.startswith("QaCrew finished: report=unparsed")
+
+    async def test_zero_fix_rounds_runs_the_executor_once_then_gates(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        monkeypatch.setattr(settings, "qa_max_fix_rounds", 0)
+        calls: list[list[str]] = []
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            calls.append([task.name for task in crew.tasks])
+            return self._output_for(crew, _FAILING_REPORT)
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        summary = await bridge._run_qa_staged_gate(state)
+
+        assert calls == [["ba/note", "test_eng/artifact"], ["qa_executor/note"], ["review/verdict"]]
+        assert state.approved is False
+        assert any("exhausted after 0 round(s)" in err for err in state.errors)
+        assert "fix_rounds=0" in summary
+
+    @pytest.mark.parametrize(
+        ("coverage", "approved"),
+        [pytest.param(80.0, True, id="at_floor"), pytest.param(79.9, False, id="just_below_floor")],
+    )
+    async def test_coverage_floor_is_inclusive(
+        self, fake_crewai, litellm_env, registered_agents, monkeypatch, coverage, approved
+    ):
+        bridge = importlib.import_module("pydantic_agents.core.pipeline.crewai.bridge")
+        monkeypatch.setattr(settings, "qa_min_coverage_percent", 80.0)
+        report = json.dumps(
+            {"criterion_results": [{"criterion_id": "ORDERS-01-AC-1", "passed": True}], "coverage_percent": coverage}
+        )
+
+        async def fake_run(crew: FakeCrew) -> SimpleNamespace:
+            return self._output_for(crew, report)
+
+        monkeypatch.setattr(bridge, "_run_crew_async", fake_run)
+        state = _state()
+
+        await bridge._run_qa_staged_gate(state)
+
+        assert state.approved is approved
+        assert any("below floor" in err for err in state.errors) is not approved

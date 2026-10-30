@@ -22,7 +22,7 @@ from typing import Any
 from crewai import Crew, Process, Task
 
 from pydantic_agents.core.adapters.crewai_bridge import as_crewai_agent, build_crewai_llm
-from pydantic_agents.core.models.core import AgentAdvice, Finding, PipelineState, ReviewResult
+from pydantic_agents.core.models.core import AgentAdvice, Finding, PipelineState, ReviewResult, TestRunReport
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.utils import format_artifacts
 
@@ -55,7 +55,12 @@ REVIEW_VERDICT_OUTPUT = _json_contract(
 )
 CTO_ADVICE_OUTPUT = _json_contract(
     AgentAdvice,
-    "Architecture advice. approved_to_proceed must be false while any CRITICAL finding is open.",
+    "Architecture advice. approved_to_proceed must be false while any CRITICAL finding is open, or while adr_id "
+    "is empty.",
+)
+QA_TEST_REPORT_OUTPUT = _json_contract(
+    TestRunReport,
+    "A test-execution report, one CriterionResult per acceptance-criterion id you ran.",
 )
 
 
@@ -257,9 +262,16 @@ _CRITERION_ID_RULE = (
 
 
 class QaCrew:
-    """Acceptance criteria → tests → fixes → sign-off, every step keyed by criterion id."""
+    """Acceptance criteria → tests → execute → bounded fix loop → sign-off, keyed by criterion id.
 
-    def build(self, state: PipelineState) -> Crew:
+    CrewAI's ``Process.sequential`` runs each task exactly once, so the bounded retry (KAN-487) can't live
+    inside one ``Crew``: each stage below is its own single- or two-task crew, chained by the orchestrator in
+    ``bridge._run_qa_staged_gate``, which re-runs ``build_fix``/``build_execution`` up to
+    ``settings.qa_max_fix_rounds`` times before ``build_signoff`` runs regardless.
+    """
+
+    def build_tests(self, state: PipelineState) -> Crew:
+        """Stage 1: user stories with acceptance-criterion ids, then the tests that prove each one."""
         ba = _agent(
             "ba",
             _ROLE_BA,
@@ -270,9 +282,6 @@ class QaCrew:
             "Test Generation Engineer",
             "Write Go table-driven tests and Playwright specs for every acceptance criterion",
         )
-        go_test = _agent("go_test", "Go Test Engineer", "Make failing Go tests pass without weakening them")
-        reviewer = _agent("review", "QA Reviewer", "Sign off test coverage against the acceptance criteria")
-
         criteria_task = _make_task(
             f"Write user stories for this requirement:\n{state.requirement}\n\n"
             "Give every story an id of the form BC-NN and number its Gherkin acceptance criteria. "
@@ -293,29 +302,80 @@ class QaCrew:
             [criteria_task],
             name=_task_name("test_eng", "artifact"),
         )
+        return Crew(
+            agents=[ba, test_gen],
+            tasks=[criteria_task, tests_task],
+            process=Process.sequential,
+            verbose=True,
+        )
+
+    def build_execution(self, tests_output: str) -> Crew:
+        """Stage 2 (and re-run after each fix round): qa_executor runs the current tests and reports results."""
+        qa_executor = _agent(
+            "qa_executor",
+            "QA Executor",
+            "Run the generated test suites and report pass/fail per acceptance-criterion id",
+        )
+        execution_task = _make_task(
+            f"Run every test suite below and report the result. {_CRITERION_ID_RULE}\n\n{tests_output}",
+            qa_executor,
+            QA_TEST_REPORT_OUTPUT,
+            name=_task_name("qa_executor", "note"),
+        )
+        return Crew(
+            agents=[qa_executor],
+            tasks=[execution_task],
+            process=Process.sequential,
+            verbose=True,
+        )
+
+    def build_fix(self, tests_output: str, report: TestRunReport) -> Crew:
+        """One bounded fix round: go_test only touches the criteria the last report marked failing.
+
+        ``bridge._run_qa_staged_gate`` only calls this once a parsed ``TestRunReport`` says the gate isn't
+        met yet, so the all-unnamed fallback below fires only for a parsed report with zero criterion results
+        (an executor that ran nothing, reported no failures and no unexecuted ids) — not for a report that
+        failed to parse at all, which short-circuits straight to the gate instead of reaching this method.
+        """
+        go_test = _agent("go_test", "Go Test Engineer", "Make failing Go tests pass without weakening them")
+        failing_ids = [r.criterion_id for r in report.criterion_results if not r.passed]
+        failing_ids.extend(report.unexecuted_criterion_ids)
         fix_task = _make_task(
-            "Run the generated Go tests and fix only the tests that fail. Do not add, remove or rename test "
-            "cases, and keep every criterion id. Emit every file you changed in a fenced code block preceded by "
-            f"its file path and list the criterion ids whose tests you touched. {_CRITERION_ID_RULE}",
+            "Run the generated Go tests and fix only the tests covering these failing/unexecuted criterion ids: "
+            f"{', '.join(failing_ids) or '(none named; re-check all)'}. Do not add, remove or rename test cases, "
+            f"and keep every criterion id. {_CRITERION_ID_RULE}\n\nCurrent tests:\n{tests_output}",
             go_test,
             "The corrected test files in fenced code blocks preceded by their file paths, plus the list of "
             "criterion ids whose tests were fixed",
-            [tests_task],
             name=_task_name("test_eng", "artifact"),
         )
+        return Crew(
+            agents=[go_test],
+            tasks=[fix_task],
+            process=Process.sequential,
+            verbose=True,
+        )
+
+    def build_signoff(self, tests_output: str, report: TestRunReport | None) -> Crew:
+        """Final stage: review signs off, but the fix-loop's own TestRunReport is the fail-closed gate.
+
+        ``report`` is None when qa_executor's output never parsed; the reviewer is told so rather than shown an
+        empty report, and the bridge blocks approval in code either way.
+        """
+        reviewer = _agent("review", "QA Reviewer", "Sign off test coverage against the acceptance criteria")
+        report_text = report.model_dump_json() if report is not None else "(none: qa_executor's output did not parse)"
         signoff_task = _make_task(
             "Check that every acceptance criterion has at least one passing test that references its id. "
             "Approve only when no criterion is left uncovered. Every feedback entry must start with the "
-            f"criterion id it concerns. {_CRITERION_ID_RULE}",
+            f"criterion id it concerns. {_CRITERION_ID_RULE}\n\n"
+            f"Tests:\n{tests_output}\n\nLatest test-execution report: {report_text}",
             reviewer,
             REVIEW_VERDICT_OUTPUT,
-            [criteria_task, tests_task, fix_task],
             name=_task_name("review", "verdict"),
         )
-
         return Crew(
-            agents=[ba, test_gen, go_test, reviewer],
-            tasks=[criteria_task, tests_task, fix_task, signoff_task],
+            agents=[reviewer],
+            tasks=[signoff_task],
             process=Process.sequential,
             verbose=True,
         )
@@ -367,8 +427,9 @@ class ArchitectureReviewCrew:
         decision_task = _make_task(
             "Merge the bounded-context map, threat model, schema review and deployment review into one "
             "architecture decision. List bottlenecks, recommendations and the constraints that bind each "
-            "downstream agent. approved_to_proceed must be false while any CRITICAL finding from any review "
-            "is still open.",
+            "downstream agent. Record this decision under an adr_id (e.g. the next free ADR number, such as "
+            "'0002'); approved_to_proceed must be false while any CRITICAL finding from any review is still open, "
+            "or while adr_id is empty.",
             cto,
             CTO_ADVICE_OUTPUT,
             [contexts_task, threat_task, schema_task, deploy_task],

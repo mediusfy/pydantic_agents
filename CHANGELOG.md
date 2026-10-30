@@ -65,6 +65,19 @@ fresh **Unreleased** section above it.
   (AP-77), following `run_store.py`'s pattern (`enabled()` gated on `DATABASE_URL`, never raises). The MCP call path
   (`run_agent_by_name`) now also upserts a `platform_metrics` row per call, alongside the existing `telemetry.py`
   JSONL write, capturing a `passed`/`failed` verdict when the agent's output is a `QualityGateResult`/`ReviewResult`.
+- `QaCrew` now runs qa_executor/go_test in a bounded fix loop (`settings.qa_max_fix_rounds`, default 2) instead
+  of a single unconditional fix step: `qa_executor` reports a `TestRunReport` after every round, `go_test` is
+  retried only on the failing/unexecuted criterion ids, and review's sign-off runs regardless but `state.approved`
+  is forced false in code if the final report isn't `all_passed` with coverage at or above
+  `settings.qa_min_coverage_percent` (default 80%), closing the gap where the retry was unbounded and ungated
+  (KAN-487, part of epic KAN-482). `PipelineState.test_run_report` is the last parsed report, or None when
+  `qa_executor`'s output never parsed; the bridge picks the staged runner by crew class, not by name.
+- `AgentAdvice.adr_id`: approval also now forces `approved_to_proceed=False` in code while `adr_id` is empty, so
+  the CTO gate can't approve a decision with no ADR to point at. `approve_cto_gate` (MCP tool) enforces the same
+  rule for the human-approval path (`approved=true` requires `adr_id`), rejects `adr_content` given without an
+  `adr_id` to save it under, and when `adr_content` is given, saves it under `adr_id` via `save_adr` in the same
+  call instead of needing a second tool call — a `save_adr` failure is caught and returned as an error instead
+  of silently leaving the approval marker unwritten with no explanation (KAN-489, epic KAN-482).
 - `registry.run(name, prompt, deps=None, timeout_seconds=None, usage=None)`: the one guarded way to run an agent
   (tools attached, deps resolved, permit, timeout, transport retry, usage caps, `max_tokens`, Langfuse session tags,
   an `agent.run` span). `run_agent_by_name`, `modify_existing_code` and `plan_and_execute` all go through it; they

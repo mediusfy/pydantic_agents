@@ -122,6 +122,10 @@ class Settings(BaseSettings):
     mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
     mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
+    # QaCrew's bounded fix loop (KAN-487): go_test gets at most this many rounds to make a failing TestRunReport
+    # pass before the review stage runs regardless; coverage below the floor fails the gate even if tests pass.
+    qa_max_fix_rounds: int = 2
+    qa_min_coverage_percent: float = 80.0
     max_concurrent_llm_calls: int = 5
     # Per-agent-run limits (see core/limits.py). Timeouts are not retried; 429/5xx/connection errors are.
     agent_retries: int = 2  # pydantic_ai output/tool validation retries
