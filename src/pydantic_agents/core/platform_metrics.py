@@ -42,7 +42,31 @@ async def _ensure_table(conn: Any) -> None:
         )
         """
     )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_platform_metrics_agent_created ON platform_metrics (agent, created_at DESC)"
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_metrics_created ON platform_metrics (created_at DESC)")
     _table_ready = True
+
+
+def verdict_of(result: Any) -> str | None:
+    """'passed'/'failed' from a QualityGateResult.passed or ReviewResult.approved output, else None."""
+    output = getattr(result, "output", result)
+    for field in ("passed", "approved"):
+        value = getattr(output, field, None)
+        if isinstance(value, bool):
+            return "passed" if value else "failed"
+    return None
+
+
+def token_counts(result: Any) -> tuple[int | None, int | None]:
+    """(input, output) tokens of a pydantic_ai run result, or (None, None) when it does not report usage."""
+    try:
+        usage = result.usage()
+        counts = (usage.input_tokens, usage.output_tokens)
+    except Exception:
+        return None, None
+    return tuple(c if isinstance(c, int) else None for c in counts)  # type: ignore[return-value]
 
 
 async def record_call(

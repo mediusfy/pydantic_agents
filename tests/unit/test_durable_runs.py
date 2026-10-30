@@ -19,7 +19,20 @@ class _Conn:
 
     async def execute(self, sql, *args):
         if "INSERT INTO pipeline_runs" in sql:
-            run_id, status, project, requirement, result, error, started, completed, elapsed, blueprint, framework, attempts = args
+            (
+                run_id,
+                status,
+                project,
+                requirement,
+                result,
+                error,
+                started,
+                completed,
+                elapsed,
+                blueprint,
+                framework,
+                attempts,
+            ) = args
             self.db[run_id] = {
                 "status": status,
                 "project": project,
@@ -104,8 +117,13 @@ async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resume
         project, requirement, *, run_id=None, resume=False, blueprint="new_feature", framework=None, resume_attempts=0
     ):
         seen.update(
-            project=project, requirement=requirement, run_id=run_id, resume=resume, blueprint=blueprint,
-            framework=framework, resume_attempts=resume_attempts,
+            project=project,
+            requirement=requirement,
+            run_id=run_id,
+            resume=resume,
+            blueprint=blueprint,
+            framework=framework,
+            resume_attempts=resume_attempts,
         )
         return run_id
 
@@ -115,8 +133,13 @@ async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resume
     if resumes:
         assert out == "pipe_3"
         assert seen == {
-            "project": "svc", "requirement": "build it", "run_id": "pipe_3", "resume": True,
-            "blueprint": "crew_audit", "framework": "crewai", "resume_attempts": 1,
+            "project": "svc",
+            "requirement": "build it",
+            "run_id": "pipe_3",
+            "resume": True,
+            "blueprint": "crew_audit",
+            "framework": "crewai",
+            "resume_attempts": 1,
         }
     else:
         assert out is None

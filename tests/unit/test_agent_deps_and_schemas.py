@@ -194,7 +194,10 @@ async def test_review_prompt_asks_to_verify_previous_feedback():
 
     provider.run_agent.side_effect = run_agent
     state = PipelineState(
-        run_id="r", stage="implementation", feedback="Missing error handling", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]
+        run_id="r",
+        stage="implementation",
+        feedback="Missing error handling",
+        artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})],
     )
     with (
         patch("pydantic_agents.core.stages.quality_gate_stage.registry.get", return_value=MagicMock()),

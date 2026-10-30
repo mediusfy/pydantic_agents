@@ -2,8 +2,8 @@
 
 import asyncio
 import weakref
-from contextvars import ContextVar
 from collections.abc import Callable
+from contextvars import ContextVar
 from typing import Any, TypeVar
 
 from pydantic_ai import UsageLimits
@@ -81,6 +81,14 @@ def is_transient_error(exc: BaseException) -> bool:
     return isinstance(exc, (ModelAPIError, ConnectionError))
 
 
+def _release_after(future: "asyncio.Future[Any]", sem: asyncio.Semaphore) -> None:
+    """Done-callback of an abandoned worker thread: collect its outcome (so it is never logged as unretrieved) and free
+    the permit."""
+    if not future.cancelled():
+        future.exception()
+    sem.release()
+
+
 async def run_blocking_with_permit(fn: Callable[[], T], timeout_seconds: float) -> T:
     """Run a blocking ``fn`` in a worker thread under one LLM permit, with a timeout.
 
@@ -97,7 +105,7 @@ async def run_blocking_with_permit(fn: Callable[[], T], timeout_seconds: float) 
         if future.done():
             sem.release()
         else:
-            future.add_done_callback(lambda f: (f.cancelled() or f.exception(), sem.release()))
+            future.add_done_callback(lambda f: _release_after(f, sem))
         raise
     sem.release()
     return result

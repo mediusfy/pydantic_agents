@@ -11,7 +11,6 @@ never overwrite each other.
 import contextlib
 import json
 import logging
-import os
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
@@ -22,6 +21,7 @@ from typing import Any
 import logfire
 
 from pydantic_agents.core.limits import run_id_var
+from pydantic_agents.core.utils import rotate_log
 
 logger = logging.getLogger(__name__)
 
@@ -256,14 +256,8 @@ class SessionRecorder:
             logger.warning(f"SessionRecorder write failed: {e}")
 
     def _rotate_if_needed(self) -> None:
-        try:
-            if os.path.getsize(self.filepath) > self.max_bytes:
-                ts = int(time.time())
-                rotated = f"{self.filepath}.{ts}.archive"
-                os.rename(self.filepath, rotated)
-                logger.info("Rotated session trace to %s", rotated)
-        except OSError:
-            pass
+        if rotate_log(self.filepath, self.max_bytes):
+            logger.info("Rotated session trace %s", self.filepath)
 
 
 # Global singleton

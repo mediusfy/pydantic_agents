@@ -126,6 +126,12 @@ fresh **Unreleased** section above it.
 - `tests/unit/test_review_fixes.py`: regression tests for every finding below (concurrent recorder spans, the
   guarded run path, shared delegation budgets, the review verdict, context scoping, the LangGraph thread id, plan
   data flow, project-name validation, Langfuse export, the verifier).
+- Full-repository review remediation (2026-10-30). `MERGE_INTO_SERVER_TREE` setting (default false) and
+  `core/pipeline/crewai/approval.py`, `utils.rotate_log` / `utils.kill_and_reap`, `limits.run_blocking_with_permit`,
+  `context_engine.astore_artifact_contexts`, `vector_db.async_search_domains` and `platform_metrics.verdict_of` /
+  `token_counts` as the shared pieces the fixes below use. `pipeline_runs` gains `blueprint`, `framework` and
+  `resume_attempts` columns plus an index (added with `ALTER TABLE ... IF NOT EXISTS`, so existing tables upgrade on
+  first use), and `platform_metrics` gains indexes on `(agent, created_at)` and `created_at`.
 
 ### Changed
 - `context_engine.retrieve_context` is `async`, takes `project`, caps the query at 1,000 characters (the embedding
@@ -185,6 +191,52 @@ fresh **Unreleased** section above it.
   pasted into prompts.
 - `.env.example`, README and `.ai/guidance/architecture.md` describe the Langfuse export, the run guards, the
   verifier, the per-attempt checkpoints, the honest run status and the new settings.
+- **Blueprints now run only their own stages (review finding 3).** `build_default_pipeline` registered all four
+  stages whatever the blueprint said, so `quick_backend`, `docs_update` and `security_review` ran BA and the CTO gate
+  too. Decision: honour `stages` in the legacy pipeline; a blueprint without BA implements the requirement as one
+  story (`US-001`) because the implementation stage cannot run on zero stories; a gate-only blueprint now really runs
+  its gate (it was skipped as "handled in the retry loop"). Not changed: the LangGraph graph is still fixed, and
+  `composite` is still the same graph as `langgraph` (no CrewAI implementation step exists to wire in), which is a
+  known gap and not a fix.
+- **A CTO decision marker answers one gate (finding 1).** `.cto_approved` is deleted once the gate reads it. Decision:
+  consume rather than scope by run id, because `approve_cto_gate` is keyed by project name and an operator who
+  `touch`es the file has no run id to give; consuming keeps pre-approval working for exactly one run. A rejection
+  likewise stops one run, not the project forever. `ORCHESTRATION_CTO_OVERRIDE` now needs a true value
+  (`1/true/yes/on`): `false` and `0` used to bypass the gate.
+- **The three quality gates run side by side (performance).** Security, quality-gate and review are independent, so
+  their latency is no longer the sum of the three; the first rejection in the old order is reported. Trade-off
+  accepted: a rejection no longer saves the calls of the gates after it. Retrieval is also done once per gate and
+  run instead of once per batch.
+- **Context retrieval embeds the request once and searches its domains concurrently, then takes the best of each
+  domain round-robin.** Concatenating the domains let the first one fill `top_k` and discarded the rest after paying
+  for them. The never-seeded `dependencies` domain is dropped from `AGENT_CONTEXT_DOMAINS`. Retrieval failures log
+  at WARNING (they were DEBUG, so a dimension mismatch looked like "no context").
+- **Lexical search ORs the query words** (`to_tsquery`) instead of `plainto_tsquery`, which ANDs every word and so
+  matched nothing for request-length queries. New tables get an HNSW index instead of ivfflat built on an empty table
+  (no training data, poor recall until rebuilt); the old index is dropped when HNSW is created, and pgvector without
+  HNSW falls back to ivfflat. Documents are inserted in one transaction with `executemany`.
+- **`platform_metrics` rows are written by the agent provider, once per agent run, with tokens and verdict.** They
+  were written only for `run_<agent>` MCP calls and never carried token counts, so the `observer` agent saw a
+  fraction of the traffic. Consequence: delegated and pipeline runs now add rows, so absolute counts rise.
+- **Blocking work is off the event loop.** `search_adrs`, `save_adr`, `query_context`, `seed_project_context`,
+  `sync_memory` and `memory_bridge_status` stay plain functions but are registered as async tools that run in a
+  worker thread (FastMCP runs sync tools inline, stalling every request and background run); `approve_cto_gate`,
+  the merge stage (file writes and a single batched index call) and URL/PDF ingestion do the same.
+- **Merge stage indexes with stable ids** (`merge:<project>:<path>`, body capped at 4,000 characters) so a file
+  merged again replaces its row instead of adding a duplicate each run, and it refuses to merge into the server's own
+  working directory unless `MERGE_INTO_SERVER_TREE=true` (the `default` project's target root is `.`).
+- **Crew and group-chat runs report a real status.** `ResearchCrew`, `AuditCrew`, `ArchitectureReviewCrew` and the
+  AutoGen chats never set `approved`, so a finished run was reported as "failed: finished without approval". They are
+  now approved when they end without errors (the architecture review also needs the CTO's approval); crews with a
+  verdict or test gate still take it from that.
+- **A timed-out CrewAI/AutoGen thread keeps its LLM permit until it ends** (`run_blocking_with_permit`): a thread
+  cannot be stopped, so releasing the permit at the timeout let the concurrency limit be exceeded.
+- **Logs are pruned.** Rotated `telemetry.jsonl` and `session_trace.jsonl` archives were never deleted; the newest 5
+  are kept.
+- `fetch_url` reads at most 2 MB of a response instead of loading the whole body before truncating it. Go test runs
+  pass `-count=1`, and the vitest path is skipped (it has no `package.json`, so it always failed the story).
+- The `pipeline.background_run` span and `delegate_to_orchestration_agent` calls now carry the run id as the Langfuse
+  session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
 - `ArtifactWriter.write` (`core/writer.py`) now validates `artifact.agent_name` through `safe_path_join` and rejects
@@ -284,6 +336,31 @@ fresh **Unreleased** section above it.
   one warning and ignored.
 - A checkpoint file that is valid JSON but not a `PipelineState` is treated as corrupt (logged, `load` returns
   `None`) instead of raising a validation error out of the resume path.
+- **A run can no longer finish approved with no code (finding 2).** The quality gate rejects an empty artifact list
+  (the SRE agent's own output used to stand in for the code); the implementation stage reports a
+  `runtime_error` failure when every generation agent failed and the pipeline stops instead of retrying against no
+  feedback; a test agent that crashed, a story with no test files, or one with no source files now fails the story
+  instead of being skipped and logged as "All tests passed". The retry loop's failure report carries the tail of
+  each failed story's test output, so the next attempt sees the assertions and not just a story id.
+- **Resume after a restart rebuilds the same pipeline (finding 4).** `blueprint` and `framework` are persisted (a
+  resumed `crew_audit` run restarted as `new_feature`). The task handle is stored before the first `await`, so two
+  concurrent resumes start one task instead of two with one uncancellable. `sre_autopilot` resumes a run at most
+  `MAX_AUTO_RESUMES` (3) times, then escalates it as a finding: a run that kills the server (out of memory) was
+  resumed on every restart. Finished runs beyond 200 are evicted from `PIPELINE_RUNS`. Not fixed: checkpoints are
+  still on local disk by default, so resume after a pod restart needs `CHECKPOINT_DIR` on a persistent volume.
+- `pipeline.factory._ensure_dependency` looked for the module `pyautogen`, which is imported as `autogen`, so every
+  AutoGen blueprint failed with a missing-package error.
+- **Tracing records failures as failures.** `record_span` wrote `success=True` for stages that caught their own
+  exception and for cancelled runs (`CancelledError` is not an `Exception`). Stages now call `abort_run`, the span
+  catches `BaseException`, and a record is written once (the first finish wins).
+- Build and test subprocesses start in their own session and are killed as a group and reaped on timeout; killing
+  only `go` left the test binary running and the process as a zombie.
+- `modify_existing_code`: a retry whose engineer returns no files no longer counts as a pass over the failures it was
+  asked to fix.
+- Not addressed, by decision: LLM-generated Go still runs unsandboxed on the host (needs a sandbox such as gVisor, not
+  a code tweak); `fetch_url` validates DNS before the client resolves it again (rebinding window); an empty `project`
+  still retrieves context from every seeded project (it is the documented behaviour); the LiteLLM HTTP client is still
+  created per embedding call (its tests patch the class, and a shared client needs lifecycle handling).
 
 ### Removed
 - The event broker (`core/event_broker.py`) and the MCP tools `submit_async_task`, `check_task_status`,

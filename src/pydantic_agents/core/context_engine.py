@@ -120,6 +120,23 @@ async def retrieve_context(agent_name: str, request: str, top_k: int = 3, projec
     return f"\n{formatted}\n"
 
 
+async def astore_artifact_contexts(domain: str, items: list[tuple[str, dict[str, Any], str]]) -> None:
+    """Store several (content, metadata, doc_id) artifacts in one batch without blocking the event loop.
+
+    The ids are the caller's, so storing the same artifact again replaces its row instead of adding a duplicate.
+    A failure is logged, never raised: the knowledge base is best-effort.
+    """
+    if not items:
+        return
+    with logfire.span("context_engine.store_batch", domain=domain, documents=len(items), _level="info"):
+        try:
+            await vector_db.async_add_documents(
+                domain, [c for c, _, _ in items], [m for _, m, _ in items], [i for _, _, i in items]
+            )
+        except Exception as e:
+            logger.warning("Failed to store %d documents in '%s': %s", len(items), domain, e)
+
+
 def store_artifact_context(
     domain: str,
     content: str,

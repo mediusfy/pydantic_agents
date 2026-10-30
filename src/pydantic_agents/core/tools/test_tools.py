@@ -1,13 +1,12 @@
 """Test execution tools."""
 
 import asyncio
-import contextlib
 import tempfile
 from dataclasses import dataclass
 
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
 
 TEST_EXECUTION_TIMEOUT = 60.0
 
@@ -48,7 +47,7 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
             err = await init_and_tidy(temp_dir)
             if err:
                 return TestRunResult(False, "", err)
-            cmd = ["go", "test", "-v", "./..."]
+            cmd = ["go", "test", "-v", "-count=1", "./..."]
         else:
             cmd = ["npx", "vitest", "run", *(str(safe_write(temp_dir, n, c)) for n, c in test_files.items())]
 
@@ -57,6 +56,7 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
                 *cmd,
                 cwd=temp_dir,
                 env=sanitized_subprocess_env(),
+                start_new_session=True,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
@@ -65,8 +65,7 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
         try:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=TEST_EXECUTION_TIMEOUT)
         except TimeoutError:
-            with contextlib.suppress(ProcessLookupError):
-                proc.kill()
+            await kill_and_reap(proc)
             return TestRunResult(False, "", "Timed out.")
 
         output = f"{stdout.decode()}\n{stderr.decode()}".strip()

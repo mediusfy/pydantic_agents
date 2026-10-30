@@ -142,9 +142,8 @@ async def _run_pipeline_in_background(run_id: str, project_name: str, requiremen
     start_time = time.time()
     run = PIPELINE_RUNS[run_id]
 
-    with logfire.span(
-        "pipeline.background_run", run_id=run_id, project=project_name, **{"langfuse.session.id": run_id}
-    ):
+    span_attrs: dict[str, Any] = {"run_id": run_id, "project": project_name, "langfuse.session.id": run_id}
+    with logfire.span("pipeline.background_run", **span_attrs):
         run["status"] = "running"
         await run_store.save_run(run_id, run)
         run_id_var.set(run_id)  # this task's own context: sent to LiteLLM as the Langfuse session id

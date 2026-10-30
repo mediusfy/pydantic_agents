@@ -62,7 +62,9 @@ async def _ensure_table(conn: Any) -> None:
     await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS blueprint TEXT")
     await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS framework TEXT")
     await conn.execute("ALTER TABLE pipeline_runs ADD COLUMN IF NOT EXISTS resume_attempts INTEGER NOT NULL DEFAULT 0")
-    await conn.execute("CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated ON pipeline_runs (status, updated_at)")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status_updated ON pipeline_runs (status, updated_at)"
+    )
     _table_ready = True
 
 

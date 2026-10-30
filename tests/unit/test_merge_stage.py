@@ -31,7 +31,7 @@ def _art(agent: str, **files: str) -> Artifact:
 
 @pytest.fixture(autouse=True)
 def no_context_store():
-    with patch("pydantic_agents.core.context_engine.store_artifact_context") as store:
+    with patch("pydantic_agents.core.context_engine.astore_artifact_contexts") as store:
         yield store
 
 
@@ -194,10 +194,15 @@ async def test_a_blocked_file_does_not_stop_the_others(tmp_path):
 async def test_each_written_file_is_stored_as_project_context(tmp_path, no_context_store):
     await MergeStage().run(_state(_art("backend", main_dot_go="package main")), _config(tmp_path))
 
-    no_context_store.assert_called_once_with(
-        domain="project",
-        content="File: main.go\nAgent: backend\nContent:\npackage main",
-        metadata={"agent": "backend", "file": "main.go", "project": "proj"},
+    no_context_store.assert_awaited_once_with(
+        "project",
+        [
+            (
+                "File: main.go\nAgent: backend\nContent:\npackage main",
+                {"agent": "backend", "file": "main.go", "project": "proj"},
+                "merge:proj:main.go",  # a stable id: merging the file again replaces the row
+            )
+        ],
     )
 
 
@@ -207,7 +212,7 @@ async def test_skipped_files_are_not_stored(tmp_path, no_context_store):
 
     await MergeStage().run(_state(_art("docs", a_dot_md="same")), _config(tmp_path))
 
-    no_context_store.assert_not_called()
+    no_context_store.assert_awaited_once_with("project", [])
 
 
 async def test_a_failing_context_store_does_not_fail_the_merge(tmp_path, no_context_store):
@@ -255,3 +260,27 @@ async def test_an_artifact_with_no_files_is_harmless(tmp_path):
 )
 def test_clean_artifact_path(path, cleaned):
     assert _clean_artifact_path(path) == cleaned
+
+
+async def test_the_server_s_own_working_directory_is_not_merged_into_by_default(
+    tmp_path, monkeypatch, no_context_store
+):
+    monkeypatch.chdir(tmp_path)
+    state = _state(_art("backend", main_dot_go="package main"))
+
+    out = await MergeStage().run(state, _config(tmp_path))
+
+    assert (out.stage, out.approved) == ("merge", True)
+    assert not (tmp_path / "backend").exists()
+    no_context_store.assert_not_awaited()
+
+
+async def test_merging_into_the_server_tree_can_be_enabled(tmp_path, monkeypatch):
+    from pydantic_agents.core.settings import settings
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(settings, "merge_into_server_tree", True)
+
+    await MergeStage().run(_state(_art("backend", main_dot_go="package main")), _config(tmp_path))
+
+    assert (tmp_path / "backend" / "main.go").read_text() == "package main"

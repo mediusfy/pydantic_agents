@@ -81,7 +81,10 @@ async def test_quality_gate_blocks_on_the_derived_verdict_not_the_claimed_one():
         patch("pydantic_agents.core.context_engine.retrieve_context", return_value=""),
     ):
         result = await QualityGateStage(agent_provider=provider).run(
-            PipelineState(run_id="r", stage="implementation", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]), PipelineConfig(project="p", requirement="r")
+            PipelineState(
+                run_id="r", stage="implementation", artifacts=[Artifact(agent_name="backend", files={"README.md": "x"})]
+            ),
+            PipelineConfig(project="p", requirement="r"),
         )
 
     assert result.approved is False

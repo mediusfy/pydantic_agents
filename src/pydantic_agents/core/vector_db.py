@@ -64,6 +64,7 @@ def _validate_collection_name(collection_name: str) -> str:
         raise ValueError(f"Invalid collection name: {collection_name!r}")
     return collection_name
 
+
 # Reciprocal rank fusion constant (Cormack et al. 2009); 60 is the conventional value.
 _RRF_K = 60
 # Timeout for the LiteLLM /embeddings and /rerank calls.

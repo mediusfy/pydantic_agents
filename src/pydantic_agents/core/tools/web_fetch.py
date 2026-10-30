@@ -77,6 +77,23 @@ def validate_public_http_url(url: str, *, resolve_dns: bool = True) -> str | Non
     return None
 
 
+# Bytes read from a response. `resp.text` loaded the whole body before it was cut to _MAX_RESPONSE_CHARS, so one
+# large response could use all the memory; 4 bytes per character is the UTF-8 worst case.
+_MAX_RESPONSE_BYTES = _MAX_RESPONSE_CHARS * 4
+
+
+async def _get_bounded(client: httpx.AsyncClient, url: str) -> tuple[httpx.Response, bytes]:
+    """GET ``url`` and read at most ``_MAX_RESPONSE_BYTES`` of the body."""
+    async with client.stream("GET", url, headers={"User-Agent": "Orgitration-Agent/1.0"}) as resp:
+        body = bytearray()
+        if not resp.is_redirect:
+            async for chunk in resp.aiter_bytes():
+                body.extend(chunk)
+                if len(body) >= _MAX_RESPONSE_BYTES:
+                    break
+        return resp, bytes(body[:_MAX_RESPONSE_BYTES])
+
+
 async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str:
     """Fetch content from a URL via HTTP GET.
 
@@ -92,7 +109,7 @@ async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str
         current_url = url
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
             for _ in range(_MAX_REDIRECTS + 1):
-                resp = await client.get(current_url, headers={"User-Agent": "Orgitration-Agent/1.0"})
+                resp, body = await _get_bounded(client, current_url)
                 if resp.is_redirect:
                     location = resp.headers.get("location")
                     if not location:
@@ -105,9 +122,13 @@ async def fetch_url(ctx: RunContext[Any], url: str, format: str = "text") -> str
                     continue
                 resp.raise_for_status()
                 content_type = resp.headers.get("content-type", "")
+                text = body.decode(resp.encoding or "utf-8", errors="replace")
                 if "json" in content_type:
-                    return json.dumps(resp.json(), indent=2)[:_MAX_RESPONSE_CHARS]
-                return resp.text[:_MAX_RESPONSE_CHARS]
+                    try:
+                        return json.dumps(json.loads(text), indent=2)[:_MAX_RESPONSE_CHARS]
+                    except ValueError:
+                        pass  # truncated or invalid JSON: return it as text
+                return text[:_MAX_RESPONSE_CHARS]
             return f"Error: Too many redirects fetching {url}."
     except httpx.HTTPStatusError as e:
         return f"HTTP error {e.response.status_code} fetching {url}: {e}"
