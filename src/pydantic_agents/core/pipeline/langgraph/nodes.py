@@ -1,8 +1,8 @@
 import logging
 
 from pydantic_agents.core.adapters.agents import AgentProviderPort
-from pydantic_agents.core.models.core import FailureReport, PipelineState
-from pydantic_agents.core.pipeline.config import PipelineConfig
+from pydantic_agents.core.models.core import FailureReport, PipelineState, UserStory
+from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.pipeline.context import ContextFrame
 from pydantic_agents.core.session_recorder import recorder
 from pydantic_agents.core.stages.advisory_stage import AdvisoryStage
@@ -103,21 +103,33 @@ async def advisory_node(
             return _make_error(state, "advisory", str(e))
 
 
+def _seed_story_if_needed(state: PipelineState, config: PipelineConfig) -> PipelineState:
+    """When a blueprint skips BA, seed a single user story from the requirement so implementation has work."""
+    bp = BLUEPRINTS.get(config.blueprint, {})
+    stages = {str(getattr(s, "value", s)) for s in (bp.get("stages") or [])}
+    req = config.requirement or state.requirement
+    if "ba" not in stages and not state.user_stories and req:
+        story = UserStory(id="US-001", title=req[:80], gherkin=req)
+        return state.model_copy(update={"user_stories": [story]})
+    return state
+
+
 async def implementation_node(
     state: PipelineState,
     config: PipelineConfig,
     provider: AgentProviderPort,
 ) -> dict:
+    seeded = _seed_story_if_needed(state, config)
     stage = ImplementationStage()
     stage.agent_provider = provider
     async with recorder.record_span(
-        run_id=state.run_id,
+        run_id=seeded.run_id,
         agent_name="implementation",
         pipeline_stage="implementation",
         prompt=config.requirement or "",
     ) as rec:
         try:
-            new_state = await stage.run(state, config)
+            new_state = await stage.run(seeded, config)
             rec.set_output(new_state)
 
             files: list[str] = []
@@ -128,20 +140,52 @@ async def implementation_node(
                 output=f"Implementation stage generated {len(new_state.artifacts or [])} artifacts.",
                 modified_files=files,
             )
-            history = [*state.context_history, cf] if state.context_history else [cf]
+            history = [*seeded.context_history, cf] if seeded.context_history else [cf]
             return {
+                "user_stories": new_state.user_stories,
                 "artifacts": new_state.artifacts,
                 "failure_report": new_state.failure_report,
                 "feedback": new_state.feedback,
                 "stage": "implementation",
-                "refinement_attempts": state.refinement_attempts + 1,
+                "refinement_attempts": seeded.refinement_attempts + 1,
                 "active_context": cf,
                 "context_history": history,
             }
         except Exception as e:
             logger.exception("Implementation stage failed: %s", e)
             rec.abort_run(str(e))
-            return _make_error(state, "implementation", str(e))
+            return _make_error(seeded, "implementation", str(e))
+
+
+async def crewai_implementation_node(
+    state: PipelineState,
+    config: PipelineConfig,
+) -> dict:
+    """Composite pipeline step: run CrewAI implementation inside the LangGraph state machine."""
+    from pydantic_agents.core.pipeline.factory import _ensure_dependency
+
+    seeded = _seed_story_if_needed(state, config)
+    try:
+        _ensure_dependency("crewai")
+        from pydantic_agents.core.pipeline.crewai.bridge import run_crewai_pipeline
+
+        new_state = await run_crewai_pipeline(seeded.model_copy(deep=True), config)
+    except Exception as e:
+        logger.exception("Composite CrewAI implementation failed: %s", e)
+        return _make_error(seeded, "crewai", str(e))
+
+    return {
+        "user_stories": new_state.user_stories,
+        "artifacts": new_state.artifacts,
+        "advisory_results": new_state.advisory_results,
+        "errors": new_state.errors,
+        "failure_report": new_state.failure_report,
+        "feedback": new_state.feedback,
+        "stage": "implementation",
+        "refinement_attempts": seeded.refinement_attempts + 1,
+        "active_context": new_state.active_context,
+        "context_history": new_state.context_history,
+    }
 
 
 async def quality_gate_node(

@@ -181,6 +181,61 @@ class SdlcCrew:
         )
 
 
+class ImplementationCrew:
+    """Implementation-only crew for the ``composite`` blueprint.
+
+    LangGraph runs BA, the CTO advisory gate, and the post-implementation quality gate; this crew executes the
+    code- and test-generation step in between using the stories, advisory notes, and any retry feedback already on
+    ``PipelineState``.
+    """
+
+    def build(self, state: PipelineState) -> Crew:
+        backend = _agent("backend", "Lead Go Backend Engineer", "Implement Go services using hexagonal architecture")
+        frontend = _agent(
+            "frontend", "Senior Vue 3 Frontend Engineer", "Build Vue 3 components with WCAG 2.1 AA compliance"
+        )
+        qa = _agent("test_eng", "QA Automation Engineer", "Write comprehensive tests for all generated code")
+
+        stories_text = "\n\n".join(f"### {s.id}: {s.title}\n{s.gherkin}" for s in (state.user_stories or []))
+        if not stories_text:
+            stories_text = state.requirement or "(no stories supplied)"
+        advisory_text = "\n".join(f"- {k}: {v}" for k, v in (state.advisory_results or {}).items())
+        context_block = f"User stories:\n{stories_text}"
+        if advisory_text:
+            context_block += f"\n\nArchitecture guidance:\n{advisory_text}"
+        if state.feedback:
+            context_block += f"\n\nPrevious attempt feedback to fix:\n{state.feedback}"
+
+        impl_task = _make_task(
+            f"Implement Go backend for the user stories.\n\n{context_block}",
+            backend,
+            "Complete Go source files organized in hexagonal architecture, each in a fenced code block "
+            "preceded by its file path",
+            name=_task_name("backend", "artifact"),
+        )
+        frontend_task = _make_task(
+            f"Build Vue 3 frontend components matching the backend API.\n\n{context_block}",
+            frontend,
+            "Vue 3 component files with TypeScript, each in a fenced code block preceded by its file path",
+            [impl_task],
+            name=_task_name("frontend", "artifact"),
+        )
+        test_task = _make_task(
+            f"Write unit and integration tests for the backend code.\n\n{context_block}",
+            qa,
+            "Test files with comprehensive coverage, each in a fenced code block preceded by its file path",
+            [impl_task],
+            name=_task_name("test_eng", "artifact"),
+        )
+
+        return Crew(
+            agents=[backend, frontend, qa],
+            tasks=[impl_task, frontend_task, test_task],
+            process=Process.sequential,
+            verbose=True,
+        )
+
+
 class ResearchCrew:
     def build(self, state: PipelineState) -> Crew:
         topic = state.requirement
