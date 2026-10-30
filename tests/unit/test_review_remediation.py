@@ -61,6 +61,29 @@ async def test_the_override_variable_needs_a_true_value(out_dir, monkeypatch, va
     assert result is bypasses
 
 
+async def test_each_project_has_its_own_marker(out_dir):
+    cto_gate.write_approval("project-a", True)
+
+    other = await cto_gate.apply(PipelineState(run_id="b", stage="advisory"), project="project-b", timeout_seconds=0.05)
+
+    assert other is False
+    assert (out_dir / "project-a" / ".cto_approved").exists()  # project-b's gate neither used nor consumed it
+
+
+async def test_an_operator_approving_while_the_gate_polls_is_honoured_once(out_dir):
+    async def approve_soon():
+        await asyncio.sleep(0.05)
+        (out_dir / "svc").mkdir(exist_ok=True)
+        (out_dir / "svc" / ".cto_approved").write_text("")  # `touch`: an empty marker counts as approval
+
+    approver = asyncio.create_task(approve_soon())
+    first = await cto_gate.apply(PipelineState(run_id="a", stage="advisory"), project="svc", timeout_seconds=2)
+    await approver
+    second = await cto_gate.apply(PipelineState(run_id="b", stage="advisory"), project="svc", timeout_seconds=0.05)
+
+    assert (first, second) == (True, False)
+
+
 # --- blueprints ---------------------------------------------------------------------------------------------------
 
 
@@ -79,6 +102,16 @@ def test_a_legacy_blueprint_registers_only_its_own_stages(blueprint, registered)
     pipeline = build_default_pipeline(PipelineConfig(blueprint=blueprint))
 
     assert {str(s.value) for s in pipeline.stages} == registered
+
+
+def test_an_unknown_blueprint_fails_closed_instead_of_running_everything():
+    from pydantic_agents.core.pipeline.factory import build_default_pipeline
+
+    config = PipelineConfig(blueprint="new_feature")
+    config.blueprint = "typo_blueprint"
+
+    with pytest.raises(ValueError, match="typo_blueprint"):
+        build_default_pipeline(config)
 
 
 async def test_a_blueprint_without_ba_implements_the_requirement_as_one_story(monkeypatch):
@@ -317,6 +350,18 @@ def test_a_small_log_is_not_rotated(tmp_path):
 
 
 # --- run bookkeeping -----------------------------------------------------------------------------------------------
+
+
+def test_a_run_without_a_start_time_is_evicted_first(monkeypatch):
+    done = MagicMock()
+    done.done.return_value = True
+    runs = {"pipe_a": {"started_at": None, "_task": done}, "pipe_b": {"started_at": "2026-10-01", "_task": done}}
+    monkeypatch.setattr(pipeline_jobs, "PIPELINE_RUNS", runs)
+    monkeypatch.setattr(pipeline_jobs, "MAX_FINISHED_RUNS_IN_MEMORY", 1)
+
+    pipeline_jobs._evict_finished_runs()
+
+    assert list(runs) == ["pipe_b"]
 
 
 def test_finished_runs_beyond_the_cap_are_dropped_oldest_first(monkeypatch):

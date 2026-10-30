@@ -21,3 +21,6 @@ telemetry.jsonl
 .coverage
 .coverage.*
 .mypy_cache/
+
+# run state the pipeline and its tests write into the working directory
+.claw-checkpoints/

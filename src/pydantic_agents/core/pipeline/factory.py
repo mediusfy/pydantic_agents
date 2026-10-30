@@ -34,7 +34,14 @@ def build_default_pipeline(config: PipelineConfig) -> OrgitrationPipeline:
     pipeline = OrgitrationPipeline(config)
     # Only the blueprint's own stages: quick_backend, docs_update and security_review used to run the whole SDLC
     # (BA and the CTO gate included) because every stage was registered regardless.
-    wanted = {str(getattr(s, "value", s)) for s in BLUEPRINTS.get(config.blueprint, {}).get("stages") or []}
+    # An unknown blueprint (or a stage-less one) fails closed: registering everything would run the full SDLC,
+    # CTO gate included, for a typo.
+    blueprint = BLUEPRINTS.get(config.blueprint)
+    if blueprint is None or not blueprint.get("stages"):
+        raise ValueError(
+            f"Blueprint {config.blueprint!r} has no legacy stages to run. Available: {', '.join(BLUEPRINTS)}"
+        )
+    wanted = {str(getattr(s, "value", s)) for s in blueprint["stages"]}
     stages = {
         STAGES.BA: BAStage,
         STAGES.ADVISORY: AdvisoryStage,
@@ -42,7 +49,7 @@ def build_default_pipeline(config: PipelineConfig) -> OrgitrationPipeline:
         STAGES.QUALITY_GATE: QualityGateStage,
     }
     for name, stage_cls in stages.items():
-        if not wanted or name.value in wanted:
+        if name.value in wanted:
             pipeline.register_stage(name, stage_cls())
     return pipeline
 

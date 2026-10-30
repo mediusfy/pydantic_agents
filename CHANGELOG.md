@@ -196,7 +196,8 @@ fresh **Unreleased** section above it.
   too. Decision: honour `stages` in the legacy pipeline; a blueprint without BA implements the requirement as one
   story (`US-001`) because the implementation stage cannot run on zero stories; a gate-only blueprint now really runs
   its gate (it was skipped as "handled in the retry loop"). Not changed: the LangGraph graph is still fixed, and
-  `composite` is still the same graph as `langgraph` (no CrewAI implementation step exists to wire in), which is a
+  an unknown or stage-less blueprint now raises instead of registering every stage (fail closed: a typo would have
+  run the full SDLC, CTO gate included). `composite` is still the same graph as `langgraph` (no CrewAI implementation step exists to wire in), which is a
   known gap and not a fix.
 - **A CTO decision marker answers one gate (finding 1).** `.cto_approved` is deleted once the gate reads it. Decision:
   consume rather than scope by run id, because `approve_cto_gate` is keyed by project name and an operator who
@@ -357,6 +358,8 @@ fresh **Unreleased** section above it.
   only `go` left the test binary running and the process as a zombie.
 - `modify_existing_code`: a retry whose engineer returns no files no longer counts as a pass over the failures it was
   asked to fix.
+- `.claw-checkpoints/` is git-ignored: the test suite writes run state there and an earlier commit of this change
+  picked it up by mistake (removed).
 - Not addressed, by decision: LLM-generated Go still runs unsandboxed on the host (needs a sandbox such as gVisor, not
   a code tweak); `fetch_url` validates DNS before the client resolves it again (rebinding window); an empty `project`
   still retrieves context from every seeded project (it is the documented behaviour); the LiteLLM HTTP client is still

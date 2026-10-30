@@ -83,7 +83,11 @@ _MAX_RESPONSE_BYTES = _MAX_RESPONSE_CHARS * 4
 
 
 async def _get_bounded(client: httpx.AsyncClient, url: str) -> tuple[httpx.Response, bytes]:
-    """GET ``url`` and read at most ``_MAX_RESPONSE_BYTES`` of the body."""
+    """GET ``url`` and read at most ``_MAX_RESPONSE_BYTES`` of the body.
+
+    The body is read inside the stream context and returned as bytes: once the context exits the response is closed,
+    so reading ``resp.content`` or ``resp.text`` from the caller would see nothing. Use the returned bytes.
+    """
     async with client.stream("GET", url, headers={"User-Agent": "Orgitration-Agent/1.0"}) as resp:
         body = bytearray()
         if not resp.is_redirect:

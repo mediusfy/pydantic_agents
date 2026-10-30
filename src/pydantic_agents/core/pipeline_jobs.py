@@ -112,6 +112,8 @@ MAX_FINISHED_RUNS_IN_MEMORY = 200
 
 
 def _evict_finished_runs() -> None:
+    """Drop the oldest finished runs beyond the cap. ``started_at`` is an ISO string, which sorts chronologically; a
+    run without one sorts first and is evicted first, which is fine: it is also the least informative."""
     finished = [
         (run.get("started_at") or "", run_id)
         for run_id, run in PIPELINE_RUNS.items()
