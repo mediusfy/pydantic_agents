@@ -100,9 +100,17 @@ async def kill_and_reap(proc: Any) -> None:
     The command is started in its own session (``start_new_session=True``), so the group can be killed: ``go test``
     runs the test binary as a child, and killing only ``go`` left that binary spinning after a timeout. Waiting
     reaps the process instead of leaving a zombie.
+
+    Guard ``isinstance(pid, int) and pid > 1`` before calling ``os.killpg``: in unit tests ``proc`` is often a
+    ``MagicMock`` whose ``proc.pid`` is a child ``MagicMock`` that CPython coerces via ``MagicMock.__index__()`` to
+    ``1``, which on Linux (`os.killpg(1, SIGKILL)`) sends ``SIGKILL`` to process group 1 and kills the test runner!
     """
+    pid = getattr(proc, "pid", None)
     try:
-        os.killpg(proc.pid, signal.SIGKILL)
+        if isinstance(pid, int) and not isinstance(pid, bool) and pid > 1:
+            os.killpg(pid, signal.SIGKILL)
+        else:
+            proc.kill()
     except Exception:
         with contextlib.suppress(ProcessLookupError):
             proc.kill()
