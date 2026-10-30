@@ -98,7 +98,7 @@ _HTTPX_CAPTURE_OFF = (
 )
 
 
-def _httpx_capture_kwargs(instrument_httpx: Any) -> dict[str, bool]:
+def _httpx_capture_kwargs(instrument_httpx: Any) -> dict[str, Any]:
     """``capture_* = False`` for every capture parameter ``instrument_httpx`` declares."""
     try:
         declared = inspect.signature(instrument_httpx).parameters
