@@ -206,16 +206,19 @@ class TestRetrieveContext:
     async def test_the_project_and_a_capped_query_reach_the_store(self, monkeypatch):
         calls = []
 
-        async def search_domains(domains, query, n_results=3, project=None):
-            calls.append((list(domains), len(query), n_results, project))
+        async def search_domains(domains, query, n_results=3, project=None, domain_filters=None):
+            calls.append((list(domains), len(query), n_results, project, domain_filters))
             return [[f"{d} snippet"] for d in domains]
 
         monkeypatch.setattr(context_engine.vector_db, "async_search_domains", search_domains)
 
         text = await context_engine.retrieve_context("database", "x" * 5_000, top_k=2, project="rufkis")
 
-        # One call for every domain: the query is embedded once and the domains are searched together.
-        assert calls == [(["adrs", "architecture"], 1_000, 2, "rufkis")]
+        # One call for every domain: the query is embedded once and the domains are searched together. The
+        # default filters travel with it, so this path cannot serve an unapproved ADR proposal either (AP-102).
+        assert calls == [
+            (["adrs", "architecture"], 1_000, 2, "rufkis", context_engine.DEFAULT_DOMAIN_FILTERS)
+        ]
         assert "adrs snippet" in text
         assert "architecture snippet" in text
 

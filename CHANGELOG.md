@@ -12,6 +12,11 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `docs/adr/0002-context-and-run-state-integrity.md` (**Status: Proposed**, awaiting human/CTO acceptance): records
+  that the context layer's missing trust boundary, the absent token budget and the run-state integrity gaps have
+  three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at
+  pgvector. Tickets AP-102 through AP-110. Of those, AP-110 is implemented in full by this change, and AP-102 and
+  AP-105 in part — see the `### Fixed` entries below for exactly what remains open on each.
 - `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
   (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
   operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the
@@ -281,6 +286,48 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **Retrieval served unapproved ADR proposals to the very gates meant to catch them (AP-102, partially addressed).**
+  `innovation_scout.propose_adr` writes drafts into the `adrs` collection tagged `status: "proposed"`, but nothing
+  read that status back: `context_engine.retrieve_context` called `async_search_domains` with no metadata filter,
+  and neither `_search_domains` nor `async_search_domains` had a parameter to carry one. Twelve agents query the
+  `adrs` domain, three of them `security`, `review` and `quality_gate` — so a draft arrived under the heading
+  "Relevant Architecture Context from Knowledge Base" and the platform routed around its own CTO approval gate.
+  A `DomainFilter` (`core/vector_db.py`) now carries per-collection metadata conditions through
+  `retrieve_context` → `async_search_domains` → `_search`, and `context_engine.DEFAULT_DOMAIN_FILTERS` excludes
+  `status = "proposed"` from the `adrs` domain by default. The exclusion is rendered as
+  `metadata->>'status' IS DISTINCT FROM $n` — not `<>` — so an approved or seeded ADR, which carries no `status`
+  key at all, still matches; values stay bound parameters and keys stay behind the existing `_METADATA_KEY`
+  allowlist, so the query remains injection-safe. **Behaviour change:** agents may now receive fewer `adrs`
+  snippets, and retrieving a proposal requires passing `domain_filters` explicitly.
+  `innovation_scout.search_existing_adrs` is unchanged: it goes through `async_search` and still sees drafts, so
+  it can tell when it is about to duplicate one. **Still open on AP-102:** ADR-0002 attaches a second obligation
+  to this ticket that is *not* implemented here — making `project` required or default-deny on `retrieve_context`
+  and tagging ADRs with a project at write time. `retrieve_context` still defaults `project=None` ("search every
+  project") and `save_adr` still takes no project, so one project's ADRs can still reach another's prompt. Four
+  further read paths also still query the `adrs` collection unfiltered and are deliberately left alone, being
+  explicit caller-invoked queries rather than automatic prompt assembly: `innovation_scout.search_existing_adrs`,
+  `cto.search_existing_adrs`, and the `search_adrs` and `query_context` MCP tools — of which `query_context`
+  (`mcp_server.py` `_query_domain`) is the MCP-exposed sibling of `retrieve_context` and the one most worth a
+  follow-up decision.
+- **A quality gate could record a pass on code it never received (AP-105, partially addressed).**
+  `format_artifacts` stops at its character budget and left only a prose note that claimed "review continues on
+  remaining items" while it had in fact broken out of the artifact loop; it never said how much was missing, and
+  nothing was machine-readable, so `QualityGateStage._run_gate` could not distinguish a complete batch from a
+  partial one and recorded "no findings" as an approval — a silent false approval inside an autonomous
+  remediation loop. New `format_artifacts_report` returns a `FormattedArtifacts` with `truncated`,
+  `omitted_artifacts` and `omitted_files`; the in-text notice now names those counts and states the view is
+  INCOMPLETE; and a gate that reports no findings on a truncated batch is downgraded to an explicit
+  `INCONCLUSIVE` finding, which fails closed through the stage's existing reject path instead of passing.
+  `format_artifacts` keeps its `str` return for existing callers. **Still open on AP-105:** splitting a single
+  oversized artifact across several gate calls, and an unforgeable delimiter/provenance envelope for
+  model-authored content.
+- **The CTO gate's read path had lost the traversal guard its write path has (AP-110).**
+  `cto_gate.write_approval` joins the caller-chosen `project` with `safe_path_join` and documents why, while
+  `_approval_file_path` three lines above built the same path with a plain `Path` join and then called
+  `mkdir(parents=True)` — so a `project` of `../../tmp/x` both read outside `output_dir` and created directories
+  there as a side effect. Both paths now derive the location from one `_project_approval_path` helper (writing the
+  same path expression twice is what let the guard drift in the first place), and the `mkdir` happens only after
+  the check, so a rejected traversal creates nothing.
 - **Telemetry configuration failed on the deployed pod (`Logfire configuration failed: The capture_request_headers
   parameter has been removed`).** `_instrument()` passed `capture_request_headers` / `capture_response_headers` to
   `logfire.instrument_httpx`, which Logfire 5.x (the locked 5.1.1) renamed to `capture_headers`. It only surfaced when

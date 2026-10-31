@@ -43,7 +43,8 @@ import logging
 import os
 import re
 import threading
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from pydantic_agents.core.exceptions import ConfigurationError, OrgitrationDependencyError
@@ -56,6 +57,20 @@ logger = logging.getLogger(__name__)
 # Metadata filter keys and collection names are interpolated into SQL, so they must be plain identifiers.
 _METADATA_KEY = re.compile(r"[A-Za-z_]\w*", re.ASCII)
 _COLLECTION_NAME = re.compile(r"[A-Za-z_]\w{0,60}", re.ASCII)
+
+
+@dataclass(frozen=True)
+class DomainFilter:
+    """Metadata conditions for one collection.
+
+    ``match`` is equality (a ``None`` value matches rows that lack the key). ``exclude`` drops rows whose value
+    equals the given one while **keeping** rows that lack the key, because that is what a trust boundary over
+    this store needs: only ``innovation_scout`` drafts carry a ``status``, so an approved or seeded ADR has no
+    ``status`` key at all and an equality filter would hide the entire real knowledge base.
+    """
+
+    match: Mapping[str, str | None] = field(default_factory=dict)
+    exclude: Mapping[str, str] = field(default_factory=dict)
 
 
 def _validate_collection_name(collection_name: str) -> str:
@@ -471,15 +486,21 @@ class VectorDBManager:
         n_results: int = 3,
         project: str | None = None,
         filters: dict[str, str | None] | None = None,
+        exclude: Mapping[str, str] | None = None,
         embedding: list[float] | None = None,
     ) -> list[str]:
-        """``embedding`` is the query's vector when the caller already computed it (``_search_domains``)."""
+        """``embedding`` is the query's vector when the caller already computed it (``_search_domains``).
+
+        ``exclude`` drops rows whose metadata value equals the given one, keeping rows that lack the key — the
+        trust boundary the ``adrs`` collection needs (see ``DomainFilter``).
+        """
         _validate_collection_name(collection_name)
         # `project` is the long-standing filter; `filters` adds any other metadata equality filters.
         conditions: dict[str, str | None] = dict(filters or {})
         if project:
             conditions["project"] = project
-        for key in conditions:
+        exclusions: dict[str, str] = dict(exclude or {})
+        for key in (*conditions, *exclusions):
             if not _METADATA_KEY.fullmatch(key):
                 raise ValueError(f"Invalid metadata filter key: {key!r}")
         try:
@@ -500,6 +521,11 @@ class VectorDBManager:
                 else:
                     params.append(value)
                     clauses.append(f"metadata->>'{key}' = ${len(params) + 2}")
+            # IS DISTINCT FROM, not <>: a row with no such key must survive the exclusion (an ADR seeded before
+            # `status` was recorded is approved context, not a draft).
+            for key, value in exclusions.items():
+                params.append(value)
+                clauses.append(f"metadata->>'{key}' IS DISTINCT FROM ${len(params) + 2}")
             hybrid = bool(settings.retrieval_hybrid)
             limit = max(20, 4 * n_results) if hybrid else n_results
             where = f"WHERE {' AND '.join(clauses)}\n" if clauses else ""
@@ -549,10 +575,19 @@ class VectorDBManager:
         return self._run_sync(self._search(collection_name, query, n_results, project))
 
     async def _search_domains(
-        self, collections: list[str], query: str, n_results: int, project: str | None
+        self,
+        collections: list[str],
+        query: str,
+        n_results: int,
+        project: str | None,
+        domain_filters: Mapping[str, DomainFilter] | None = None,
     ) -> list[list[str] | BaseException]:
         """Search several collections for one query: it is embedded once, and the collections are queried
-        concurrently. A collection that fails yields its exception in its slot instead of failing the others."""
+        concurrently. A collection that fails yields its exception in its slot instead of failing the others.
+
+        ``domain_filters`` carries the metadata conditions per collection; a collection with no entry is searched
+        unfiltered, exactly as before.
+        """
         if _test_pool_override is None and not _dsn() and _get_pool is _DEFAULT_GET_POOL:
             return [[] for _ in collections]
         try:
@@ -567,16 +602,33 @@ class VectorDBManager:
             return [[] for _ in collections]
         except Exception as exc:  # no database, bad collection name: reported per collection, never raised
             return [exc for _ in collections]
-        return await asyncio.gather(
-            *(self._search(c, query, n_results, project, embedding=embedding) for c in collections),
-            return_exceptions=True,
-        )
+        by_domain = domain_filters or {}
+        searches = []
+        for collection in collections:
+            spec = by_domain.get(collection) or DomainFilter()
+            searches.append(
+                self._search(
+                    collection,
+                    query,
+                    n_results,
+                    project,
+                    filters=dict(spec.match) or None,
+                    exclude=dict(spec.exclude) or None,
+                    embedding=embedding,
+                )
+            )
+        return await asyncio.gather(*searches, return_exceptions=True)
 
     async def async_search_domains(
-        self, collections: list[str], query: str, n_results: int = 3, project: str | None = None
+        self,
+        collections: list[str],
+        query: str,
+        n_results: int = 3,
+        project: str | None = None,
+        domain_filters: Mapping[str, DomainFilter] | None = None,
     ) -> list[list[str] | BaseException]:
         """``_search`` over several collections with one query embedding (see ``_search_domains``)."""
-        return await _bridge(self._search_domains(collections, query, n_results, project))
+        return await _bridge(self._search_domains(collections, query, n_results, project, domain_filters))
 
     async def async_search(
         self,

@@ -22,13 +22,30 @@ STATUS_WAITING_CTO = "waiting_cto_approval"
 _APPROVAL_FILE_PATH: Path | None = None
 
 
-def _approval_file_path(project: str) -> Path:
-    """Return path for approval marker file inside the project output dir."""
-    from pydantic_agents.core.settings import settings
+def _project_approval_path(project: str) -> Path:
+    """The single place the marker's location is derived.
 
-    p = Path(str(settings.output_dir)) / project / _APPROVAL_FILE
-    p.parent.mkdir(parents=True, exist_ok=True)
-    return p
+    ``project`` is caller-chosen (it arrives as an MCP argument), so it goes through ``safe_path_join``: a
+    ``project`` of ``../../tmp/x`` must neither read nor write a marker outside ``output_dir``. Both the read and
+    the write path call this one helper, because writing the same path expression twice is what let the read path
+    lose the guard the write path had (AP-110). Raises ``PathTraversalError`` on an escape.
+
+    The imports stay function-local: ``settings`` and ``utils`` import back into this package.
+    """
+    from pydantic_agents.core.settings import settings
+    from pydantic_agents.core.utils import safe_path_join
+
+    return safe_path_join(settings.output_dir, project, _APPROVAL_FILE)
+
+
+def _approval_file_path(project: str) -> Path:
+    """Return path for approval marker file inside the project output dir.
+
+    The directory is created only after the path is checked, so a rejected traversal leaves nothing behind.
+    """
+    path = _project_approval_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
 
 
 def write_approval(project: str, approved: bool = True) -> Path:
@@ -36,10 +53,7 @@ def write_approval(project: str, approved: bool = True) -> Path:
 
     The project name is caller-chosen, so the path is checked to stay inside the output dir.
     """
-    from pydantic_agents.core.settings import settings
-    from pydantic_agents.core.utils import safe_path_join
-
-    path = safe_path_join(settings.output_dir, project, _APPROVAL_FILE)
+    path = _project_approval_path(project)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("true\n" if approved else "false\n")
     return path

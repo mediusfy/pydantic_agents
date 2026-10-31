@@ -18,11 +18,13 @@ project when the caller names one; without a project every seeded project is sea
 
 import logging
 import uuid
+from collections.abc import Mapping
+from types import MappingProxyType
 from typing import Any
 
 import logfire
 
-from pydantic_agents.core.vector_db import vector_db
+from pydantic_agents.core.vector_db import DomainFilter, vector_db
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +63,17 @@ MAX_QUERY_CHARS = 1_000
 
 _UNAVAILABLE_MARKER = "Vector DB not available"
 
+ADR_PROPOSED_STATUS = "proposed"
+
+# A proposal is a draft until a human approves it through the CTO gate (``core/cto_gate.py``). Retrieval must not
+# hand one to an agent as "Relevant Architecture Context from Knowledge Base" — least of all to the ``security``,
+# ``review`` and ``quality_gate`` agents that exist to catch it, which would let the platform route around its own
+# approval gate. Approved-only is the default; a caller that genuinely wants drafts (the scout checking whether it
+# is about to duplicate one) passes its own ``domain_filters`` and asks for them. (AP-102, ADR-0002)
+DEFAULT_DOMAIN_FILTERS: Mapping[str, DomainFilter] = MappingProxyType(
+    {"adrs": DomainFilter(exclude={"status": ADR_PROPOSED_STATUS})}
+)
+
 
 def _usable(snippet: Any) -> bool:
     """A snippet worth putting in a prompt: non-empty text that is not the store's own unavailability notice."""
@@ -88,7 +101,13 @@ def _unique_snippets(snippets: list[str]) -> list[str]:
     return unique
 
 
-async def retrieve_context(agent_name: str, request: str, top_k: int = 3, project: str | None = None) -> str:
+async def retrieve_context(
+    agent_name: str,
+    request: str,
+    top_k: int = 3,
+    project: str | None = None,
+    domain_filters: Mapping[str, DomainFilter] | None = None,
+) -> str:
     """Retrieve relevant context snippets from all knowledge domains for a given agent.
 
     Args:
@@ -96,14 +115,21 @@ async def retrieve_context(agent_name: str, request: str, top_k: int = 3, projec
         request: The prompt/request text to match against (only its first MAX_QUERY_CHARS are used).
         top_k: Max results per domain, and in total.
         project: Restrict to documents seeded under this project name; None searches every project.
+        domain_filters: Metadata conditions per knowledge domain. ``None`` applies
+            ``DEFAULT_DOMAIN_FILTERS``, which excludes unapproved ADR proposals. Any mapping passed explicitly
+            is used verbatim — including ``{}``, which searches unfiltered and is the only way to retrieve a
+            proposal.
 
     Returns:
         Formatted context string, or empty string if nothing relevant found.
     """
     domains = AGENT_CONTEXT_DOMAINS.get(agent_name, ["architecture", "project"])
+    filters = DEFAULT_DOMAIN_FILTERS if domain_filters is None else domain_filters
     with logfire.span("context_engine.retrieve", domains=domains, agent_name=agent_name, _level="debug"):
         # One embedding of the request, the domains searched concurrently.
-        outcomes = await vector_db.async_search_domains(domains, request[:MAX_QUERY_CHARS], top_k, project)
+        outcomes = await vector_db.async_search_domains(
+            domains, request[:MAX_QUERY_CHARS], top_k, project, domain_filters=filters
+        )
     per_domain: list[list[str]] = []
     for domain, outcome in zip(domains, outcomes, strict=True):
         if isinstance(outcome, BaseException):

@@ -8,7 +8,9 @@ Order and fail-closed rules:
 2. The SRE agent writes the infrastructure for the requirement and stories (it used to get no context at all).
 3. Security, quality gate and review judge the artifacts in batches that fit their character budget, so a large
    run is reviewed completely instead of being truncated and judged on what was left. A batch that fails stops the
-   stage with that gate's failure report.
+   stage with that gate's failure report. One artifact larger than the budget is still truncated — batching does
+   not split an artifact — and a gate that passes such a batch is downgraded to inconclusive, never recorded as
+   an approval.
 """
 
 import asyncio
@@ -23,15 +25,25 @@ from pydantic_agents.core.pipeline.config import PipelineConfig
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.session_recorder import recorder
 from pydantic_agents.core.stages.base import StageRunner
-from pydantic_agents.core.utils import format_artifacts
+from pydantic_agents.core.utils import format_artifacts_report
 from pydantic_agents.core.validators import CodeValidator
 from pydantic_agents.core.verifier import VerificationReport, verify_artifacts
 
 logger = logging.getLogger(__name__)
 
-# Character budget per gate prompt. Artifacts are batched so that no batch exceeds it; a single artifact larger
-# than the budget is reviewed alone and the gate is told it is reading a truncated file.
+# Character budget per gate prompt. Artifacts are batched so that no batch exceeds it. A single artifact larger
+# than the budget is reviewed alone and is still truncated: `_batches` does not split one artifact. When that
+# happens the gate's verdict is downgraded to inconclusive rather than being recorded as a pass (AP-105).
 GATE_BATCH_CHARS = 80_000
+
+# Returned as a finding when a gate saw only part of its batch. It reads as a finding so it flows through the
+# stage's normal `_reject` path and fails closed; a pass on unseen code would be a silent false approval.
+INCONCLUSIVE_TRUNCATED = (
+    "INCONCLUSIVE: the gate reported no findings but received only part of this batch "
+    "({omitted_artifacts} artifact(s) and {omitted_files} file(s) omitted, {omitted_chars} characters of code "
+    "not shown, at the {budget}-character budget). A verdict on truncated input is not a pass — re-run the gate "
+    "on smaller artifacts so the code is judged in full."
+)
 
 
 def _batches(artifacts: Sequence[Artifact], max_chars: int = GATE_BATCH_CHARS) -> list[list[Artifact]]:
@@ -144,11 +156,25 @@ class QualityGateStage(StageRunner):
 
     @staticmethod
     async def _run_gate(gate: Any, state: Any, config: Any, batches: list[list[Artifact]], verification: str):
-        """One gate over every batch: the first batch's findings, or None when all batches pass."""
+        """One gate over every batch: the first batch's findings, or None when all batches pass.
+
+        A batch the character budget truncated cannot produce a pass: the gate never saw the rest of it, so a
+        clean verdict is an absence of evidence and is reported as inconclusive instead (AP-105).
+        """
         for batch in batches:
-            findings = await gate(state, config, format_artifacts(batch, max_chars=GATE_BATCH_CHARS), verification)
+            formatted = format_artifacts_report(batch, max_chars=GATE_BATCH_CHARS)
+            findings = await gate(state, config, formatted.text, verification)
             if findings is not None:
                 return findings
+            if formatted.truncated:
+                return [
+                    INCONCLUSIVE_TRUNCATED.format(
+                        omitted_artifacts=formatted.omitted_artifacts,
+                        omitted_files=formatted.omitted_files,
+                        omitted_chars=formatted.omitted_chars,
+                        budget=GATE_BATCH_CHARS,
+                    )
+                ]
         return None
 
     async def run(self, state: PipelineState, config: PipelineConfig) -> PipelineState:
