@@ -196,9 +196,11 @@ def _append_artifact_files(parts: list[str], art: Any, total_len: int, max_chars
     for index, (path, content) in enumerate(files):
         snippet = f"--- {path} ---\n{content}"
         if total_len + len(snippet) > max_chars:
-            kept = snippet[: max_chars - total_len]
+            # max(0, ...): an [Error] entry is appended without a budget check, so the budget can already be
+            # overspent here. A negative bound would silently slice to "" and leave a bare marker.
+            kept = snippet[: max(0, max_chars - total_len)]
             omitted_chars += len(snippet) - len(kept)
-            snippet = kept + "\n... (truncated)"
+            snippet = (kept + "\n... (truncated)") if kept else "... (omitted, no budget left)"
         parts.append(snippet)
         total_len += len(snippet)
         if total_len >= max_chars:

@@ -10,6 +10,7 @@ filter on ``status`` would hide the entire real knowledge base.
 """
 
 import asyncio
+from contextlib import ExitStack
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -49,19 +50,33 @@ class _Pool:
         return _Ctx(_Conn(self.calls))
 
 
-def _run_search(**kwargs):
-    """Drive ``_search`` against a stub pool and return the SQL/args of every query it issued."""
-    pool = _Pool()
+def _stubbed_store(pool):
+    """Patch the store's I/O so a search reaches the stub pool and nothing else.
+
+    ``retrieval_hybrid`` and ``_embed_texts`` are pinned rather than inherited from settings: otherwise
+    ``RETRIEVAL_HYBRID=false`` turns the hybrid assertion into a confusing failure, and
+    ``EMBEDDING_PROVIDER=litellm`` makes these tests attempt a real HTTP embed.
+    """
 
     async def _noop(*_a, **_k):
         return None
 
-    with (
+    return (
         patch.object(vdb, "_require_vector_deps"),
         patch.object(vdb, "_ensure_table", _noop),
         patch.object(vdb, "_to_embedding", return_value=[0.1, 0.2]),
+        patch.object(vdb, "_embed_texts", AsyncMock(return_value=[[0.1, 0.2]])),
+        patch.object(vdb.settings, "retrieval_hybrid", True),
         patch.object(vdb, "_get_pool", AsyncMock(return_value=pool)),
-    ):
+    )
+
+
+def _run_search(**kwargs):
+    """Drive ``_search`` against a stub pool and return the SQL/args of every query it issued."""
+    pool = _Pool()
+    with ExitStack() as stack:
+        for patcher in _stubbed_store(pool):
+            stack.enter_context(patcher)
         asyncio.run(vdb.vector_db._search("adrs", "q", 3, None, **kwargs))
     return pool.calls
 
@@ -136,16 +151,9 @@ def test_placeholder_numbering_survives_project_filters_and_exclusions_together(
     condition consumes no parameter, which is exactly where an off-by-one would hide.
     """
     pool = _Pool()
-
-    async def _noop(*_a, **_k):
-        return None
-
-    with (
-        patch.object(vdb, "_require_vector_deps"),
-        patch.object(vdb, "_ensure_table", _noop),
-        patch.object(vdb, "_to_embedding", return_value=[0.1, 0.2]),
-        patch.object(vdb, "_get_pool", AsyncMock(return_value=pool)),
-    ):
+    with ExitStack() as stack:
+        for patcher in _stubbed_store(pool):
+            stack.enter_context(patcher)
         asyncio.run(
             vdb.vector_db._search(
                 "adrs",
@@ -181,21 +189,11 @@ def test_search_domains_applies_the_filter_to_the_right_collection():
     from pydantic_agents.core.context_engine import DEFAULT_DOMAIN_FILTERS
 
     pool = _Pool()
-
-    async def _noop(*_a, **_k):
-        return None
-
-    with (
-        patch.object(vdb, "_require_vector_deps"),
-        patch.object(vdb, "_ensure_table", _noop),
-        patch.object(vdb, "_to_embedding", return_value=[0.1, 0.2]),
-        patch.object(vdb, "_embed_texts", AsyncMock(return_value=[[0.1, 0.2]])),
-        patch.object(vdb, "_get_pool", AsyncMock(return_value=pool)),
-    ):
+    with ExitStack() as stack:
+        for patcher in _stubbed_store(pool):
+            stack.enter_context(patcher)
         asyncio.run(
-            vdb.vector_db._search_domains(
-                ["adrs", "architecture"], "q", 3, None, DEFAULT_DOMAIN_FILTERS
-            )
+            vdb.vector_db._search_domains(["adrs", "architecture"], "q", 3, None, DEFAULT_DOMAIN_FILTERS)
         )
 
     adrs = [(sql, args) for sql, args in pool.calls if "v_adrs" in sql]

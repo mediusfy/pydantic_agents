@@ -13,7 +13,8 @@ from pydantic_agents.core.cto_gate import _APPROVAL_FILE, _approval_file_path, w
 from pydantic_agents.core.exceptions import PathTraversalError
 
 # Escapes one level out of output_dir into a sibling that does not exist, so "was it created?" is answerable.
-# Each test uses its own escape directory name, so one test's side effect cannot mask another's assertion.
+# Shared by the two tests that only assert on the raise; the test that asserts the directory was *not* created
+# uses a private name, so another test's side effect cannot satisfy its precondition for it.
 ESCAPE_DIR = "pa-ap110-escape"
 TRAVERSAL = f"../{ESCAPE_DIR}/nested"
 

@@ -29,12 +29,13 @@ def test_format_artifacts_report_counts_omitted_artifacts():
     from pydantic_agents.core.utils import format_artifacts_report
 
     artifacts = _many_artifacts(4, body_chars=400)
-    # Room for roughly one artifact.
+    # Room for one artifact (header 28 + snippet 414 = 442), so artifacts 2, 3 and 4 never start; the second
+    # one's files are counted against it, leaving exactly 2 whole artifacts never reached.
     report = format_artifacts_report(artifacts, max_chars=500)
 
     assert report.truncated is True
-    assert report.omitted_artifacts >= 2, f"only {report.omitted_artifacts} of 4 artifacts reported as omitted"
-    assert report.omitted_artifacts <= 3
+    # Exact, not a range: a window of 2..3 would let an off-by-one through.
+    assert report.omitted_artifacts == 2, f"expected exactly 2 omitted, got {report.omitted_artifacts}"
 
 
 def test_format_artifacts_report_counts_omitted_files():
@@ -137,6 +138,22 @@ def test_the_inconclusive_finding_quantifies_what_the_gate_missed():
     assert findings is not None
     assert "characters of code not shown" in findings[0]
     assert "0 characters" not in findings[0]
+
+
+def test_an_error_entry_overspending_the_budget_still_reports_truncation():
+    """``[Error]`` entries are appended without a budget check, so the budget can already be overspent.
+
+    The remaining slice bound then goes negative. That must not silently produce an empty snippet behind a bare
+    marker — the loss still has to be counted and reported.
+    """
+    from pydantic_agents.core.utils import format_artifacts_report
+
+    artifacts = [RuntimeError("x" * 300), _artifact("backend", {"main.go": "package main"})]
+    report = format_artifacts_report(artifacts, max_chars=100, include_agent_header=False)
+
+    assert report.truncated is True
+    assert report.omitted_chars > 0, "the file that got no budget at all must still be counted"
+    assert "TRUNCATED" in report.text
 
 
 def _run_gate_over(artifacts, gate):
