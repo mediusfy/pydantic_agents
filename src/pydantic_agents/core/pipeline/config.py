@@ -112,12 +112,6 @@ _BLUEPRINT_SPECS: list[BlueprintSpec] = [
         framework=Framework.CREWAI,
     ),
     BlueprintSpec(
-        name="crew_research",
-        description="Parallel research via CrewAI: weather + market + crypto",
-        crew_class="ResearchCrew",
-        framework=Framework.CREWAI,
-    ),
-    BlueprintSpec(
         name="crew_qa",
         description="QA via CrewAI: BA criteria → Go/Playwright tests → test fixes → review sign-off",
         crew_class="QaCrew",

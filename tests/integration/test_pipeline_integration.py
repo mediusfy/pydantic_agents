@@ -466,47 +466,20 @@ class TestAgentRegistrationIntegration:
             "cto",
             "backend",
             "frontend",
-            "frontend_component",
             "database",
             "devops",
             "docs",
             "sre",
             "test_eng",
-            "test_gen",
-            "go_test",
+            "qa_executor",
             "review",
             "security",
             "ux",
             "quality_gate",
             "service_engineer",
             "planner",
-            "critic",
-            "api_contract",
-            "observability_engineer",
-            "finops",
-            "release_manager",
         ]
         for name in expected_agents:
-            assert name in registry._agents, f"Agent '{name}' not registered"
-
-    def test_all_travel_finance_agents_register(self):
-        """register_all_agents must register travel & finance agents."""
-        from pydantic_agents.agents.registration import register_all_agents
-
-        register_all_agents()
-
-        expected = [
-            "accountant",
-            "asymmetric_reviewer",
-            "current_events",
-            "region_analyzer",
-            "weather",
-            "crypto_oracle",
-            "holiday_planner",
-            "market_shark",
-            "price_analyst",
-        ]
-        for name in expected:
             assert name in registry._agents, f"Agent '{name}' not registered"
 
     def test_total_agent_count(self):
@@ -515,7 +488,7 @@ class TestAgentRegistrationIntegration:
 
         register_all_agents()
 
-        assert len(registry.list_agents()) == 37
+        assert len(registry.list_agents()) == 16
 
     def test_capability_index_is_populated(self):
         """Each agent's capabilities must be in the index.
@@ -558,7 +531,6 @@ class TestAgentRegistrationIntegration:
         assert "ba" in names
         assert "backend" in names
         assert "review" in names
-        assert "weather" in names
 
     @pytest.mark.asyncio
     async def test_query_unknown_capability_raises_agent_not_found(self):

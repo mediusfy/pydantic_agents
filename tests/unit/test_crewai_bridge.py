@@ -225,13 +225,6 @@ CREW_CASES = [
         id="sdlc",
     ),
     pytest.param(
-        "ResearchCrew",
-        "hierarchical",
-        3,
-        ["weather/note", "crypto_oracle/note", "market_shark/note"],
-        id="research",
-    ),
-    pytest.param(
         "SecurityReviewCrew",
         "sequential",
         3,
@@ -282,10 +275,9 @@ class TestCrews:
         crews = importlib.import_module("pydantic_agents.core.pipeline.crewai.crews")
         state = _state(artifacts=[Artifact(agent_name="backend", files={"main.go": "package main"})])
 
-        research = crews.ResearchCrew().build(state)
         audit = crews.AuditCrew().build(state)
 
-        assert all("Build a billing service" in task.description for task in research.tasks)
+        assert "Build a billing service" in audit.tasks[0].description
         assert "package main" in audit.tasks[0].description
 
     def test_qa_tasks_require_criterion_ids(self, fake_crewai, litellm_env, registered_agents):

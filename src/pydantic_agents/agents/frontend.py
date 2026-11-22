@@ -63,15 +63,6 @@ frontend_agent = Agent(
 )
 
 
-# Text-first agent: reasoner generates code as free text (no result_type constraint)
-component_gen = Agent(
-    create_model(settings.resolve_model(settings.frontend_model)),
-    system_prompt=frontend_prompt,
-    defer_model_check=True,
-    retries=settings.agent_retries,
-)
-
-
 # Private inner generator: tool-less (never registered), so it cannot delegate or write files.
 _component_writer = Agent(
     create_model(settings.resolve_model(settings.frontend_model)),

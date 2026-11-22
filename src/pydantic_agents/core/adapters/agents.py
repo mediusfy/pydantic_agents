@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Any
@@ -12,6 +13,8 @@ from pydantic_agents.core.limits import is_transient_error, permit_held, run_id_
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 
+logger = logging.getLogger(__name__)
+
 
 async def _record_metric(agent_name: str, start: float, result: Any) -> None:
     """One platform_metrics row per agent run (duration, tokens, verdict); best-effort and never raises.
@@ -19,6 +22,16 @@ async def _record_metric(agent_name: str, start: float, result: Any) -> None:
     ``result is None`` means the run failed or was cancelled.
     """
     in_tokens, out_tokens = platform_metrics.token_counts(result) if result is not None else (None, None)
+    total_tokens = (in_tokens or 0) + (out_tokens or 0)
+    if total_tokens > settings.agent_token_alert_threshold:
+        logger.warning(
+            "agent '%s' run used %d tokens (in=%s out=%s), over the %d alert threshold (agent_token_alert_threshold)",
+            agent_name,
+            total_tokens,
+            in_tokens,
+            out_tokens,
+            settings.agent_token_alert_threshold,
+        )
     with contextlib.suppress(Exception):
         await platform_metrics.record_call(
             agent_name,

@@ -236,43 +236,6 @@ class ImplementationCrew:
         )
 
 
-class ResearchCrew:
-    def build(self, state: PipelineState) -> Crew:
-        topic = state.requirement
-        weather = _agent("weather", "Weather Data Analyst", "Research weather patterns and conditions")
-        crypto = _agent("crypto_oracle", "Cryptocurrency Analyst", "Research cryptocurrency market trends")
-        market = _agent("market_shark", "Market Research Analyst", "Analyze market conditions and trends")
-
-        tasks = [
-            _make_task(
-                f"Research weather conditions related to: {topic}",
-                weather,
-                "Weather research report",
-                name=_task_name("weather", "note"),
-            ),
-            _make_task(
-                f"Research cryptocurrency market for: {topic}",
-                crypto,
-                "Crypto market report",
-                name=_task_name("crypto_oracle", "note"),
-            ),
-            _make_task(
-                f"Research general market conditions for: {topic}",
-                market,
-                "Market analysis report",
-                name=_task_name("market_shark", "note"),
-            ),
-        ]
-
-        return Crew(
-            agents=[weather, crypto, market],
-            tasks=tasks,
-            process=Process.hierarchical,
-            manager_llm=_manager_llm(),
-            verbose=True,
-        )
-
-
 class SecurityReviewCrew:
     def build(self, state: PipelineState) -> Crew:
         code_context = _code_context(state)
@@ -333,7 +296,7 @@ class QaCrew:
             "Turn requirements into user stories with ids and numbered Gherkin acceptance criteria",
         )
         test_gen = _agent(
-            "test_gen",
+            "test_eng",
             "Test Generation Engineer",
             "Write Go table-driven tests and Playwright specs for every acceptance criterion",
         )
@@ -385,14 +348,14 @@ class QaCrew:
         )
 
     def build_fix(self, tests_output: str, report: TestRunReport) -> Crew:
-        """One bounded fix round: go_test only touches the criteria the last report marked failing.
+        """One bounded fix round: the fix only touches the criteria the last report marked failing.
 
         ``bridge._run_qa_staged_gate`` only calls this once a parsed ``TestRunReport`` says the gate isn't
         met yet, so the all-unnamed fallback below fires only for a parsed report with zero criterion results
         (an executor that ran nothing, reported no failures and no unexecuted ids) — not for a report that
         failed to parse at all, which short-circuits straight to the gate instead of reaching this method.
         """
-        go_test = _agent("go_test", "Go Test Engineer", "Make failing Go tests pass without weakening them")
+        go_test = _agent("test_eng", "Go Test Engineer", "Make failing Go tests pass without weakening them")
         failing_ids = [r.criterion_id for r in report.criterion_results if not r.passed]
         failing_ids.extend(report.unexecuted_criterion_ids)
         fix_task = _make_task(

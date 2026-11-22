@@ -37,14 +37,6 @@ class TestOutput(BaseModel):
     code: str
 
 
-# Text-first agent: generates Playwright test code as free text (no output_type constraint)
-test_gen = Agent(
-    create_model(settings.resolve_model(settings.test_model)),
-    system_prompt=test_prompt,
-    defer_model_check=True,
-    retries=settings.agent_retries,
-)
-
 # Private inner generator: tool-less (it is never registered), so it cannot delegate or write files.
 _test_writer = Agent(
     create_model(settings.resolve_model(settings.test_model)),
@@ -105,14 +97,6 @@ class GoTestOutput(BaseModel):
     code: str
     description: str
 
-
-# Text-first agent: generates Go test code as free text (no output_type constraint)
-go_test_gen = Agent(
-    create_model(settings.resolve_model(settings.test_model)),
-    system_prompt=go_test_prompt,
-    defer_model_check=True,
-    retries=settings.agent_retries,
-)
 
 # Private inner generator: tool-less (never registered), so it cannot delegate or write files.
 _go_test_writer = Agent(

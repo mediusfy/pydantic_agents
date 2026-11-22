@@ -768,6 +768,20 @@ fresh **Unreleased** section above it.
 - `write_file` is no longer attached to 25 of 27 agents. It now sits in an `fs_write` category that no agent
   is assigned; code-facing agents get `read_file`/`list_dir` through `fs_read`.
 
+### Removed
+- 21 agents with zero logged runs over 3.5 weeks of production telemetry (10 total runs across 38 agents, none
+  for the removed set): the 9 non-technical/utility agents (`accountant`, `asymmetric_reviewer`, `current_events`,
+  `region_analyzer`, `weather`, `crypto_oracle`, `holiday_planner`, `market_shark`, `price_analyst` — out of scope
+  for an SDLC agent repo), the Platform Intelligence Layer agents (`observer`, `sre_autopilot`, `innovation_scout`,
+  `product_strategist` — never wired to an automated trigger), unwired meta-agents (`critic`, `api_contract`,
+  `observability_engineer`, `finops`, `release_manager`), and the `frontend_component`/`test_gen`/`go_test`
+  duplicates (their prompts folded into `frontend` and `test_eng`). Cuts the registry from 37 to 16 agents and the
+  MCP tool surface by more than half. The CrewAI `ResearchCrew`/`crew_research` blueprint, built entirely from
+  retired agents, is removed with them; `QaCrew` now runs its test-generation and fix stages through `test_eng`
+  instead of the retired `test_gen`/`go_test`. `sre`, `ux`, `docs`, `devops`, `database`, `quality_gate`, `planner`,
+  `service_engineer` and `qa_executor` are kept despite being unrun, since they're wired into pipeline stages that
+  themselves haven't been exercised end-to-end yet, not unwired.
+
 ## [0.2.0]
 
 ### Added

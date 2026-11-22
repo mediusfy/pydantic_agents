@@ -22,7 +22,6 @@ from pydantic_agents.core.pipeline.crewai.crews import (
     AuditCrew,
     ImplementationCrew,
     QaCrew,
-    ResearchCrew,
     SdlcCrew,
     SecurityReviewCrew,
 )
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 _CREW_MAP: dict[str, Any] = {
     "SdlcCrew": SdlcCrew,
     "ImplementationCrew": ImplementationCrew,
-    "ResearchCrew": ResearchCrew,
     "SecurityReviewCrew": SecurityReviewCrew,
     "QaCrew": QaCrew,
     "ArchitectureReviewCrew": ArchitectureReviewCrew,
