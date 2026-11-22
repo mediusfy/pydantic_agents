@@ -5,9 +5,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core.models.core import Artifact, UserStory
-from pydantic_agents.core.registry import AgentRegistry, registry
+from pydantic_agents.core.registry import AgentRegistry
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.tools import memory
 from pydantic_agents.core.utils import serialize_output
@@ -115,56 +114,6 @@ async def test_vector_search_rejects_unsafe_filter_keys(key):
     manager = VectorDBManager()
     with pytest.raises(ValueError):
         await manager._search("activity_logs", "q", 5, None, {key: "v"})
-
-
-# ── non-technical prompts ──────────────────────────────────────────────────
-
-NON_TECH = [
-    "accountant",
-    "asymmetric_reviewer",
-    "crypto_oracle",
-    "current_events",
-    "holiday_planner",
-    "market_shark",
-    "price_analyst",
-    "region_analyzer",
-    "weather",
-]
-INVESTING = ["crypto_oracle", "market_shark", "price_analyst"]
-
-
-@pytest.fixture(scope="module")
-def prompts():
-    register_all_agents()
-    return {n: "\n".join(str(p) for p in registry.get(n)._system_prompts) for n in NON_TECH}
-
-
-@pytest.mark.parametrize("name", NON_TECH)
-def test_prompts_require_dates_sources_and_clarification(prompts, name):
-    text = prompts[name]
-    assert "get_current_datetime" in text
-    assert "tool result" in text
-    assert "clarifying question" in text
-
-
-@pytest.mark.parametrize("name", INVESTING)
-def test_investment_agents_state_uncertainty_and_disclaimer(prompts, name):
-    text = prompts[name]
-    assert "not financial advice" in text
-    assert "never as certainties" in text
-    assert "definitive" not in text.lower()
-
-
-def test_weather_agent_is_told_about_its_forecast_tool(prompts):
-    assert "get_weather_forecast" in prompts["weather"]
-    assert "get_weather_forecast" in registry.get("weather")._function_toolset.tools
-
-
-def test_reviewer_is_framed_around_consumer_rights(prompts):
-    text = prompts["asymmetric_reviewer"].lower()
-    assert "loophole" not in text
-    assert "exploit" not in text
-    assert "consumer" in text
 
 
 async def test_query_history_can_opt_in_to_untagged_legacy_rows(run_ctx):

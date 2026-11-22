@@ -152,13 +152,11 @@ async def test_a_gate_only_blueprint_actually_runs_the_gate(monkeypatch):
 @pytest.mark.parametrize(
     ("crew", "errors", "cto_approved", "failure", "approved"),
     [
-        ("ResearchCrew", [], False, False, True),
-        ("ResearchCrew", ["crewai x: bad"], False, False, False),
         ("AuditCrew", [], False, False, True),
         ("AuditCrew", ["findings rejected"], False, False, False),
         ("ArchitectureReviewCrew", [], True, False, True),
         ("ArchitectureReviewCrew", [], False, False, False),
-        ("ResearchCrew", [], False, True, False),
+        ("AuditCrew", [], False, True, False),
         ("SdlcCrew", [], True, False, False),  # decided by its review verdict, not here
     ],
 )

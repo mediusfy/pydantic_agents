@@ -40,21 +40,12 @@ AGENT_CONTEXT_DOMAINS: dict[str, list[str]] = {
     "sre": ["adrs", "architecture"],
     "devops": ["adrs", "architecture"],
     "test_eng": ["conventions", "architecture"],
-    "test_gen": ["conventions"],
     "docs": ["conventions"],
     "ux": ["architecture"],
     "cto": ["adrs", "architecture"],
     "ba": ["architecture", "project"],
     "planner": ["adrs", "architecture", "project"],
-    "critic": ["conventions"],
-    "api_contract": ["architecture", "conventions"],
-    "observability_engineer": ["adrs", "architecture", "conventions"],
-    "finops": ["project"],
-    "release_manager": ["conventions", "project"],
     # Travel agents get architecture-only (generic)
-    "holiday_planner": ["project"],
-    "region_analyzer": ["project"],
-    "asymmetric_reviewer": ["project"],
 }
 
 # Longest query the embedding model can use: MiniLM reads about 256 word pieces, so a longer query is judged

@@ -92,26 +92,8 @@ class Settings(BaseSettings):
     planner_model: str = "deepseek-v4-pro"
     quality_gate_model: str = "deepseek-v4-pro"
     service_engineer_model: str = "deepseek-v4-pro"
-    innovation_scout_model: str = "deepseek-v4-pro"
     qa_executor_model: str = "deepseek-v4-pro"
-    observer_model: str = "deepseek-v4-pro"
-    sre_autopilot_model: str = "deepseek-v4-pro"
-    product_strategist_model: str = "deepseek-v4-pro"
-    critic_model: str = "deepseek-v4-pro"
-    api_contract_model: str = "deepseek-v4-pro"
-    observability_engineer_model: str = "deepseek-v4-pro"
-    finops_model: str = "subagent"
-    release_manager_model: str = "subagent"
 
-    holiday_planner_model: str = "subagent"
-    region_analyzer_model: str = "subagent"
-    asymmetric_reviewer_model: str = "deepseek-v4-pro"
-    current_events_model: str = "subagent"
-    weather_model: str = "subagent"
-    accountant_model: str = "subagent"
-    price_analyst_model: str = "subagent"
-    market_shark_model: str = "subagent"
-    crypto_oracle_model: str = "subagent"
 
     # Pipeline Configuration
     output_dir: Path = Path("./generated-app")
@@ -145,6 +127,19 @@ class Settings(BaseSettings):
     agent_http_timeout_seconds: float = 300.0
     # Output cap sent with every model call (max_tokens). 0 sends none.
     agent_max_output_tokens: int = 16384
+    # A run_<agent> request longer than this is almost certainly a mispaste (a whole file, diff or codebase dump)
+    # rather than a task description: reject it before it reaches the model instead of silently burning hundreds
+    # of thousands of tokens (the 2026-11 cto run that cost 555k input tokens had no such check to catch it).
+    agent_request_max_chars: int = 50_000
+    # Logged as a warning when one run's total tokens exceed this, so an anomalous run is noticed without digging
+    # through Langfuse. Separate from agent_total_tokens_limit (core/limits.py), which is a hard cap that aborts
+    # the run; this is a lower, non-blocking tripwire.
+    agent_token_alert_threshold: int = 150_000
+    # Comma-separated allowlist of agent names exposed as run_<name> MCP tools. Empty exposes every registered
+    # agent. Agents not listed stay registered (pipeline stages, crews and plan_and_execute/modify_existing_code
+    # can still reach them) but are not individually callable over MCP, which is most of the client-side tool-list
+    # cost: see docs/adr (agent usage review, 2026-11-21).
+    enabled_mcp_agents: str = "ba,cto,backend,frontend,review,security,test_eng"
     # Push activity logs into the local Claude Code / Antigravity memory directories after a pipeline run. Off by
     # default: in the pod there are no such directories, and on a workstation it writes into every agent's memory.
     memory_bridge_sync: bool = False

@@ -56,12 +56,8 @@ def test_every_assigned_category_exists():
 
 
 def test_every_agent_has_its_own_model_setting():
-    # Agents that share a model on purpose (test_gen/go_test use test_model, frontend_component uses frontend_model).
     shared = {
         "test_eng": "test_model",
-        "test_gen": "test_model",
-        "go_test": "test_model",
-        "frontend_component": "frontend_model",
         "sre": "sre_model",
         "ux": "ux_model",
     }
@@ -96,11 +92,6 @@ def test_reregistering_the_same_function_is_allowed():
         ("test_eng", {"validate_frontend_code"}),
         ("review", {"update_documentation", "read_and_memorize_url", "read_and_memorize_pdf"}),
         ("cto", {"update_documentation", "read_and_memorize_url", "read_and_memorize_pdf"}),
-        ("product_strategist", {"read_and_memorize_url", "read_and_memorize_pdf", "update_documentation"}),
-        ("observer", {"read_and_memorize_url", "read_and_memorize_pdf", "update_documentation"}),
-        ("weather", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
-        ("accountant", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
-        ("holiday_planner", {"search_codebase", "search_files", "read_and_memorize_pdf"}),
     ],
 )
 def test_tool_sets_are_trimmed(agent, absent):

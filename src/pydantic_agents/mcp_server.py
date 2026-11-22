@@ -20,7 +20,7 @@ from mcp.server.transport_security import TransportSecuritySettings
 from pydantic_agents.agents.registration import register_all_agents
 from pydantic_agents.core import platform_metrics
 from pydantic_agents.core.context_engine import retrieve_context
-from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError
+from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError, PathTraversalError, ValidationError
 from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.memory_bridge import get_bridge_status, sync_claude_to_pgvector, sync_memory_to_claude
 from pydantic_agents.core.observability import configure_observability
@@ -86,6 +86,13 @@ async def run_agent_by_name(agent_name: str, request: str, project: str = "") ->
     """
     if not registry.is_registered(agent_name):
         raise AgentNotFoundError(f"Agent '{agent_name}' not registered")
+    if len(request) > settings.agent_request_max_chars:
+        raise ValidationError(
+            f"Request is {len(request):,} characters, over the {settings.agent_request_max_chars:,} limit "
+            "(agent_request_max_chars). This is usually a pasted file, diff or codebase dump rather than a task "
+            "description; trim it, or pass a project name so context retrieval can find the relevant pieces "
+            "instead of inlining them."
+        )
 
     run_token = run_id_var.set(run_id_var.get() or f"call_{uuid.uuid4().hex[:12]}")
     try:
@@ -133,18 +140,6 @@ def _tool_result(agent_name: str, result: Any) -> str:
 
 
 AGENT_DOCSTRINGS = {
-    "holiday_planner": (
-        "Invokes the Holiday Planner Agent. "
-        "Returns a JSON Itinerary (days, items with confirm-where, budget check, or open_questions)."
-    ),
-    "region_analyzer": "Invokes the Region Analyzer Agent.",
-    "asymmetric_reviewer": "Invokes the Asymmetric Reviewer Agent (law & corporate tricks for travel savings).",
-    "current_events": "Invokes the Current Events Agent (history buff).",
-    "weather": "Invokes the Weather Agent.",
-    "accountant": (
-        "Invokes the Accountant Agent. "
-        "Returns a JSON CostBreakdown (cost lines, totals, exchange rates, or open_questions)."
-    ),
     "ba": "Invokes the Business Analyst (BA) agent to write user stories and requirements.",
     "cto": "Invokes the CTO agent for architectural guidance and advisories.",
     "backend": "Invokes the Backend Engineer agent to generate high-concurrency Go services.",
@@ -154,61 +149,12 @@ AGENT_DOCSTRINGS = {
     "docs": "Invokes the Documentation agent to generate API documentation and READMEs.",
     "sre": "Invokes the SRE agent to generate Kubernetes/Helm infrastructure manifests.",
     "test_eng": "Invokes the Test Engineer agent to run tests and analyze coverage.",
-    "test_gen": "Invokes the Test Generator agent to write unit and table-driven tests.",
-    "go_test": "Invokes the Go Testing agent to run tests and debug test failures.",
     "review": "Invokes the Code Review agent to verify production readiness and standards.",
     "security": "Invokes the Security agent to audit code and scan for vulnerabilities.",
     "ux": "Invokes the UX Design agent to refine page layout and flow.",
     "quality_gate": "Invokes the Quality Gate agent to check for over-engineering and complexity.",
     "service_engineer": "Invokes the Service Engineer agent to modify existing Go codebases.",
     "planner": "Invokes the Planner agent to create execution plans.",
-    "innovation_scout": (
-        "Invokes the Innovation Scout Agent (ADR-0001 Platform Intelligence Layer) to scan for adoptable "
-        "techniques/technologies and draft ADR proposals via the ADR store, pending human/CTO approval. "
-        "Returns a JSON InnovationScoutReport (proposals, narrative)."
-    ),
-    "observer": (
-        "Invokes the Observer Agent (ADR-0001 Platform Intelligence Layer) to scan recent platform_metrics for "
-        "regressions, flaky agents and latency drift, and persist any findings to platform_findings. "
-        "Returns a JSON ObserverReport (findings, narrative)."
-    ),
-    "product_strategist": (
-        "Invokes the Product Strategist Agent (ADR-0001 Platform Intelligence Layer) to mine requirement history "
-        "and open platform_findings for customer-facing product/capability proposals. Read-only: never writes "
-        "code or tickets. Returns a JSON ProductStrategistReport (proposals, narrative)."
-    ),
-    "critic": (
-        "Invokes the Critic agent to check another agent's claims against the evidence from its run. "
-        "Returns a JSON CriticReport (claims with evidence, unsupported_count, passed, feedback)."
-    ),
-    "api_contract": (
-        "Invokes the API Contract agent to find drift between OpenAPI/proto specs, Go handlers and TypeScript types. "
-        "Returns a JSON ContractReport (drifts with file:line, passed, feedback)."
-    ),
-    "observability_engineer": (
-        "Invokes the Observability Engineer agent to review Go services for OTel spans, RED metrics, slog logging "
-        "and health probes. Returns an Artifact with Prometheus rule files and docs/observability-review.md."
-    ),
-    "finops": (
-        "Invokes the FinOps agent to account for LLM and cloud spend. "
-        "Returns a JSON CostReport (cost lines, total_usd, budget_usd, over_budget, recommendations)."
-    ),
-    "release_manager": (
-        "Invokes the Release Manager agent to write the CHANGELOG fragment, version-bump note and PR body "
-        "for a finished change. Returns an Artifact with those three files."
-    ),
-    "crypto_oracle": (
-        "Invokes the Crypto Oracle Agent to analyze crypto markets and trends. "
-        "Returns a JSON Forecast (scenarios, sources, previous-forecast accountability)."
-    ),
-    "market_shark": (
-        "Invokes the Market Shark Agent to analyze stock markets and investments. "
-        "Returns a JSON MarketAnalysis (metrics, bull/bear case, sources)."
-    ),
-    "price_analyst": (
-        "Invokes the Price Analyst Agent to analyze and compare pricing. "
-        "Returns a JSON PurchaseAdvice (buy-now / wait scenarios, sources)."
-    ),
 }
 
 
@@ -229,7 +175,12 @@ def _register_agent_mcp_tools():
 
         return agent_runner
 
+    # Empty allowlist exposes every registered agent; a non-empty one narrows the MCP tool list without touching
+    # the registry itself, so pipeline stages, crews and plan_and_execute/modify_existing_code keep working.
+    allowed = set(_split_csv(settings.enabled_mcp_agents))
     for name in registry.list_agents():
+        if allowed and name not in allowed:
+            continue
         tool_name = f"run_{name}"
         runner = make_runner(name)
         docstring = AGENT_DOCSTRINGS.get(name, f"Invokes the {name} agent to perform its designated task.")
