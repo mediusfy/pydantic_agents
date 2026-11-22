@@ -15,6 +15,62 @@ from pydantic_agents.core.telemetry import telemetry
 
 logger = logging.getLogger(__name__)
 
+# Share of the character budget kept from the head of an oversized prompt; the rest is kept from the tail. The tail
+# weighs more because the assembled input puts retrieved context first and the actual task last (see
+# mcp_server.run_agent_by_name), and a model that loses the task answers the wrong question confidently.
+_HEAD_SHARE = 0.3
+
+
+def prompt_char_budget() -> int:
+    """The character budget for one prompt, or 0 when the cap is switched off.
+
+    ``agent_prompt_token_budget`` is a token figure because that is what the model bills and what the incident was
+    measured in (a 555k-input-token ``cto`` run), but nothing here can tokenize text without loading a tokenizer per
+    model, so it is converted with the ``agent_prompt_chars_per_token`` estimate. A non-positive value for either
+    setting disables the cap.
+    """
+    budget = settings.agent_prompt_token_budget
+    ratio = settings.agent_prompt_chars_per_token
+    if budget <= 0 or ratio <= 0:
+        return 0
+    return int(budget * ratio)
+
+
+def cap_prompt(agent_name: str, prompt: str) -> str:
+    """``prompt`` unchanged when it fits the budget, else truncated in the middle with a notice where the cut is.
+
+    This is the last point before ``Agent.run``, so it catches every path that assembles input — MCP context
+    enrichment, pipeline artifact dumps, tool output accumulated over a run — instead of each of them needing its
+    own limit. The notice is part of the prompt on purpose: a model given a silently shortened context cannot tell
+    that it is reasoning about a partial view, and would report what is missing as absent.
+    """
+    budget = prompt_char_budget()
+    if budget <= 0 or len(prompt) <= budget:
+        return prompt
+    omitted = len(prompt) - budget
+    notice = (
+        f"\n\n... (TRUNCATED at the {budget}-character prompt budget (agent_prompt_token_budget): "
+        f"{omitted} characters from the middle of this input are not shown. "
+        f"This is an INCOMPLETE view; say so instead of treating what is missing as absent.)\n\n"
+    )
+    # The notice spends part of the budget rather than being added on top of it, so the result never exceeds it.
+    keep = max(0, budget - len(notice))
+    head_len = int(keep * _HEAD_SHARE)
+    tail_len = keep - head_len
+    logger.warning(
+        "agent '%s' prompt is %d characters, over the %d-character budget (agent_prompt_token_budget=%d): "
+        "keeping %d characters, %d omitted",
+        agent_name,
+        len(prompt),
+        budget,
+        settings.agent_prompt_token_budget,
+        keep,
+        omitted,
+    )
+    head = prompt[:head_len]
+    tail = prompt[len(prompt) - tail_len :] if tail_len else ""
+    return f"{head}{notice}{tail}"
+
 
 async def _record_metric(agent_name: str, start: float, result: Any) -> None:
     """One platform_metrics row per agent run (duration, tokens, verdict); best-effort and never raises.
@@ -66,7 +122,7 @@ class PydanticAIAgentProvider(AgentProviderPort):
     This is the only place that calls ``Agent.run``: it applies the concurrency permit, the per-run usage caps, the
     timeout, the transport retry, the per-call model settings (output cap, Langfuse session tags), the JSONL
     telemetry and an ``agent.run`` span tagged for Langfuse. ``usage`` lets a delegated call share its caller's
-    budget instead of getting a fresh one.
+    budget instead of getting a fresh one. It is also where the prompt character budget is enforced (``cap_prompt``).
     """
 
     async def run_agent(
@@ -80,6 +136,7 @@ class PydanticAIAgentProvider(AgentProviderPort):
         usage: Any = None,
     ) -> Any:
         timeout_seconds = timeout_seconds or settings.agent_timeout_seconds
+        prompt = cap_prompt(agent_name, prompt)
 
         @retry(
             stop=stop_after_attempt(settings.agent_transport_attempts),

@@ -12,6 +12,14 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
+  `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
+  in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
+  context enrichment, pipeline artifact dumps, tool output grown over a run — is covered instead of each needing
+  its own limit. An oversized prompt is truncated in the middle, keeping 30% head and 70% tail (the task itself is
+  appended last) with a `TRUNCATED` notice in the prompt and a `WARNING` in the log, rather than being passed to
+  the model raw. Follow-up to the 555k-input-token `cto` run flagged as not addressed in #84; complements
+  `agent_request_max_chars`, which only sees the caller's own text. Normal-sized runs are byte-for-byte unchanged.
 - `docs/adr/0002-context-and-run-state-integrity.md` (**Status: Proposed**, awaiting human/CTO acceptance): records
   that the context layer's missing trust boundary, the absent token budget and the run-state integrity gaps have
   three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at

@@ -131,6 +131,15 @@ class Settings(BaseSettings):
     # rather than a task description: reject it before it reaches the model instead of silently burning hundreds
     # of thousands of tokens (the 2026-11 cto run that cost 555k input tokens had no such check to catch it).
     agent_request_max_chars: int = 50_000
+    # Token budget for the prompt of a single model call, enforced in core/adapters/agents.py. Unlike
+    # agent_request_max_chars (which only sees what a caller typed), this covers the assembled input: retrieved
+    # context, artifact dumps and tool output grown over a run. Oversized prompts are truncated in the middle,
+    # keeping the head and the tail (the task itself is appended last), rather than passed through raw. 0 disables
+    # the cap. Budget is counted in characters via agent_prompt_chars_per_token, as no tokenizer is available here.
+    agent_prompt_token_budget: int = 60_000
+    # Characters per token used to turn agent_prompt_token_budget into a character budget. ~4 is the usual English
+    # prose/code ratio; lower it to be stricter on token-dense input.
+    agent_prompt_chars_per_token: float = 4.0
     # Logged as a warning when one run's total tokens exceed this, so an anomalous run is noticed without digging
     # through Langfuse. Separate from agent_total_tokens_limit (core/limits.py), which is a hard cap that aborts
     # the run; this is a lower, non-blocking tripwire.
