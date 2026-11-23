@@ -294,6 +294,11 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
+  gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
+  calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path
+  both called it — so whether a finished run was written back to memory depended on the caller's
+  `run_quality_gate` / `run_review` flags. That early return now syncs too. No other behaviour change.
 - **Retrieval served unapproved ADR proposals to the very gates meant to catch them (AP-102, partially addressed).**
   `innovation_scout.propose_adr` writes drafts into the `adrs` collection tagged `status: "proposed"`, but nothing
   read that status back: `context_engine.retrieve_context` called `async_search_domains` with no metadata filter,

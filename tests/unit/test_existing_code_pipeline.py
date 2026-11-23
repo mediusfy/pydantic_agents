@@ -214,7 +214,21 @@ async def test_with_both_gates_off_the_run_passes_after_the_engineer_and_tests(e
     env.quality.assert_not_called()
     env.review.assert_not_called()
     assert env.recorder.events[-1] == ("pipeline", 0, "passed", "gates disabled")
-    env.sync.assert_not_called()  # this early exit does not sync memory
+    env.sync.assert_called_once_with()  # memory sync does not depend on which gates are enabled
+
+
+@pytest.mark.parametrize(
+    ("run_quality_gate", "run_review"),
+    [(True, True), (True, False), (False, True), (False, False)],
+    ids=["both-gates", "quality-gate-only", "review-only", "no-gates"],
+)
+async def test_a_passing_run_syncs_memory_whichever_gates_are_enabled(env, run_quality_gate, run_review):
+    script = Script(service_engineer=[_artifact(main_dot_go="x")], test_eng=[_artifact("test_eng", t_dot_go="t")])
+
+    result = await _run(env, script, run_quality_gate=run_quality_gate, run_review=run_review)
+
+    assert result.passed is True
+    env.sync.assert_called_once_with()
 
 
 async def test_a_disabled_review_counts_as_approved_with_low_risk(env):
