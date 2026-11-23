@@ -3688,6 +3688,7 @@ torch==2.14.1+cpu \
     --hash=sha256:f67ee1fe9c9f7c6ad3785d150bc3cecda442a5880a6d40816e13fee475d97dd8
     # via
     #   -r requirements-cpu.in
+    #   pydantic-agents (pyproject.toml)
     #   sentence-transformers
 tqdm==4.70.1 \
     --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73 \

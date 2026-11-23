@@ -35,11 +35,18 @@ dependencies = [
 # Required by pydantic_agents.core.vector_db (ADR/architecture context retrieval).
 # numpy is capped below 2.2: its stubs use PEP 695 syntax that mypy rejects
 # under python_version = "3.11" in consumers.
+# torch is declared here (not only transitively via sentence-transformers) so that
+# [tool.uv.sources] below can route it to the CPU-only index -- uv sources only apply to
+# the project's own declared dependencies. Keeping it in the extra means a base
+# `uv sync` with no extras still installs no torch at all. Capped to the 2.14 series so that
+# switching index does not also bump the torch version in the deployed requirements.lock;
+# widen the cap when upgrading torch deliberately.
 vector = [
     "asyncpg>=0.31.0,<0.32.0",
     "numpy>=1.26,<2.2",
     "pgvector>=0.3",
     "sentence-transformers>=2.2,<4.0",
+    "torch>=2.14,<2.15",
 ]
 ingest = [
     "langchain-community>=0.3,<0.4",
@@ -108,3 +115,14 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "ARG", "C4", "T20"]
 "src/pydantic_agents/agents/*.py" = ["ARG001", "E501"]
 "src/pydantic_agents/agents/non_technical/*.py" = ["ARG001", "E501"]
 "src/pydantic_agents/core/models/core.py" = ["UP042"]
+
+# CPU-only torch for `uv sync`: the default PyPI wheel pulls ~5-6 GB of nvidia-*/triton CUDA
+# libraries that no deployment target uses (see requirements-cpu.in for the Docker path).
+# `explicit = true` means this index is used only for the packages mapped to it below.
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
