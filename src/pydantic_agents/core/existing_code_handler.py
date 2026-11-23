@@ -376,6 +376,7 @@ async def _run_attempt(
             return False
         result.passed = True
         _record(recorder, result, "pipeline", attempt, "passed", eng_start, "gates disabled")
+        _sync_memory_after_pipeline()
         return True
 
     logger.info(
