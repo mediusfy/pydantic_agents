@@ -158,14 +158,16 @@ fresh **Unreleased** section above it.
 ### Changed
 - `uv sync --extra vector` (i.e. `make install`) now installs the CPU-only build of `torch` instead of the default
   PyPI CUDA build. `pyproject.toml` gains an explicit `[[tool.uv.index]]` for `https://download.pytorch.org/whl/cpu`
-  with `[tool.uv.sources]` mapping `torch` to it, and declares `torch>=2.14,<3.0` directly in the `vector` extra
-  (uv sources only apply to the project's own declared dependencies, so the index pin is a no-op without it). This
-  extends to `uv sync` the intent `requirements-cpu.in` already encodes for the Docker path: the default wheel drags
-  in ~5-6 GB of `nvidia-*`/`triton` CUDA libraries that no deployment target uses. The dev venv drops from 6316 MB to
-  1705 MB and contains no `nvidia-*`/`triton` packages. No new dependency: `torch` was already installed, just the
-  CUDA build. The Docker path is unchanged -- it installs from the already CPU-pinned `requirements.lock`. Caveat:
-  the PyTorch CPU index ships no macOS x86_64 wheel, so an Intel-Mac contributor cannot install the `vector` extra;
-  CI (`ubuntu-latest`, py3.11/3.12), the `linux/arm64` image and Apple-silicon Macs are all covered.
+  with `[tool.uv.sources]` mapping `torch` to it, and declares `torch>=2.14,<2.15` directly in the `vector` extra
+  (uv sources only apply to the project's own declared dependencies, so the index pin is a no-op without it). The cap
+  is deliberately the 2.14 series rather than `<3.0`: with an open cap `uv lock` re-resolved torch to `2.15.0+cpu`,
+  which would also have bumped torch in the deployed `requirements.lock`; widen it when upgrading torch deliberately.
+  This extends to `uv sync` the intent `requirements-cpu.in` already encodes for the Docker path: the default wheel
+  drags in ~5-6 GB of `nvidia-*`/`triton` CUDA libraries that no deployment target uses. The dev venv drops from
+  6316 MB to 1705 MB and contains no `nvidia-*`/`triton` packages. No new dependency: `torch` was already installed,
+  just the CUDA build. The Docker path is unchanged -- it installs from the already CPU-pinned `requirements.lock`.
+  Caveat: the PyTorch CPU index ships no macOS x86_64 wheel, so an Intel-Mac contributor cannot install the `vector`
+  extra; CI (`ubuntu-latest`, py3.11/3.12), the `linux/arm64` image and Apple-silicon Macs are all covered.
 - `run_<agent>` MCP tools return a short explanation instead of a bare `[]` when a list-valued agent finds nothing (the
   BA agent for a request with no requirement, such as a ping): `[]` looked like a failure and said nothing about why.
   Decision: change the tool result, not the BA output type, because `BAStage`, the crew bridge and the pipeline consume
