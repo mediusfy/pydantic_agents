@@ -3,12 +3,15 @@
 import asyncio
 import tempfile
 
+from pydantic_agents.core.exceptions import SandboxUnavailableError
+from pydantic_agents.core.sandbox import spawn_untrusted_subprocess
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write
 
 GO_BUILD_TIMEOUT = 60.0
 GO_VET_TIMEOUT = 60.0
+_MAX_OUTPUT_CHARS = 16_000
 
 
 def _write_files(temp_dir: str, files: dict[str, str]) -> None:
@@ -18,17 +21,13 @@ def _write_files(temp_dir: str, files: dict[str, str]) -> None:
 
 
 async def _run_build(temp_dir: str) -> str:
-    """Run go build and return result string."""
-    build_proc = await asyncio.create_subprocess_exec(
-        "go",
-        "build",
-        "./...",
-        cwd=temp_dir,
-        env=sanitized_subprocess_env(),
-        start_new_session=True,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    """Run go build inside the sandbox and return result string."""
+    try:
+        build_proc = await spawn_untrusted_subprocess("go", "build", "./...", cwd=temp_dir, allow_network=False)
+    except SandboxUnavailableError as e:
+        return f"BUILD FAILED: {e}"
+    except FileNotFoundError:
+        return "BUILD FAILED: the 'go' toolchain is not installed."
     try:
         _, stderr = await asyncio.wait_for(build_proc.communicate(), timeout=GO_BUILD_TIMEOUT)
     except TimeoutError:
@@ -37,21 +36,17 @@ async def _run_build(temp_dir: str) -> str:
 
     if build_proc.returncode == 0:
         return "SUCCESS: Code compiled successfully."
-    return f"BUILD FAILED:\n{stderr.decode()}"
+    return f"BUILD FAILED:\n{stderr.decode(errors='replace')[-_MAX_OUTPUT_CHARS:]}"
 
 
 async def _run_vet(temp_dir: str) -> str:
-    """Run go vet and return result string."""
-    vet_proc = await asyncio.create_subprocess_exec(
-        "go",
-        "vet",
-        "./...",
-        cwd=temp_dir,
-        env=sanitized_subprocess_env(),
-        start_new_session=True,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
+    """Run go vet inside the sandbox and return result string."""
+    try:
+        vet_proc = await spawn_untrusted_subprocess("go", "vet", "./...", cwd=temp_dir, allow_network=False)
+    except SandboxUnavailableError as e:
+        return f"VET FAILED: {e}"
+    except FileNotFoundError:
+        return "VET FAILED: the 'go' toolchain is not installed."
     try:
         _, stderr = await asyncio.wait_for(vet_proc.communicate(), timeout=GO_VET_TIMEOUT)
     except TimeoutError:
@@ -60,7 +55,7 @@ async def _run_vet(temp_dir: str) -> str:
 
     if vet_proc.returncode == 0:
         return "SUCCESS: Code passed go vet."
-    return f"VET FAILED:\n{stderr.decode()}"
+    return f"VET FAILED:\n{stderr.decode(errors='replace')[-_MAX_OUTPUT_CHARS:]}"
 
 
 async def run_go_build(files: dict[str, str]) -> str:

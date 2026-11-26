@@ -193,6 +193,12 @@ class Settings(BaseSettings):
     # An air-gapped deployment points it at its public-module mirror, never at a proxy that serves private modules.
     untrusted_goproxy: str = "https://proxy.golang.org"
     untrusted_gosumdb: str = "sum.golang.org"
+    # Process isolation backend for untrusted build/test subprocesses (core/sandbox.py):
+    # - "auto": use bubblewrap (bwrap) user/PID/mount/network namespaces when supported by the host kernel, else
+    #   fall back to process-group + sanitized-env isolation (e.g. macOS workstations or restricted seccomp profiles).
+    # - "bwrap": fail closed if bwrap is not installed or namespace creation is denied.
+    # - "none": disable bwrap wrapping while keeping sanitized_subprocess_env() and process-group reaping.
+    sandbox_backend: Literal["auto", "bwrap", "none"] = "auto"
 
     # Default deps for SDLC agents called without any (standalone MCP calls, delegation, evals). The CTO verifies
     # architecture against these, so they are an organisation policy: the defaults are placeholders, set them per

@@ -12,6 +12,13 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `core/sandbox.py` (`spawn_untrusted_subprocess`, `build_bwrap_command`, `probe_bwrap`, and `SANDBOX_BACKEND=auto|bwrap|none`
+  setting): isolates untrusted build, lint, and test subprocesses (`execute_test_suite`, `verifier.py`, `run_go_build`,
+  `run_go_vet`, and `validate_frontend_code`) inside a bubblewrap (`bwrap --unshare-all`) user, mount, PID, IPC, UTS,
+  and network namespace with an empty tmpfs root (`/`), fresh `/proc` (hiding the MCP server's `/proc/<ppid>/environ`),
+  read-only system/module-cache mounts, and network disabled during code compilation and test execution (`--share-net`
+  permitted only during `go mod tidy`). `SANDBOX_BACKEND=bwrap` fails closed when `bwrap` is unavailable; `auto` probes
+  once and falls back to sanitized-env + process-group isolation on hosts without unprivileged user namespaces.
 - `create_http_app()` ASGI factory in `mcp_server.py` (now used by `Dockerfile` and `make serve`) serving Streamable
   HTTP at `/mcp`, a separated fail-closed admin FastMCP surface at `/mcp/admin` (`mcp_admin`, holding
   `approve_cto_gate`, `save_adr`, and `cancel_pipeline_run`), `/healthz`, and the legacy `/sse` + `/messages/` routes
@@ -319,12 +326,28 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
-- MCP auth review follow-ups: `/mcp/admin` detection now collapses repeated slashes and ignores case so no path
-  variant reaches the admin app with the worker token, `create_http_app` logs a warning when `MCP_AUTH_TOKEN` is unset,
-  and `read_marker` documents that run binding is best-effort for legacy markers.
 - Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
   building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
   instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
+- **Same-UID subprocess exposure, writable `/opt/pydantic-agents`, Go 1.24/1.26 drift, and live `npx` downloads (`BP-T3`,
+  `BP-S2`, `F-SEC-01`, `F-TOL-02`).** `Dockerfile` now installs `bubblewrap`, bumps the Go toolchain stage from
+  `golang:1.24-bookworm` to `golang:1.26-bookworm` (matching `settings.go_version`), pre-installs pinned
+  `eslint@9.39.5`, `typescript@5.9.3`, `vue-tsc@3.3.14`, and `vitest@4.1.12` (`--ignore-scripts`), locks
+  `/opt/pydantic-agents` read-only (`chmod -R a-w`, owned by `root:root`), and moves runtime `WORKDIR` to
+  `/var/lib/pydantic-agents` (`0700`) with `ORCHESTRATION_CODEBASE_ROOT=/var/lib/pydantic-agents/workspace`.
+  `validate_frontend_code` and `run_test_suite` now pass `npx --no-install`, run in `temp_dir` rather than `os.getcwd()`,
+  and reap timed-out child process groups cleanly via `kill_and_reap`.
+  **Migration:** the image's working directory moves from `/opt/pydantic-agents` to `/var/lib/pydantic-agents`, so
+  `generated-app/`, `telemetry.jsonl`, `session_trace.jsonl` and checkpoints land there; a deployment that mounted a
+  volume at the old working directory, or relied on the old cwd as its codebase root, must move the mount or set
+  `ORCHESTRATION_CODEBASE_ROOT` explicitly.
+- Sandbox follow-ups: `bwrap` now binds toolchains installed outside the system paths read-only (e.g. Go under
+  `/opt/hostedtoolcache` on CI runners, which failed with `execvp go: No such file or directory`), the in-sandbox
+  scratch paths derive from `tempfile.gettempdir()` instead of hard-coded `/tmp` literals, and the `auto` fallback logs
+  at `ERROR` on Linux and names `SANDBOX_BACKEND=bwrap` as the production setting. Shared roots (`~/.local`, `/opt`) and the home directory are never bound.
+- MCP auth review follow-ups: `/mcp/admin` detection now collapses repeated slashes and ignores case so no path
+  variant reaches the admin app with the worker token, `create_http_app` logs a warning when `MCP_AUTH_TOKEN` is unset,
+  and `read_marker` documents that run binding is best-effort for legacy markers.
 - **CTO gate marker races, stale approvals, and silent `AgentAdvice` rejection (`BP-F9`, `BP-F2`, `BP-P1`).**
   `cto_gate.write_approval` now writes structured JSON (`{approved, run_id, adr_id}`) atomically via sibling tempfile +
   `os.replace`, `read_marker` no longer treats truncated empty `""` files as `True` (`approved`), and
