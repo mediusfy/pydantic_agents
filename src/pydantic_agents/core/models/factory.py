@@ -128,19 +128,29 @@ def _http_client():
 
 
 def _make_chat_model(provider: str, model_name: str, base_url: str, api_key: str) -> Model:
+    from typing import Any
+
+    from openai import AsyncOpenAI
     from pydantic_ai.models.openai import OpenAIChatModel
 
     logger.info("Creating %s model '%s' via %s", provider, model_name, base_url)
     client = _http_client()
-    extra = {"http_client": client} if client is not None else {}
+    # max_retries=0: LiteLLM already retries and walks its fallback chain, and PydanticAIAgentProvider owns the single
+    # in-process transport-retry layer (never retrying timeouts). Leaving AsyncOpenAI's default max_retries=2 multiplied
+    # every failing/hung call by 3x.
+    client_kwargs: dict[str, Any] = {"api_key": api_key, "max_retries": 0}
+    if client is not None:
+        client_kwargs["http_client"] = client
     if provider == "deepseek":
         from pydantic_ai.providers.deepseek import DeepSeekProvider
 
-        return OpenAIChatModel(model_name, provider=DeepSeekProvider(api_key=api_key, **extra))
+        openai_client = AsyncOpenAI(base_url=PROVIDER_BASE_URLS["deepseek"], **client_kwargs)
+        return OpenAIChatModel(model_name, provider=DeepSeekProvider(openai_client=openai_client))
 
     from pydantic_ai.providers.openai import OpenAIProvider
 
-    return OpenAIChatModel(model_name, provider=OpenAIProvider(base_url=base_url, api_key=api_key, **extra))
+    openai_client = AsyncOpenAI(base_url=base_url, **client_kwargs)
+    return OpenAIChatModel(model_name, provider=OpenAIProvider(openai_client=openai_client))
 
 
 def _build_model(model_spec: str) -> Model:

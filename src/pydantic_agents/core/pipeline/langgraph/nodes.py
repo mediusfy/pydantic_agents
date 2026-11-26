@@ -1,6 +1,7 @@
 import logging
 
 from pydantic_agents.core.adapters.agents import AgentProviderPort
+from pydantic_agents.core.limits import pipeline_usage_var
 from pydantic_agents.core.models.core import FailureReport, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
 from pydantic_agents.core.pipeline.context import ContextFrame
@@ -14,6 +15,17 @@ from pydantic_agents.core.stages.quality_gate_stage import QualityGateStage
 logger = logging.getLogger(__name__)
 
 
+def _usage_delta() -> dict[str, int]:
+    usage = pipeline_usage_var.get()
+    if usage is None:
+        return {}
+    return {
+        "total_input_tokens": usage.input_tokens,
+        "total_output_tokens": usage.output_tokens,
+        "total_requests": usage.requests,
+    }
+
+
 def _make_error(state: PipelineState, agent_name: str, message: str) -> dict:
     return {
         "errors": [*state.errors, f"{agent_name}: {message}"],
@@ -22,6 +34,7 @@ def _make_error(state: PipelineState, agent_name: str, message: str) -> dict:
             error_type="runtime_error",
             trace=message,
         ),
+        **_usage_delta(),
     }
 
 
@@ -58,6 +71,7 @@ async def ba_node(
                 "errors": new_state.errors,
                 "active_context": cf,
                 "context_history": history,
+                **_usage_delta(),
             }
         except Exception as e:
             logger.exception("BA stage failed: %s", e)
@@ -96,6 +110,7 @@ async def advisory_node(
                 "stage": "advisory",
                 "active_context": cf,
                 "context_history": history,
+                **_usage_delta(),
             }
         except Exception as e:
             logger.exception("Advisory stage failed: %s", e)
@@ -150,42 +165,12 @@ async def implementation_node(
                 "refinement_attempts": seeded.refinement_attempts + 1,
                 "active_context": cf,
                 "context_history": history,
+                **_usage_delta(),
             }
         except Exception as e:
             logger.exception("Implementation stage failed: %s", e)
             rec.abort_run(str(e))
             return _make_error(seeded, "implementation", str(e))
-
-
-async def crewai_implementation_node(
-    state: PipelineState,
-    config: PipelineConfig,
-) -> dict:
-    """Composite pipeline step: run CrewAI implementation inside the LangGraph state machine."""
-    from pydantic_agents.core.pipeline.factory import _ensure_dependency
-
-    seeded = _seed_story_if_needed(state, config)
-    try:
-        _ensure_dependency("crewai")
-        from pydantic_agents.core.pipeline.crewai.bridge import run_crewai_pipeline
-
-        new_state = await run_crewai_pipeline(seeded.model_copy(deep=True), config)
-    except Exception as e:
-        logger.exception("Composite CrewAI implementation failed: %s", e)
-        return _make_error(seeded, "crewai", str(e))
-
-    return {
-        "user_stories": new_state.user_stories,
-        "artifacts": new_state.artifacts,
-        "advisory_results": new_state.advisory_results,
-        "errors": new_state.errors,
-        "failure_report": new_state.failure_report,
-        "feedback": new_state.feedback,
-        "stage": "implementation",
-        "refinement_attempts": seeded.refinement_attempts + 1,
-        "active_context": new_state.active_context,
-        "context_history": new_state.context_history,
-    }
 
 
 async def quality_gate_node(
@@ -217,6 +202,7 @@ async def quality_gate_node(
                 "stage": "quality_gate",
                 "active_context": cf,
                 "context_history": history,
+                **_usage_delta(),
             }
         except Exception as e:
             logger.exception("Quality gate failed: %s", e)

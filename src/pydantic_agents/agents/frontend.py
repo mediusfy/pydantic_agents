@@ -75,11 +75,14 @@ _component_writer = Agent(
 @frontend_agent.tool
 async def create_component(ctx: RunContext[Any], component_name: str, requirements: str, test_id: str) -> str:
     """Calls model to generate a production-ready Vue 3 SFC component with: WCAG 2.1 ARIA labels, data-testid attribute, TypeScript props interface, Tailwind/CSS module styling, proper event handler typing."""
-    # reasoner generates code as free text
-    raw = await _component_writer.run(
+    from pydantic_agents.core.registry import registry
+
+    # Route through registry.run_subagent so usage caps, timeouts, prompt budget, and telemetry apply.
+    raw = await registry.run_subagent(
+        "frontend._component_writer",
+        _component_writer,
         f"Generate Vue 3 SFC component {component_name} using Composition API with requirements: {requirements}. Use data-testid={test_id}.",
         usage=ctx.usage,
-        model_settings={"max_tokens": 16384},
     )
     # extract text — no output_type means .output is a str
     generated_code = raw.output

@@ -535,37 +535,6 @@ async def test_langgraph_wrapper_writes_artifacts_only_when_approved(tmp_path, m
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("approved", [False, True])
-async def test_crewai_pipeline_writes_artifacts_only_when_approved(tmp_path, monkeypatch, approved):
-    import importlib
-    import sys
-    import types
-
-    fake_state = PipelineState(
-        run_id="pipe_000000000011",
-        stage="review",
-        approved=approved,
-        artifacts=[Artifact(agent_name="backend", files={"main.go": "package main"})],
-    )
-    stub_bridge = types.ModuleType("pydantic_agents.core.pipeline.crewai.bridge")
-    stub_bridge.run_crewai_pipeline = AsyncMock(return_value=fake_state)  # type: ignore[attr-defined]
-    monkeypatch.setitem(sys.modules, "pydantic_agents.core.pipeline.crewai.bridge", stub_bridge)
-    monkeypatch.delitem(sys.modules, "pydantic_agents.core.pipeline.crewai.orchestrator", raising=False)
-
-    crew_orch_mod = importlib.import_module("pydantic_agents.core.pipeline.crewai.orchestrator")
-    monkeypatch.setattr(settings, "output_dir", tmp_path)
-    config = PipelineConfig(project="svc", blueprint="crew_audit", requirement="audit")
-    pipeline = crew_orch_mod.CrewAIPipeline(config)
-    write_spy = MagicMock()
-    monkeypatch.setattr(pipeline.artifact_writer, "write_artifacts", write_spy)
-
-    res = await pipeline.execute()
-
-    assert res.approved is approved
-    assert write_spy.call_count == (1 if approved else 0)
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize("attempt_passes", [False, True])
 async def test_existing_code_pipeline_writes_result_only_when_passed(tmp_path, monkeypatch, attempt_passes):
     monkeypatch.setattr(settings, "output_dir", tmp_path)

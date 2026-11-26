@@ -24,7 +24,6 @@ from dataclasses import dataclass, field
 from typing import Any, TypeAlias
 
 from pydantic_agents.core.exceptions import AgentExecutionError, AgentNotFoundError
-from pydantic_agents.core.limits import usage_limits
 from pydantic_agents.core.registry import registry
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.utils import serialize_output
@@ -330,8 +329,17 @@ class BridgeAgent:
             if self._agent is None:
                 # Inside the try so the failure is recorded on the conversation and in telemetry like any other.
                 raise AgentExecutionError("agent was not resolved", is_retryable=False)
+            from pydantic_agents.core.adapters.agents import PydanticAIAgentProvider
+            from pydantic_agents.core.limits import llm_semaphore
+
             resolved_deps: dict[str, Any] = self._deps_factory() if callable(self._deps_factory) else {}
-            result = await self._agent.run(enriched, deps=resolved_deps, usage_limits=usage_limits(self._name))
+            result = await PydanticAIAgentProvider().run_agent(
+                semaphore=llm_semaphore(),
+                agent_name=self._name,
+                agent=self._agent,
+                prompt=enriched,
+                deps=resolved_deps or None,
+            )
             success = True
 
             output = serialize_output(result)
@@ -349,13 +357,14 @@ class BridgeAgent:
             self._mark_failed(conversation)
             raise AgentExecutionError(f"BridgeAgent '{self._name}' failed: {e}", is_retryable=False) from e
         finally:
-            duration = time.time() - start
-            with contextlib.suppress(Exception):
-                from pydantic_agents.core.telemetry import telemetry
+            if self._agent is None:
+                duration = time.time() - start
+                with contextlib.suppress(Exception):
+                    from pydantic_agents.core.telemetry import telemetry
 
-                await telemetry.log_call(
-                    self._name,
-                    duration,
-                    success,
-                    metadata={"bridge": "agy", "prompt_length": len(prompt)},
-                )
+                    await telemetry.log_call(
+                        self._name,
+                        duration,
+                        success,
+                        metadata={"bridge": "agy", "prompt_length": len(prompt)},
+                    )

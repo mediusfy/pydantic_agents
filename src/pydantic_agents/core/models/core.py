@@ -344,6 +344,11 @@ class PipelineState(BaseModel):
     errors: list[str] = Field(default_factory=list)
     active_context: ContextFrame | None = None
     context_history: list[ContextFrame] = Field(default_factory=list)
+    total_input_tokens: int = Field(default=0, ge=0, description="Cumulative input tokens spent across pipeline stages")
+    total_output_tokens: int = Field(
+        default=0, ge=0, description="Cumulative output tokens spent across pipeline stages"
+    )
+    total_requests: int = Field(default=0, ge=0, description="Cumulative LLM requests made across pipeline stages")
 
 
 class ClaimCheck(BaseModel):

@@ -67,8 +67,8 @@ def _run(status, **extra):
         "started_at": datetime.now(UTC).isoformat(),
         "completed_at": None,
         "elapsed_seconds": None,
-        "blueprint": "crew_audit",
-        "framework": "crewai",
+        "blueprint": "langgraph_full",
+        "framework": "langgraph",
         "resume_attempts": 0,
         **extra,
     }
@@ -137,8 +137,8 @@ async def test_resume_only_for_unfinished_runs(pool, monkeypatch, status, resume
             "requirement": "build it",
             "run_id": "pipe_3",
             "resume": True,
-            "blueprint": "crew_audit",
-            "framework": "crewai",
+            "blueprint": "langgraph_full",
+            "framework": "langgraph",
             "resume_attempts": 1,
         }
     else:
@@ -392,7 +392,7 @@ async def test_a_stored_run_keeps_its_blueprint_and_framework_for_a_resume(pool)
 
     stored = await run_store.load_run("pipe_1")
 
-    assert (stored["blueprint"], stored["framework"]) == ("crew_audit", "crewai")
+    assert (stored["blueprint"], stored["framework"]) == ("langgraph_full", "langgraph")
 
 
 async def test_two_concurrent_resumes_start_one_task(pool, monkeypatch):

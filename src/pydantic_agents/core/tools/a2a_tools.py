@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import json
 
 from pydantic_ai import RunContext
@@ -59,13 +61,33 @@ async def delegate_to_agent(
     else:
         context_str = str(context_summary)
 
-    # `or {}` defends against the ContextVar being unset (default is now {},
-    # but a caller could still explicitly set None outside of record_span).
     ctx_data = current_run_context.get() or {}
     current_depth = ctx_data.get("delegation_depth", 0)
 
     if current_depth >= MAX_DELEGATION_DEPTH:
         return "ERROR: Maximum delegation depth reached. You must complete the task with the information you have."
+
+    try:
+        target_agent = registry._resolve_owner(capability, owner)
+    except AmbiguousCapabilityError as e:
+        return (
+            f"ERROR: Capability '{capability}' is ambiguous. Candidates: {e.owners}. "
+            f"Retry delegate_to_agent with owner=<agent_name>."
+        )
+    except AgentNotFoundError as e:
+        return f"ERROR: {e}"
+
+    visited = set(ctx_data.get("visited_agents") or ())
+    caller_agent = ctx_data.get("agent_name", "")
+    if caller_agent:
+        visited.add(caller_agent)
+    if target_agent in visited:
+        chain_items = list(ctx_data.get("delegation_chain") or ([caller_agent] if caller_agent else []))
+        rendered = " -> ".join([*chain_items, target_agent])
+        return (
+            f"ERROR: Delegation cycle detected ({rendered}). "
+            f"Complete the task directly without delegating back to '{target_agent}'."
+        )
 
     full_prompt = (
         f"--- DELEGATED TASK ---\n"
@@ -78,27 +100,30 @@ async def delegate_to_agent(
         "capability": capability,
         "context_summary_length": len(context_str),
         "prompt_length": len(prompt),
-        "caller_agent": ctx_data.get("agent_name", ""),
+        "caller_agent": caller_agent,
         "caller_pipeline_stage": ctx_data.get("pipeline_stage", ""),
         "caller_run_id": ctx_data.get("run_id", ""),
         "delegation_depth": current_depth + 1,
         "owner_pin": owner or "",
     }
 
+    child_sem = ctx_data.get("child_semaphore")
+    guard = child_sem if isinstance(child_sem, asyncio.Semaphore) else contextlib.nullcontext()
+
     try:
-        # The callee shares the caller's usage budget: a delegation tree spends one run's caps, not one per node.
-        return await instrumented_query(
-            capability=capability,
-            prompt=full_prompt,
-            span_name="a2a.delegate",
-            attributes=attrs,
-            delegation_depth=current_depth + 1,
-            owner=owner,
-            usage=getattr(ctx, "usage", None),
-        )
+        # Per-parent child semaphore bounds parallel fan-out when `permit_held=True`, without risking cross-depth
+        # deadlock. The callee also shares the caller's usage budget.
+        async with guard:
+            return await instrumented_query(
+                capability=capability,
+                prompt=full_prompt,
+                span_name="a2a.delegate",
+                attributes=attrs,
+                delegation_depth=current_depth + 1,
+                owner=owner,
+                usage=getattr(ctx, "usage", None),
+            )
     except AmbiguousCapabilityError as e:
-        # Surface the candidate owners back to the LLM so it can retry with
-        # a pinned owner instead of failing the whole run.
         return (
             f"ERROR: Capability '{capability}' is ambiguous. Candidates: {e.owners}. "
             f"Retry delegate_to_agent with owner=<agent_name>."

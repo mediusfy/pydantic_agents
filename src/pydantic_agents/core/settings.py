@@ -123,6 +123,12 @@ class Settings(BaseSettings):
     # Cumulative input+output tokens per run: every request resends its context, so this is much larger than any
     # single response (the database agent caps one response at 8192 tokens).
     agent_total_tokens_limit: int = 2_000_000
+    # Cumulative token and request ceilings across an entire pipeline execution (shared across stages and retries via
+    # core/limits.py::pipeline_usage_var and persisted on PipelineState across checkpoints). 0 disables a ceiling.
+    pipeline_total_tokens_limit: int = 8_000_000
+    pipeline_request_limit: int = 250
+    # Maximum concurrent child `delegate_to_agent` calls spawned by a single parent agent invocation.
+    max_concurrent_child_delegations: int = 2
     # Total tries for 429/5xx/connection errors (separate from agent_retries). 1 because LiteLLM already retries
     # once and walks its fallback chain: stacking more here multiplied one call into ~12 upstream attempts.
     agent_transport_attempts: int = 1

@@ -205,11 +205,13 @@ async def test_all_registered_agents_have_agent_name_and_propagate_run_id(monkey
 
     observed_ctx: dict = {}
 
-    async def fake_run_agent(**kwargs):
+    async def fake_run_agent(_self, **kwargs):
         observed_ctx.update(current_run_context.get())
         return SimpleNamespace(output="ok")
 
-    monkeypatch.setattr(registry._provider, "run_agent", fake_run_agent)
+    # Patch the class, not the instance: undoing an instance patch leaves a bound method in the instance __dict__,
+    # which would shadow later class-level patches of run_agent in other tests.
+    monkeypatch.setattr(type(registry._provider), "run_agent", fake_run_agent)
     tok = run_id_var.set("call_abc123def456")
     try:
         await registry.run("ba", "write a user story")

@@ -9,7 +9,16 @@ import logfire
 from tenacity import retry, retry_if_exception, stop_after_attempt, wait_exponential
 
 from pydantic_agents.core import platform_metrics
-from pydantic_agents.core.limits import is_transient_error, permit_held, run_id_var, run_model_settings, usage_limits
+from pydantic_agents.core.limits import (
+    check_pipeline_budget,
+    is_transient_error,
+    permit_held,
+    pipeline_usage_var,
+    record_pipeline_usage,
+    run_id_var,
+    run_model_settings,
+    usage_limits,
+)
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.telemetry import telemetry
 
@@ -138,6 +147,8 @@ class PydanticAIAgentProvider(AgentProviderPort):
         usage: Any = None,
     ) -> Any:
         timeout_seconds = timeout_seconds or settings.agent_timeout_seconds
+        pipe_usage = pipeline_usage_var.get()
+        check_pipeline_budget(pipe_usage)
         prompt = cap_prompt(agent_name, prompt)
 
         @retry(
@@ -147,7 +158,7 @@ class PydanticAIAgentProvider(AgentProviderPort):
             reraise=True,
         )
         async def _run_with_retry():
-            kwargs: dict[str, Any] = {"usage_limits": usage_limits(agent_name)}
+            kwargs: dict[str, Any] = {"usage_limits": usage_limits(agent_name, pipeline_usage=pipe_usage)}
             if (ms := run_model_settings(agent_name)) is not None:
                 agent_ms = getattr(agent, "model_settings", None)  # pydantic_ai's Agent(model_settings=...)
                 if isinstance(agent_ms, dict) and "max_tokens" in agent_ms:
@@ -171,6 +182,7 @@ class PydanticAIAgentProvider(AgentProviderPort):
                     result = await telemetry.track(agent_name, _run_with_retry)
                     return result
                 finally:
+                    record_pipeline_usage(pipe_usage, result, shared_usage=usage)
                     await _record_metric(agent_name, start, result)
 
         if permit_held.get():

@@ -50,10 +50,13 @@ _test_writer = Agent(
 @test_eng_agent.tool
 async def generate_test_suite(ctx: RunContext[Any], user_story_gherkin: str) -> str:
     """Converts Gherkin to Playwright TypeScript tests: data-testid selectors, async/await, page object pattern, backend event validation."""
-    result = await _test_writer.run(
+    from pydantic_agents.core.registry import registry
+
+    result = await registry.run_subagent(
+        "test_eng._test_writer",
+        _test_writer,
         f"Write a playwright test for {user_story_gherkin}.",
         usage=ctx.usage,
-        model_settings={"max_tokens": 16384},
     )
     return result.output.code
 
@@ -118,10 +121,13 @@ async def generate_go_table_driven_tests(ctx: RunContext[Any], source_file: str,
     if len(source) > _SOURCE_MAX_CHARS:
         # Testing a partial file would silently produce tests for code the model never saw.
         return f"ERROR: {source_file} is {len(source)} characters, over the {_SOURCE_MAX_CHARS} limit; split it first."
-    result = await _go_test_writer.run(
+    from pydantic_agents.core.registry import registry
+
+    result = await registry.run_subagent(
+        "test_eng._go_test_writer",
+        _go_test_writer,
         f"Generate table-driven tests for the function '{function_name}' in {source_file}.\n\n"
         f"Source of {source_file}:\n```go\n{source}\n```",
         usage=ctx.usage,
-        model_settings={"max_tokens": 16384},
     )
     return f"{result.output.filepath}\n```go\n{result.output.code}\n```"

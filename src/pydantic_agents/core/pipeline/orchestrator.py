@@ -2,11 +2,14 @@ import logging
 import re
 import uuid
 
+from pydantic_ai.exceptions import UsageLimitExceeded
+from pydantic_ai.usage import RunUsage
+
 from pydantic_agents.core.adapters.agents import PydanticAIAgentProvider
 from pydantic_agents.core.adapters.state_repository import build_state_repository
 from pydantic_agents.core.adapters.workspace import ArtifactStorageAdapter, WorkspaceContext
 from pydantic_agents.core.checkpoint import CheckpointManager
-from pydantic_agents.core.limits import run_id_var
+from pydantic_agents.core.limits import pipeline_usage_var, run_id_var
 from pydantic_agents.core.models.core import FailureReport, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import STAGES, PipelineConfig
 from pydantic_agents.core.stages.base import StageRunner
@@ -75,6 +78,22 @@ class OrgitrationPipeline:
             stage.agent_provider = self.agent_provider
         self.stages[name] = stage
 
+    def _sync_usage_to_state(self) -> None:
+        usage = pipeline_usage_var.get()
+        if usage is None:
+            return
+        self.state.total_input_tokens = max(self.state.total_input_tokens, usage.input_tokens)
+        self.state.total_output_tokens = max(self.state.total_output_tokens, usage.output_tokens)
+        self.state.total_requests = max(self.state.total_requests, usage.requests)
+
+    def _sync_state_to_usage(self) -> None:
+        usage = pipeline_usage_var.get()
+        if usage is None:
+            return
+        usage.input_tokens = max(usage.input_tokens, self.state.total_input_tokens)
+        usage.output_tokens = max(usage.output_tokens, self.state.total_output_tokens)
+        usage.requests = max(usage.requests, self.state.total_requests)
+
     def _resume_attempt(self) -> int:
         """On resume, load the latest finished implementation attempt and return the attempt to continue from."""
         if not self.config.resume:
@@ -90,6 +109,7 @@ class OrgitrationPipeline:
             return 0
         logger.info("Resuming the implementation loop after attempt %d.", latest + 1)
         self.state = loaded
+        self._sync_state_to_usage()
         return latest + 1
 
     def max_attempts(self) -> int:
@@ -114,12 +134,14 @@ class OrgitrationPipeline:
             failure = getattr(self.state, "failure_report", None)
             if failure and failure.source == "test_suite":
                 logger.info("Test failure detected — retrying implementation with feedback.")
+                self._sync_usage_to_state()
                 self.checkpoint_mgr.save(_ATTEMPT_STAGE.format(n=attempt), self.state)
                 continue
 
             # Proceed to quality gate
             if STAGES.QUALITY_GATE in self.stages:
                 self.state = await self.stages[STAGES.QUALITY_GATE].run(self.state, self.config)
+            self._sync_usage_to_state()
             self.checkpoint_mgr.save(_ATTEMPT_STAGE.format(n=attempt), self.state)
 
             if getattr(self.state, "approved", False):
@@ -150,6 +172,7 @@ class OrgitrationPipeline:
             return False
         logger.info(f"Resuming stage {stage_name} from checkpoint...")
         self.state = loaded
+        self._sync_state_to_usage()
         return True
 
     async def _merge_artifacts(self) -> None:
@@ -175,11 +198,10 @@ class OrgitrationPipeline:
             raise
 
         if ran:
+            self._sync_usage_to_state()
             self.checkpoint_mgr.save(stage_name, self.state)
 
     def _log_start(self) -> None:
-        if run_id_var.get() is None:
-            run_id_var.set(self.state.run_id)
         logger.info(f"Starting Orgitration Pipeline for project: {self.config.project}")
         logger.info(f"Target root: {self.config.target_root}")
         logger.info(f"Output dir: {self.config.output_dir()}")
@@ -194,49 +216,71 @@ class OrgitrationPipeline:
         return None
 
     async def execute(self) -> PipelineState:
-        """Run the configured stages and return the final state.
+        """Run the configured stages and return the final state."""
+        run_tok = run_id_var.set(self.state.run_id) if run_id_var.get() is None else None
+        pipe_usage = RunUsage(
+            requests=self.state.total_requests,
+            input_tokens=self.state.total_input_tokens,
+            output_tokens=self.state.total_output_tokens,
+        )
+        usage_tok = pipeline_usage_var.set(pipe_usage)
+        try:
+            self._log_start()
 
-        The state says how the run ended: ``approved`` for a run that passed its gates, ``failure_report`` for one
-        that was stopped (no stories, CTO rejection, exhausted gate retries), both unset for a partial run.
-        """
-        self._log_start()
-
-        # Resolve step name → pipeline stage name
-        stage = _STEP_TO_STAGE.get(self.config.step)
-        if stage is None:
-            logger.error(f"Unknown step: {self.config.step}. Valid steps: {list(_STEP_TO_STAGE.keys())}")
-            self.state.failure_report = FailureReport(
-                source="pipeline", error_type="config", trace=f"Unknown step: {self.config.step}"
-            )
-            return self.state
-
-        if stage == "all" and STAGES.BA not in self.stages and not self.state.user_stories and self.config.requirement:
-            # A blueprint without the BA stage still needs something to implement: the requirement is the story.
-            self.state.user_stories = [
-                UserStory(id="US-001", title=self.config.requirement[:80], gherkin=self.config.requirement)
-            ]
-
-        for stage_name in _ALL_STAGES if stage == "all" else [stage]:
-            if stage_name not in self.stages:
-                logger.warning(f"Stage {stage_name} not registered. Skipping.")
-                continue
-
-            await self._run_registered_stage(stage_name)
-
-            reason = self._blocked_after(stage_name) if stage == "all" else None
-            if reason:
-                logger.error("Pipeline stopped after stage '%s': %s", stage_name, reason)
-                self.state.approved = False
-                self.state.failure_report = self.state.failure_report or FailureReport(
-                    source=getattr(stage_name, "value", str(stage_name)), error_type="blocked", trace=reason
+            stage = _STEP_TO_STAGE.get(self.config.step)
+            if stage is None:
+                logger.error(f"Unknown step: {self.config.step}. Valid steps: {list(_STEP_TO_STAGE.keys())}")
+                self.state.failure_report = FailureReport(
+                    source="pipeline", error_type="config", trace=f"Unknown step: {self.config.step}"
                 )
                 return self.state
 
-        # Final artifact flush: only approved runs write to output_dir so rejected code never overwrites clean output.
-        if self.state.approved:
-            self.artifact_writer.write_artifacts(self.state.artifacts)
+            if (
+                stage == "all"
+                and STAGES.BA not in self.stages
+                and not self.state.user_stories
+                and self.config.requirement
+            ):
+                self.state.user_stories = [
+                    UserStory(id="US-001", title=self.config.requirement[:80], gherkin=self.config.requirement)
+                ]
 
-        # Run merge stage: apply artifacts into the real project tree
-        if stage == "all" and self.state.approved:
-            await self._merge_artifacts()
-        return self.state
+            try:
+                for stage_name in _ALL_STAGES if stage == "all" else [stage]:
+                    if stage_name not in self.stages:
+                        logger.warning(f"Stage {stage_name} not registered. Skipping.")
+                        continue
+
+                    await self._run_registered_stage(stage_name)
+
+                    reason = self._blocked_after(stage_name) if stage == "all" else None
+                    if reason:
+                        logger.error("Pipeline stopped after stage '%s': %s", stage_name, reason)
+                        self.state.approved = False
+                        self.state.failure_report = self.state.failure_report or FailureReport(
+                            source=getattr(stage_name, "value", str(stage_name)), error_type="blocked", trace=reason
+                        )
+                        self._sync_usage_to_state()
+                        return self.state
+            except UsageLimitExceeded as exc:
+                logger.error("Pipeline halted: %s", exc)
+                self.state.approved = False
+                self.state.failure_report = FailureReport(
+                    source="pipeline", error_type="usage_limit", trace=str(exc)
+                )
+                self._sync_usage_to_state()
+                return self.state
+
+            self._sync_usage_to_state()
+            # Final artifact flush: only approved runs write to output_dir so rejected code never overwrites clean
+            # output.
+            if self.state.approved:
+                self.artifact_writer.write_artifacts(self.state.artifacts)
+
+            if stage == "all" and self.state.approved:
+                await self._merge_artifacts()
+            return self.state
+        finally:
+            pipeline_usage_var.reset(usage_tok)
+            if run_tok is not None:
+                run_id_var.reset(run_tok)

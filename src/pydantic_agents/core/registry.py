@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -138,6 +139,62 @@ class AgentRegistry:
             raise AmbiguousCapabilityError(capability, owners)
         return owners[0]
 
+    async def _execute_with_context(
+        self,
+        name: str,
+        agent: Agent[Any, Any],
+        prompt: str,
+        *,
+        deps: Any = None,
+        timeout_seconds: float | None = None,
+        usage: Any = None,
+    ) -> Any:
+        if getattr(agent, "name", None) is None:
+            agent.name = name
+        existing = current_run_context.get() or {}
+        visited: frozenset[str] = frozenset({*(existing.get("visited_agents") or ()), name})
+        chain: tuple[str, ...] = (*(existing.get("delegation_chain") or ()), name)
+        child_sem = asyncio.Semaphore(max(1, settings.max_concurrent_child_delegations))
+        run_id = existing.get("run_id") or run_id_var.get() or ""
+        token = current_run_context.set(
+            {
+                **existing,
+                "agent_name": name,
+                "run_id": run_id,
+                "visited_agents": visited,
+                "delegation_chain": chain,
+                "child_semaphore": child_sem,
+            }
+        )
+        try:
+            return await self._provider.run_agent(
+                semaphore=llm_semaphore(),
+                agent_name=name,
+                agent=agent,
+                prompt=prompt,
+                deps=deps,
+                timeout_seconds=timeout_seconds or settings.agent_timeout_seconds,
+                usage=usage,
+            )
+        finally:
+            current_run_context.reset(token)
+
+    async def run_subagent(
+        self,
+        name: str,
+        agent: Agent[Any, Any],
+        prompt: str,
+        *,
+        deps: Any = None,
+        timeout_seconds: float | None = None,
+        usage: Any = None,
+    ) -> Any:
+        """Run a private/tool-less helper agent through the full guarded provider path without exposing it in the
+        public capability/MCP registry."""
+        return await self._execute_with_context(
+            name, agent, prompt, deps=deps, timeout_seconds=timeout_seconds, usage=usage
+        )
+
     async def run(
         self,
         name: str,
@@ -163,22 +220,14 @@ class AgentRegistry:
         if resolved_deps is None and callable(deps_factory):
             resolved_deps = deps_factory()
 
-        # Tools such as log_activity and query_history attribute and scope their work via this context.
-        existing_ctx = current_run_context.get() or {}
-        effective_run_id = existing_ctx.get("run_id") or run_id_var.get() or ""
-        token = current_run_context.set({**existing_ctx, "agent_name": name, "run_id": effective_run_id})
-        try:
-            return await self._provider.run_agent(
-                semaphore=llm_semaphore(),
-                agent_name=name,
-                agent=agent,
-                prompt=prompt,
-                deps=resolved_deps,
-                timeout_seconds=timeout_seconds or settings.agent_timeout_seconds,
-                usage=usage,
-            )
-        finally:
-            current_run_context.reset(token)
+        return await self._execute_with_context(
+            name,
+            agent,
+            prompt,
+            deps=resolved_deps,
+            timeout_seconds=timeout_seconds,
+            usage=usage,
+        )
 
     async def query(
         self,

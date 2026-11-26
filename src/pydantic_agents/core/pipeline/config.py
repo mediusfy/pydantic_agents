@@ -12,9 +12,6 @@ from pydantic import BaseModel
 class Framework(str, Enum):  # noqa: UP042
     LEGACY = "legacy"
     LANGGRAPH = "langgraph"
-    CREWAI = "crewai"
-    AUTOGEN = "autogen"
-    COMPOSITE = "composite"
 
 
 class StageName(str, Enum):  # noqa: UP042
@@ -33,28 +30,23 @@ class BlueprintSpec(BaseModel):
     description: str
     framework: str = "legacy"
     stages: list[str] | None = None
-    crew_class: str | None = None
-    group_class: str | None = None
 
     def model_post_init(self, _context: Any) -> None:
         self._validate_fields()
 
     def _validate_fields(self) -> None:
-        if self.framework in ("legacy", "langgraph", "composite") and not self.stages:
+        if self.framework not in ("legacy", "langgraph"):
+            raise ValueError(
+                f"Blueprint '{self.name}' uses retired/unsupported framework {self.framework!r}; "
+                "supported frameworks are 'legacy' and 'langgraph'."
+            )
+        if not self.stages:
             raise ValueError(f"Blueprint '{self.name}' (framework={self.framework}) requires 'stages'")
-        elif self.framework == "crewai" and not self.crew_class:
-            raise ValueError(f"Blueprint '{self.name}' requires 'crew_class'")
-        elif self.framework == "autogen" and not self.group_class:
-            raise ValueError(f"Blueprint '{self.name}' requires 'group_class'")
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"description": self.description, "framework": self.framework}
         if self.stages is not None:
             d["stages"] = self.stages
-        if self.crew_class is not None:
-            d["crew_class"] = self.crew_class
-        if self.group_class is not None:
-            d["group_class"] = self.group_class
         return d
 
 
@@ -66,8 +58,7 @@ PROJECT_ROOTS: dict[str, str] = {
 
 
 # ── Blueprint Catalog ─────────────────────────────────────────────────────
-# Defined as validated BlueprintSpec instances, then converted to a dict for
-# backwards-compatible access (BLUEPRINTS[name], .keys(), iteration, ``in``).
+# Standardized on pydantic_ai + OrgitrationPipeline ("legacy") and LangGraph ("langgraph").
 _BLUEPRINT_SPECS: list[BlueprintSpec] = [
     BlueprintSpec(
         name="new_feature",
@@ -105,49 +96,6 @@ _BLUEPRINT_SPECS: list[BlueprintSpec] = [
         stages=[STAGES.IMPLEMENTATION, STAGES.QUALITY_GATE],
         framework=Framework.LANGGRAPH,
     ),
-    BlueprintSpec(
-        name="crew_sdlc",
-        description="Sequential SDLC via CrewAI role-based agents",
-        crew_class="SdlcCrew",
-        framework=Framework.CREWAI,
-    ),
-    BlueprintSpec(
-        name="crew_qa",
-        description="QA via CrewAI: BA criteria → Go/Playwright tests → test fixes → review sign-off",
-        crew_class="QaCrew",
-        framework=Framework.CREWAI,
-    ),
-    BlueprintSpec(
-        name="crew_architecture_review",
-        description="Architecture review via CrewAI: BA + security + database + SRE merged by the CTO",
-        crew_class="ArchitectureReviewCrew",
-        framework=Framework.CREWAI,
-    ),
-    BlueprintSpec(
-        name="crew_audit",
-        description="Audit via CrewAI: secrets/OWASP + CI/container + runtime findings table",
-        crew_class="AuditCrew",
-        framework=Framework.CREWAI,
-    ),
-    BlueprintSpec(
-        name="autogen_sdlc",
-        description="Conversational SDLC via AutoGen group chat",
-        group_class="SdlcGroupChat",
-        framework=Framework.AUTOGEN,
-    ),
-    BlueprintSpec(
-        name="autogen_design_review",
-        description="Design discussion via AutoGen: CTO + BA + Security",
-        group_class="DesignGroupChat",
-        framework=Framework.AUTOGEN,
-    ),
-    BlueprintSpec(
-        name="composite",
-        description="LangGraph orchestration with CrewAI implementation",
-        stages=[STAGES.BA, STAGES.ADVISORY, STAGES.IMPLEMENTATION, STAGES.QUALITY_GATE],
-        crew_class="ImplementationCrew",
-        framework=Framework.COMPOSITE,
-    ),
 ]
 
 BLUEPRINTS: dict[str, dict[str, Any]] = {bp.name: bp.to_dict() for bp in _BLUEPRINT_SPECS}
@@ -155,6 +103,7 @@ BLUEPRINTS: dict[str, dict[str, Any]] = {bp.name: bp.to_dict() for bp in _BLUEPR
 
 # The project name becomes a directory under the output, checkpoint and approval roots, so it must be a plain name.
 _PROJECT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
+_SUPPORTED_FRAMEWORKS = frozenset({"legacy", "langgraph"})
 
 
 @dataclass
@@ -184,10 +133,13 @@ class PipelineConfig:
     def _validate_blueprint(self):
         if self.blueprint not in BLUEPRINTS:
             raise ValueError(f"Unknown blueprint '{self.blueprint}'. Available: {', '.join(BLUEPRINTS)}")
+        if self.framework not in _SUPPORTED_FRAMEWORKS:
+            raise ValueError(
+                f"Unsupported pipeline framework {self.framework!r}; supported frameworks are 'legacy' and 'langgraph'."
+            )
         bp = BLUEPRINTS[self.blueprint]
         expected = bp.get("framework", "legacy")
         if self.framework == "legacy" and expected != "legacy":
-            # The default framework is the blueprint's own: a crewai blueprint must not build the legacy pipeline.
             self.framework = expected
             return
         if self.framework != "legacy" and self.framework != expected:

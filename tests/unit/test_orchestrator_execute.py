@@ -367,13 +367,23 @@ async def test_merge_only_runs_for_an_approved_full_run(make, step, approve):
 
 
 async def test_the_run_id_is_published_for_tracing_once(make):
+    seen_during_run: list[str | None] = []
+
+    class ObservingStage(FakeStage):
+        async def run(self, state, config):
+            seen_during_run.append(run_id_var.get())
+            return await super().run(state, config)
+
     token = run_id_var.set(None)
     try:
-        pipe = make(_config(step="ba"), _all_stages([]))
+        pipe = make(_config(step="ba"), {STAGES.BA: ObservingStage("ba", [])})
         await pipe.execute()
-        assert run_id_var.get() == pipe.state.run_id
+        assert seen_during_run == [pipe.state.run_id]
+        assert run_id_var.get() is None  # cleaned up after execute() returns
+
         run_id_var.set("already-set")
         await pipe.execute()
+        assert seen_during_run[-1] == "already-set"
         assert run_id_var.get() == "already-set"
     finally:
         run_id_var.reset(token)
