@@ -78,7 +78,6 @@ async def delegate_to_agent(
         "capability": capability,
         "context_summary_length": len(context_str),
         "prompt_length": len(prompt),
-        "context_summary_preview": context_str[:200],
         "caller_agent": ctx_data.get("agent_name", ""),
         "caller_pipeline_stage": ctx_data.get("pipeline_stage", ""),
         "caller_run_id": ctx_data.get("run_id", ""),

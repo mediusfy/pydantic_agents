@@ -19,6 +19,13 @@ fresh **Unreleased** section above it.
   read-only system/module-cache mounts, and network disabled during code compilation and test execution (`--share-net`
   permitted only during `go mod tidy`). `SANDBOX_BACKEND=bwrap` fails closed when `bwrap` is unavailable; `auto` probes
   once and falls back to sanitized-env + process-group isolation on hosts without unprivileged user namespaces.
+- `SESSION_TRACE_ENABLED` setting (default `false`), recursive `session_recorder.redact_secrets()`, and
+  `platform_metrics.estimate_cost_usd()` + `run_id` column (`BP-O1`–`BP-O5`, `BP-F11`): `AgentRegistry.register` now
+  populates `agent.name` so `pydantic_ai` OTel GenAI spans carry `gen_ai.agent.name`, `AgentRegistry.run` and
+  `telemetry.py` propagate `run_id` into `current_run_context` and `telemetry.jsonl`, `platform_metrics` records
+  `run_id`, estimated `cost_usd`, and verdicts for `AgentAdvice.approved_to_proceed`, `TestRunReport.all_passed`, and
+  `CostReport.over_budget`, and `tests/conftest.py` enforces `ALLOW_MODEL_REQUESTS = False` while isolating singleton
+  `telemetry.jsonl` / `session_trace.jsonl` paths under `tmp_path`.
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -313,6 +320,9 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
+  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
+  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
 - **Same-UID subprocess exposure, writable `/opt/pydantic-agents`, Go 1.24/1.26 drift, and live `npx` downloads (`BP-T3`,
   `BP-S2`, `F-SEC-01`, `F-TOL-02`).** `Dockerfile` now installs `bubblewrap`, bumps the Go toolchain stage from
   `golang:1.24-bookworm` to `golang:1.26-bookworm` (matching `settings.go_version`), pre-installs pinned
@@ -329,6 +339,12 @@ fresh **Unreleased** section above it.
   `/opt/hostedtoolcache` on CI runners, which failed with `execvp go: No such file or directory`), the in-sandbox
   scratch paths derive from `tempfile.gettempdir()` instead of hard-coded `/tmp` literals, and the `auto` fallback logs
   at `ERROR` on Linux and names `SANDBOX_BACKEND=bwrap` as the production setting. Shared roots (`~/.local`, `/opt`) and the home directory are never bound.
+- **Unredacted source code, prompts, and secrets leaked via OTLP and `session_trace.jsonl` (`BP-O2`, `F-OBS-01`).**
+  Removed `logfire.instrument_pydantic()` (whose default `record='all'` exported full `Artifact` source code and
+  `PipelineState` over OTLP despite `include_content=False`), added `include_binary_content=False` to
+  `logfire.instrument_pydantic_ai(...)` without any unredacted fallback, removed raw `arg_pattern` and
+  `context_summary_preview` span attributes, and made the default `SessionRecorder` singleton opt-in
+  (`SESSION_TRACE_ENABLED=true`) with credential/token/DSN scrubbing before disk writes.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path

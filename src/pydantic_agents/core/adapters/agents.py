@@ -91,10 +91,12 @@ async def _record_metric(agent_name: str, start: float, result: Any) -> None:
     with contextlib.suppress(Exception):
         await platform_metrics.record_call(
             agent_name,
+            run_id=run_id_var.get() or None,
             duration=time.time() - start,
             success=result is not None,
             input_tokens=in_tokens,
             output_tokens=out_tokens,
+            cost_usd=platform_metrics.estimate_cost_usd(agent_name, in_tokens, out_tokens),
             verdict=platform_metrics.verdict_of(result) if result is not None else None,
         )
 
