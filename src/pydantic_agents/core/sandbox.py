@@ -90,13 +90,28 @@ def _is_within(path: Path, roots: Sequence[str]) -> bool:
     return any(path == Path(root) or Path(root) in path.parents for root in roots)
 
 
+# Shared install roots that hold many unrelated programs (and, under a home directory, the user's own files). A
+# toolchain whose bin/ sits directly in one of these is not bound wholesale.
+_SHARED_PREFIX_NAMES = frozenset({".local", "local", "opt", "usr", "home", "root"})
+
+
+def _is_bindable_toolchain_prefix(prefix: Path) -> bool:
+    if len(prefix.parts) < 3 or prefix.name in _SHARED_PREFIX_NAMES or _is_within(prefix, _SYSTEM_RO_PATHS):
+        return False
+    home = Path.home().absolute()
+    # Never the home directory itself or any ancestor of it (that would expose ~/.ssh, credentials, etc.).
+    return not (prefix == home or prefix in home.parents)
+
+
 def _toolchain_mount_args(program: str, search_path: str | None) -> list[str]:
     """Read-only binds for a toolchain installed outside the system paths (e.g. ``/opt/hostedtoolcache/go/...``).
 
     The image keeps Go under ``/usr/local/go`` (already covered by ``/usr``), but CI runners and dev machines often
     install toolchains under ``/opt`` or a home directory. Without this the sandboxed child fails with
-    ``execvp go: No such file or directory``. The bound directory is the toolchain prefix: the parent of the ``bin``
-    directory holding the executable, both as found on ``PATH`` and after resolving symlinks.
+    ``execvp go: No such file or directory``. The bound directory is the toolchain root: the parent of the ``bin``
+    directory holding the executable, both as found on ``PATH`` and after resolving symlinks. Shared roots such as
+    ``~/.local`` or ``/opt`` (a ``bin`` installed straight into them) and the home directory are never bound, so a
+    sandbox cannot read unrelated files; such a toolchain is simply not visible inside the sandbox.
     """
     found = shutil.which(program, path=search_path)
     if not found:
@@ -105,9 +120,14 @@ def _toolchain_mount_args(program: str, search_path: str | None) -> list[str]:
     seen: set[Path] = set()
     for exe in (Path(found).absolute(), Path(os.path.realpath(found))):
         prefix = exe.parent.parent
-        if prefix in seen or len(prefix.parts) < 3 or _is_within(prefix, _SYSTEM_RO_PATHS):
+        if prefix in seen:
             continue
         seen.add(prefix)
+        if _is_within(prefix, _SYSTEM_RO_PATHS):
+            continue
+        if not _is_bindable_toolchain_prefix(prefix):
+            logger.debug("sandbox: not binding shared prefix %s for %r", prefix, program)
+            continue
         args.extend(["--ro-bind", str(prefix), str(prefix)])
     return args
 

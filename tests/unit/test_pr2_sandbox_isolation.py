@@ -113,6 +113,29 @@ def test_build_bwrap_command_binds_toolchains_installed_outside_system_paths(tmp
     assert sandbox._toolchain_mount_args("definitely-not-a-binary", str(bin_dir)) == []
 
 
+def test_toolchain_mounts_never_bind_shared_roots_or_home(tmp_path, monkeypatch):
+    home = tmp_path / "home" / "dev"
+    local_bin = home / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    (local_bin / "go").write_text("#!/bin/sh\n")
+    (local_bin / "go").chmod(0o755)
+    home_bin = home / "bin"
+    home_bin.mkdir()
+    (home_bin / "go").write_text("#!/bin/sh\n")
+    (home_bin / "go").chmod(0o755)
+    monkeypatch.setenv("HOME", str(home))
+
+    assert sandbox._toolchain_mount_args("go", str(local_bin)) == []  # ~/.local
+    assert sandbox._toolchain_mount_args("go", str(home_bin)) == []  # ~ itself
+
+    toolchain = home / ".local" / "go" / "bin"
+    toolchain.mkdir(parents=True)
+    (toolchain / "go").write_text("#!/bin/sh\n")
+    (toolchain / "go").chmod(0o755)
+    root = str(home / ".local" / "go")
+    assert sandbox._toolchain_mount_args("go", str(toolchain)) == ["--ro-bind", root, root]
+
+
 def test_build_bwrap_command_skips_duplicate_gopath_when_equal_to_cwd(tmp_path):
     argv, _ = sandbox.build_bwrap_command(
         ["go", "build", "./..."],
