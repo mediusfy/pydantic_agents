@@ -236,21 +236,33 @@ async def test_the_cto_gate_reports_that_it_is_waiting(pool, monkeypatch, tmp_pa
 
 
 @pytest.mark.parametrize(
-    ("project", "approved", "content", "raises"),
-    [("svc", True, "true\n", False), ("svc", False, "false\n", False), ("../escape", True, None, True)],
+    ("project", "approved", "raises"),
+    [("svc", True, False), ("svc", False, False), ("../escape", True, True)],
 )
-def test_write_approval(monkeypatch, tmp_path, project, approved, content, raises):
+def test_write_approval(monkeypatch, tmp_path, project, approved, raises):
+    import json
+
     monkeypatch.setattr(settings, "output_dir", tmp_path)
     if raises:
         with pytest.raises(PathTraversalError):
             write_approval(project, approved)
         return
-    assert write_approval(project, approved).read_text() == content
+    written = write_approval(project, approved)
+    assert json.loads(written.read_text()) == {"approved": approved, "run_id": "", "adr_id": ""}
 
 
 @pytest.mark.parametrize(
     ("content", "want"),
-    [("true\n", True), ("", True), ("yes", True), ("false\n", False), ("0", False), ("maybe", None)],
+    [
+        ("true\n", True),
+        ("", None),
+        ("yes", True),
+        ("false\n", False),
+        ("0", False),
+        ("maybe", None),
+        ('{"approved": true, "run_id": "", "adr_id": "0001"}\n', True),
+        ('{"approved": false, "run_id": "", "adr_id": ""}\n', False),
+    ],
 )
 def test_marker_decision(tmp_path, content, want):
     from pydantic_agents.core.cto_gate import read_marker

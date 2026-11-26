@@ -467,7 +467,6 @@ async def run_existing_code_pipeline(
             MAX_RETRIES,
             result.errors,
         )
-        _write_result(result, project or "existing-code")
         return result
     finally:
         if hasattr(recorder, "close"):

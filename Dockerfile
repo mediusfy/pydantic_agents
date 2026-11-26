@@ -57,4 +57,4 @@ EXPOSE 8080
 
 ENV LOGFIRE_SEND_TO_LOGFIRE=false
 
-CMD ["uvicorn", "pydantic_agents.mcp_server:mcp.sse_app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "pydantic_agents.mcp_server:create_http_app", "--factory", "--host", "0.0.0.0", "--port", "8080"]

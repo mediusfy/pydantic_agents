@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `create_http_app()` ASGI factory in `mcp_server.py` (now used by `Dockerfile` and `make serve`) serving Streamable
+  HTTP at `/mcp`, a separated fail-closed admin FastMCP surface at `/mcp/admin` (`mcp_admin`, holding
+  `approve_cto_gate`, `save_adr`, and `cancel_pipeline_run`), `/healthz`, and the legacy `/sse` + `/messages/` routes
+  for zero-downtime LiteLLM cutover. `_MCPBearerAuthMiddleware` enforces constant-time Bearer authentication via
+  `MCP_AUTH_TOKEN` on worker routes and requires `MCP_ADMIN_TOKEN` on `/mcp/admin` (returning `503` when unset and
+  `403` if called with the worker token, so coding agents cannot self-approve CTO gates or overwrite ADRs).
 - `SESSION_TRACE_ENABLED` setting (default `false`), recursive `session_recorder.redact_secrets()`, and
   `platform_metrics.estimate_cost_usd()` + `run_id` column (`BP-O1`–`BP-O5`, `BP-F11`): `AgentRegistry.register` now
   populates `agent.name` so `pydantic_ai` OTel GenAI spans carry `gen_ai.agent.name`, `AgentRegistry.run` and
@@ -32,9 +38,6 @@ fresh **Unreleased** section above it.
   three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at
   pgvector. Tickets AP-102 through AP-110. Of those, AP-110 is implemented in full by this change, and AP-102 and
   AP-105 in part — see the `### Fixed` entries below for exactly what remains open on each.
-- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
-  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
-  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
 - `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
   (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
   operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the
@@ -316,6 +319,25 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- MCP auth review follow-ups: `/mcp/admin` detection now collapses repeated slashes and ignores case so no path
+  variant reaches the admin app with the worker token, `create_http_app` logs a warning when `MCP_AUTH_TOKEN` is unset,
+  and `read_marker` documents that run binding is best-effort for legacy markers.
+- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
+  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
+  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
+- **CTO gate marker races, stale approvals, and silent `AgentAdvice` rejection (`BP-F9`, `BP-F2`, `BP-P1`).**
+  `cto_gate.write_approval` now writes structured JSON (`{approved, run_id, adr_id}`) atomically via sibling tempfile +
+  `os.replace`, `read_marker` no longer treats truncated empty `""` files as `True` (`approved`), and
+  `approve_cto_gate` verifies an active/waiting run on `project_name` and scopes the marker to `.cto_approved.<run_id>`
+  so late approvals cannot wave through future runs and concurrent runs on one project cannot steal each other's
+  markers. `cto_prompt` now documents `adr_id` and `findings`, and `@cto_agent.output_validator` raises `ModelRetry`
+  when `approved_to_proceed=true` is returned without `adr_id` instead of silently flipping to `false` on first try.
+- **Unapproved artifacts flushed to `output_dir` and false scaffolding success (`BP-R3`).**
+  `OrgitrationPipeline.execute`, `_GraphPipelineWrapper.execute`, `CrewAIPipeline.execute`, and
+  `run_existing_code_pipeline` now skip writing artifacts when gate approval fails (`approved=False` / `passed=False`),
+  and `scaffold_and_build_service` surfaces gate rejection instead of reporting completion unconditionally.
+- **`MCP_DNS_REBINDING_PROTECTION=true` silently disabled host/origin checks (`BP-S2`).** `mcp_server.py` now parses
+  standard truthy values (`1`, `true`, `yes`, `on`) instead of comparing strictly against `"1"`.
 - **Unredacted source code, prompts, and secrets leaked via OTLP and `session_trace.jsonl` (`BP-O2`, `F-OBS-01`).**
   Removed `logfire.instrument_pydantic()` (whose default `record='all'` exported full `Artifact` source code and
   `PipelineState` over OTLP despite `include_content=False`), added `include_binary_content=False` to
