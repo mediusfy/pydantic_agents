@@ -150,6 +150,41 @@ def test_http_app_auth_and_admin_isolation(monkeypatch):
         assert res_worker_open.status_code == 200
 
 
+@pytest.mark.parametrize(
+    "path", ["/mcp/admin", "/mcp/admin/", "//mcp/admin", "/mcp//admin/", "/MCP/Admin", "/mcp/admin/messages/"]
+)
+def test_admin_path_variants_require_the_admin_token(monkeypatch, path):
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "worker-tok")
+    monkeypatch.setenv("MCP_ADMIN_TOKEN", "admin-tok")
+    assert mcp_server._authorize_request(path, "worker-tok") == (
+        403,
+        "Forbidden: worker token is not permitted on /mcp/admin.",
+        False,
+    )
+    assert mcp_server._authorize_request(path, "admin-tok") is None
+
+
+@pytest.mark.parametrize("path", ["/mcp", "/mcp/", "/sse", "/messages/", "/mcp/administrator"])
+def test_non_admin_paths_accept_the_worker_token(monkeypatch, path):
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "worker-tok")
+    monkeypatch.setenv("MCP_ADMIN_TOKEN", "admin-tok")
+    assert mcp_server._authorize_request(path, "worker-tok") is None
+
+
+def test_create_http_app_warns_when_worker_auth_is_disabled(monkeypatch, caplog):
+    monkeypatch.setattr(settings, "mcp_auth_token", None)
+    monkeypatch.delenv("MCP_AUTH_TOKEN", raising=False)
+    with caplog.at_level("WARNING", logger=mcp_server.logger.name):
+        mcp_server.create_http_app()
+    assert any("MCP_AUTH_TOKEN is not set" in r.getMessage() for r in caplog.records)
+
+    caplog.clear()
+    monkeypatch.setenv("MCP_AUTH_TOKEN", "worker-tok")
+    with caplog.at_level("WARNING", logger=mcp_server.logger.name):
+        mcp_server.create_http_app()
+    assert not any("MCP_AUTH_TOKEN is not set" in r.getMessage() for r in caplog.records)
+
+
 @pytest.mark.asyncio
 async def test_bearer_middleware_passes_non_http_scopes_through():
     inner = AsyncMock()

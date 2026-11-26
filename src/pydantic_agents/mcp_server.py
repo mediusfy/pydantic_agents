@@ -992,12 +992,26 @@ async def _send_json_error(send: Any, status: int, message: str, *, www_authenti
     await send({"type": "http.response.body", "body": body})
 
 
+_ADMIN_PATH_PREFIX = "/mcp/admin"
+_REPEATED_SLASHES = re.compile(r"/{2,}")
+
+
+def _is_admin_path(path: str) -> bool:
+    """True for ``/mcp/admin`` and anything beneath it, after collapsing repeated slashes and ignoring case.
+
+    Errs toward admin: a spelling such as ``//mcp/admin/`` or ``/MCP/Admin`` is held to the admin token even though
+    the router would not serve it, so no variant can reach the admin app with only the worker token.
+    """
+    normalized = _REPEATED_SLASHES.sub("/", path).lower()
+    return normalized == _ADMIN_PATH_PREFIX or normalized.startswith(_ADMIN_PATH_PREFIX + "/")
+
+
 def _authorize_request(path: str, bearer: str | None) -> tuple[int, str, bool] | None:
     """Return ``None`` when permitted, or ``(http_status, message, include_www_authenticate)`` when denied."""
     if path == "/healthz":
         return None
     worker_token, admin_token = _configured_tokens()
-    is_admin_route = path == "/mcp/admin" or path.startswith("/mcp/admin/")
+    is_admin_route = _is_admin_path(path)
     if is_admin_route:
         if not admin_token:
             return 503, "Admin MCP endpoint is disabled (set MCP_ADMIN_TOKEN).", False
@@ -1044,6 +1058,13 @@ def create_http_app() -> Any:
     from starlette.responses import JSONResponse
     from starlette.routing import Route
 
+    worker_token, _ = _configured_tokens()
+    if not worker_token:
+        logger.warning(
+            "MCP_AUTH_TOKEN is not set: /mcp and /sse accept unauthenticated requests. "
+            "Set it on any shared or cluster deployment; /mcp/admin stays fail-closed regardless."
+        )
+
     worker_streamable = mcp.streamable_http_app()
     admin_streamable = mcp_admin.streamable_http_app()
     worker_sse = mcp.sse_app()
@@ -1062,6 +1083,7 @@ def create_http_app() -> Any:
         Route("/healthz", endpoint=healthz, methods=["GET"]),
         *worker_streamable.routes,
         *admin_streamable.routes,
+        # Legacy SSE transport, kept while the LiteLLM gateway still connects over /sse; drop once it uses /mcp.
         *worker_sse.routes,
     ]
     starlette_app = Starlette(debug=mcp.settings.debug, routes=routes, lifespan=lifespan)

@@ -27,7 +27,8 @@ _APPROVAL_FILE_PATH: Path | None = None
 _RUN_ID_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 
 # Per-task context carrying (expected_run_id, run_scoped_marker_path) into _poll_for_file_approval while keeping its
-# positional signature unchanged for callers and tests that monkeypatch it.
+# positional signature unchanged for callers and tests that monkeypatch it. Only the gate's own wait sets it; any
+# other caller of the poller gets the default ("", None), which polls just the project marker with no run binding.
 _gate_poll_ctx: ContextVar[tuple[str, Path | None]] = ContextVar("cto_gate_poll_ctx", default=("", None))
 
 
@@ -137,6 +138,10 @@ def read_marker(filepath: Path, *, expected_run_id: str = "") -> bool | None:
 
     Empty files return ``None`` (never ``True``), preventing an in-progress shell truncation (`> .cto_approved`) from
     turning an intended rejection into an approval.
+
+    Run binding is best-effort, not a guarantee: for backward compatibility a plain ``true``/``false`` marker, or a
+    JSON marker with an empty ``run_id``, is accepted for any ``expected_run_id``. Only a JSON marker naming a
+    different run is ignored. ``approve_cto_gate`` always writes the run-bound JSON form.
     """
     if not filepath.exists():
         return None

@@ -31,6 +31,9 @@ fresh **Unreleased** section above it.
   three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at
   pgvector. Tickets AP-102 through AP-110. Of those, AP-110 is implemented in full by this change, and AP-102 and
   AP-105 in part — see the `### Fixed` entries below for exactly what remains open on each.
+- MCP auth review follow-ups: `/mcp/admin` detection now collapses repeated slashes and ignores case so no path
+  variant reaches the admin app with the worker token, `create_http_app` logs a warning when `MCP_AUTH_TOKEN` is unset,
+  and `read_marker` documents that run binding is best-effort for legacy markers.
 - `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
   (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
   operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the
