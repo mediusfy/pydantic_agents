@@ -10,7 +10,7 @@ from pydantic_agents.core.exceptions import (
     AgentNotFoundError,
     AmbiguousCapabilityError,
 )
-from pydantic_agents.core.limits import llm_semaphore
+from pydantic_agents.core.limits import llm_semaphore, run_id_var
 from pydantic_agents.core.session_recorder import current_run_context
 from pydantic_agents.core.settings import settings
 from pydantic_agents.core.utils import serialize_output
@@ -41,6 +41,8 @@ class AgentRegistry:
     ):
         if name in self._agents:
             raise ValueError(f"Agent '{name}' is already registered.")
+        if getattr(agent, "name", None) is None:
+            agent.name = name
         self._agents[name] = (agent, capabilities, deps_factory, post_process_hook)
         for cap in capabilities:
             owners = self._cap_index.setdefault(cap, [])
@@ -161,8 +163,10 @@ class AgentRegistry:
         if resolved_deps is None and callable(deps_factory):
             resolved_deps = deps_factory()
 
-        # Tools such as log_activity attribute their work to the running agent via this context.
-        token = current_run_context.set({**(current_run_context.get() or {}), "agent_name": name})
+        # Tools such as log_activity and query_history attribute and scope their work via this context.
+        existing_ctx = current_run_context.get() or {}
+        effective_run_id = existing_ctx.get("run_id") or run_id_var.get() or ""
+        token = current_run_context.set({**existing_ctx, "agent_name": name, "run_id": effective_run_id})
         try:
             return await self._provider.run_agent(
                 semaphore=llm_semaphore(),

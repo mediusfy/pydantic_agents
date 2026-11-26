@@ -1,7 +1,9 @@
 """Structured session recorder for pipeline agent runs.
 
-Captures full prompt, context summary, tool calls, output, and decisions
-per agent run — for fine-tuning data, debugging, and context-audit traces.
+Captures prompt, context summary, tool calls, output, and decisions per agent run — for debugging and context-audit
+traces. Disabled by default (`SESSION_TRACE_ENABLED=false`) on the global singleton so raw prompts and generated source
+code are not persisted on production pods unless explicitly enabled; when active, all persisted string/JSON fields are
+scrubbed through `redact_secrets`.
 
 Output: JSONL with one record per agent invocation. Each ``record_span`` owns its own record, so concurrent
 spans (the advisory stage runs the CTO and UX agents side by side, the implementation stage every story's agents)
@@ -11,6 +13,8 @@ never overwrite each other.
 import contextlib
 import json
 import logging
+import os
+import re
 import time
 from collections.abc import AsyncIterator, Mapping
 from contextvars import ContextVar
@@ -21,9 +25,58 @@ from typing import Any
 import logfire
 
 from pydantic_agents.core.limits import run_id_var
+from pydantic_agents.core.settings import settings
 from pydantic_agents.core.utils import rotate_log
 
 logger = logging.getLogger(__name__)
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+
+# Secret scrubbing patterns covering API keys, cloud tokens, bearer/basic headers, PEM private keys, and DSNs.
+_SECRET_REGEXES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(pat)
+    for pat in (
+        r"AKIA[0-9A-Z]{16}",
+        r"ASIA[0-9A-Z]{16}",
+        r"AIza[0-9A-Za-z\-_]{35}",
+        r"(?:ghp|gho|ghu|ghs|ghr)_[0-9a-zA-Z]{36}",
+        r"github_pat_[0-9a-zA-Z_]{22,}",
+        r"-----BEGIN\s?(?:RSA|DSA|EC|OPENSSH|PGP)?\s?PRIVATE KEY-----"
+        r"[\s\S]*?-----END\s?(?:RSA|DSA|EC|OPENSSH|PGP)?\s?PRIVATE KEY-----",
+        r"-----BEGIN\s?(?:RSA|DSA|EC|OPENSSH|PGP)?\s?PRIVATE KEY-----",
+        r"\bsk-(?:proj-|ant-|live-|test-)?[0-9a-zA-Z_\-]{16,}",
+        r"\btskey-[0-9a-zA-Z\-]{10,}",
+        r"(?i)bearer\s+[0-9a-zA-Z\-_\.]{16,}",
+        r"(?i)basic\s+[0-9a-zA-Z+/=]{16,}",
+        r"eyJ[0-9a-zA-Z\-_]+\.eyJ[0-9a-zA-Z\-_]+\.[0-9a-zA-Z\-_]+",
+        r"npm_[a-z0-9A-Z]{36}",
+        r"xox[baprs]-[0-9a-zA-Z\-]{10,}",
+        r"(?:sk|rk)_(?:test|live)_[0-9a-zA-Z]{24}",
+        (
+            r"(?i)(?:api[_-]?key|apikey|secret[_-]?key|app[_-]?secret|client[_-]?secret"
+            r"|access[_-]?token|auth[_-]?token|password|passwd|pwd)"
+            r"\s*[:=]\s*['\"]?[0-9a-zA-Z_\-\./+=]{8,}['\"]?"
+        ),
+    )
+)
+_URL_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^:/\s@]+:[^@\s]+@")
+
+
+def redact_secrets(value: Any) -> Any:
+    """Recursively scrub credentials, tokens, PEM blocks, and embedded DSN passwords from strings/dicts/lists."""
+    if isinstance(value, str):
+        scrubbed = _URL_CRED_RE.sub(r"\1[REDACTED]@", value)
+        for regex in _SECRET_REGEXES:
+            scrubbed = regex.sub("[REDACTED]", scrubbed)
+        return scrubbed
+    if isinstance(value, dict):
+        return {k: redact_secrets(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [redact_secrets(item) for item in value]
+    if isinstance(value, tuple):
+        return [redact_secrets(item) for item in value]
+    return value
+
 
 # Context variable carrying current agent run info (run_id, agent_name, pipeline_stage)
 # Set by record_span context manager, read by tool wrappers for cross-communication tracing.
@@ -68,10 +121,13 @@ class AgentRunRecord:
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
         d.pop("written", None)
-        # Truncate prompt to keep files manageable
+        # Truncate prompt first so redaction runs over bounded length
         d["prompt_truncated"] = len(d["prompt"]) > 100_000
         if d["prompt_truncated"]:
             d["prompt"] = d["prompt"][:100_000]
+        for key in ("prompt", "context_summary", "story_gherkin", "output", "output_json", "error", "tool_calls"):
+            if d.get(key) is not None:
+                d[key] = redact_secrets(d[key])
         return d
 
     def set_output(self, output: Any, success: bool = True) -> None:
@@ -104,11 +160,30 @@ class RecordingSpan:
 
 
 class SessionRecorder:
-    """Session recorder that writes one structured trace record per agent run."""
+    """Session recorder that writes one redacted trace record per agent run when enabled."""
 
-    def __init__(self, filepath: str = DEFAULT_TRACE_FILE, max_bytes: int = 50 * 1024 * 1024):
+    def __init__(
+        self,
+        filepath: str = DEFAULT_TRACE_FILE,
+        max_bytes: int = 50 * 1024 * 1024,
+        *,
+        enabled: bool | None = None,
+    ):
         self.filepath = filepath
         self.max_bytes = max_bytes
+        self._enabled_override = enabled
+        self._explicit_filepath = filepath != DEFAULT_TRACE_FILE
+
+    def is_enabled(self) -> bool:
+        """True when JSONL disk persistence is active for this recorder instance."""
+        if self._enabled_override is not None:
+            return self._enabled_override
+        if self._explicit_filepath:
+            return True
+        env_raw = os.environ.get("SESSION_TRACE_ENABLED")
+        if env_raw is not None:
+            return env_raw.strip().lower() in _TRUTHY
+        return bool(settings.session_trace_enabled)
 
     @staticmethod
     def _new_record(
@@ -138,8 +213,8 @@ class SessionRecorder:
         record.tool_calls.append(
             ToolCallRecord(
                 tool_name=tool_name,
-                tool_args=tool_args,
-                result_preview=str(result)[:500],
+                tool_args=redact_secrets(dict(tool_args)),
+                result_preview=redact_secrets(str(result)[:500]),
                 duration_sec=duration_sec,
             )
         )
@@ -165,8 +240,7 @@ class SessionRecorder:
         error: str | None = None,
         token_usage: dict[str, int] | None = None,
     ) -> dict[str, Any]:
-        """Finalize a record and write it to JSONL. Only the first call for a record writes: a stage that catches its
-        own failure calls ``abort_run`` inside the span, and the span's exit must not overwrite it as a success."""
+        """Finalize a record and write it to JSONL when enabled. Only the first call for a record writes."""
         if record.written:
             return record.to_dict()
         record.written = True
@@ -178,7 +252,8 @@ class SessionRecorder:
         if output is not None:
             record.set_output(output, success)
         data = record.to_dict()
-        self._write(data)
+        if self.is_enabled():
+            self._write(data)
         return data
 
     @contextlib.asynccontextmanager
@@ -193,17 +268,7 @@ class SessionRecorder:
         story_gherkin: str = "",
         **logfire_attrs,
     ) -> AsyncIterator[RecordingSpan]:
-        """Async context manager wrapping a full agent run span.
-
-        Usage:
-            async with recorder.record_span(...) as rec:
-                result = await run_agent(...)
-                rec.set_output(result)
-
-        The record is written when the block exits: as a success (with whatever ``set_output`` recorded) or, if
-        the block raised, as a failure carrying the error. Each span has its own record, so concurrent spans are
-        independent.
-        """
+        """Async context manager wrapping a full agent run span."""
         record = self._new_record(
             run_id=run_id,
             agent_name=agent_name,
@@ -214,7 +279,6 @@ class SessionRecorder:
             story_gherkin=story_gherkin,
         )
         span = RecordingSpan(self, record)
-        # Also open a logfire span for this agent run so the JSONL trace correlates with Logfire's pydantic-ai spans
         span_attrs: dict[str, Any] = {
             "agent_name": agent_name,
             "story_id": story_id or "",
@@ -223,7 +287,6 @@ class SessionRecorder:
             **logfire_attrs,
         }
         with logfire.span(f"pipeline.{pipeline_stage}", _level="info", **span_attrs):
-            # Set contextvars so tool wrappers can read run_id, agent_name, pipeline_stage and record tool calls
             token = current_run_context.set(
                 {
                     "run_id": run_id,
@@ -250,7 +313,7 @@ class SessionRecorder:
         try:
             line = json.dumps(data, default=str) + "\n"
             self._rotate_if_needed()
-            with open(self.filepath, "a") as f:
+            with open(self.filepath, "a", encoding="utf-8") as f:
                 f.write(line)
         except Exception as e:
             logger.warning(f"SessionRecorder write failed: {e}")
@@ -260,7 +323,7 @@ class SessionRecorder:
             logger.info("Rotated session trace %s", self.filepath)
 
 
-# Global singleton
+# Global singleton (opt-in via SESSION_TRACE_ENABLED=true)
 recorder = SessionRecorder()
 
 
@@ -268,7 +331,7 @@ def extract_traces(filepath: str = DEFAULT_TRACE_FILE, last_n: int = 0) -> list[
     """Extract session trace records as a list of dicts."""
     records = []
     try:
-        with open(filepath) as f:
+        with open(filepath, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if line:

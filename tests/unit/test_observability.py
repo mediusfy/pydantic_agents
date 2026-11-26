@@ -76,8 +76,10 @@ def test_configure_calls_instrument_pydantic_ai_when_credentials_present(monkeyp
         observability.configure_observability()
 
     fake_logfire.configure.assert_called_once()
-    fake_logfire.instrument_pydantic_ai.assert_called_once()
-    fake_logfire.instrument_pydantic.assert_called_once()
+    fake_logfire.instrument_pydantic_ai.assert_called_once_with(
+        include_content=False, include_binary_content=False
+    )
+    fake_logfire.instrument_pydantic.assert_not_called()
     fake_logfire.instrument_httpx.assert_called_once()
 
 

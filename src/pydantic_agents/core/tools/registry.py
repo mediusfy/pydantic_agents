@@ -6,7 +6,7 @@ from functools import wraps
 
 import logfire
 
-from pydantic_agents.core.session_recorder import current_run_context
+from pydantic_agents.core.session_recorder import current_run_context, recorder
 
 logger = logging.getLogger(__name__)
 
@@ -29,10 +29,10 @@ def _build_span_attrs(tool_name: str, kwargs: dict) -> dict:
         "arg_count": len(kwargs),
         **{f"run_{k}": v for k, v in run_ctx.items() if v},
     }
-    for key in ("prompt", "requirements", "context_summary"):
+    for key in ("prompt", "requirements", "context_summary", "pattern"):
         if key in kwargs:
-            attrs[f"arg_{key}_len"] = len(kwargs[key])
-    for key in ("component_name", "test_id", "pattern", "capability"):
+            attrs[f"arg_{key}_len"] = len(str(kwargs[key]))
+    for key in ("component_name", "test_id", "capability"):
         if key in kwargs:
             attrs[f"arg_{key}"] = kwargs[key]
     return attrs
@@ -51,11 +51,13 @@ def _wrap_tool_with_tracing(fn: Callable, tool_name: str) -> Callable:
                 with logfire.span(f"tool.{tool_name}", **attrs, _level="info"):
                     result = await fn(*args, **kwargs)
                 duration = time.time() - start
+                recorder.record_tool_call(tool_name, kwargs, result, duration)
                 if isinstance(result, (str, list)):
                     logger.debug(f"tool.{tool_name} completed in {duration:.1f}s, size={len(result)}")
                 return result
             except Exception as e:
                 duration = time.time() - start
+                recorder.record_tool_call(tool_name, kwargs, f"ERROR: {e}", duration)
                 logger.warning(f"tool.{tool_name} failed in {duration:.1f}s: {e}")
                 raise
 
@@ -69,11 +71,13 @@ def _wrap_tool_with_tracing(fn: Callable, tool_name: str) -> Callable:
             with logfire.span(f"tool.{tool_name}", **attrs, _level="info"):
                 result = fn(*args, **kwargs)
             duration = time.time() - start
+            recorder.record_tool_call(tool_name, kwargs, result, duration)
             if isinstance(result, (str, list)):
                 logger.debug(f"tool.{tool_name} completed in {duration:.1f}s, size={len(result)}")
             return result
         except Exception as e:
             duration = time.time() - start
+            recorder.record_tool_call(tool_name, kwargs, f"ERROR: {e}", duration)
             logger.warning(f"tool.{tool_name} failed in {duration:.1f}s: {e}")
             raise
 
