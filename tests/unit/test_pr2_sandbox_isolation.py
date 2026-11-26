@@ -63,8 +63,9 @@ def test_build_bwrap_command_isolates_namespaces_root_proc_and_network(tmp_path)
     sep = argv_offline.index("--")
     assert argv_offline[sep + 1 :] == ["go", "test", "./..."]
     assert sandbox.unwrap_sandbox_command(argv_offline) == ("go", "test", "./...")
-    assert env_offline["HOME"] == "/tmp/home"
-    assert env_offline["GOCACHE"] == "/tmp/go-cache"
+    assert env_offline["HOME"] == str(sandbox._SANDBOX_HOME)
+    assert env_offline["GOCACHE"] == str(sandbox._SANDBOX_GOCACHE)
+    assert env_offline["TMPDIR"] == str(sandbox._SANDBOX_TMP)
     assert env_offline["GOPATH"] == str(gopath)
 
     # Network-enabled mode (used strictly for `go mod tidy`): adds --share-net and writable GOPATH bind
@@ -80,6 +81,36 @@ def test_build_bwrap_command_isolates_namespaces_root_proc_and_network(tmp_path)
     assert new_gopath.is_dir()
     rw_idx = [i for i, tok in enumerate(argv_net) if tok == "--bind" and argv_net[i + 1] == str(new_gopath)]
     assert len(rw_idx) == 1
+
+
+def test_build_bwrap_command_binds_toolchains_installed_outside_system_paths(tmp_path):
+    prefix = tmp_path / "hostedtoolcache" / "go" / "1.26" / "x64"
+    bin_dir = prefix / "bin"
+    bin_dir.mkdir(parents=True)
+    exe = bin_dir / "go"
+    exe.write_text("#!/bin/sh\n")
+    exe.chmod(0o755)
+    work = tmp_path / "work"
+    work.mkdir()
+
+    args = sandbox._toolchain_mount_args("go", str(bin_dir))
+    assert args == ["--ro-bind", str(prefix), str(prefix)]
+
+    # A symlinked launcher (e.g. /opt/node/bin/npx -> ../lib/node_modules/npm/bin/npx-cli.js) binds both prefixes.
+    real_pkg = tmp_path / "node" / "lib" / "node_modules" / "npm" / "bin"
+    real_pkg.mkdir(parents=True)
+    (real_pkg / "npx-cli.js").write_text("")
+    (real_pkg / "npx-cli.js").chmod(0o755)
+    node_bin = tmp_path / "node" / "bin"
+    node_bin.mkdir()
+    (node_bin / "npx").symlink_to(real_pkg / "npx-cli.js")
+    linked = sandbox._toolchain_mount_args("npx", str(node_bin))
+    assert linked[:3] == ["--ro-bind", str(tmp_path / "node"), str(tmp_path / "node")]
+    assert str(real_pkg.parent) in linked
+
+    # System toolchains and unknown programs add nothing.
+    assert sandbox._toolchain_mount_args("sh", "/usr/bin:/bin") == []
+    assert sandbox._toolchain_mount_args("definitely-not-a-binary", str(bin_dir)) == []
 
 
 def test_build_bwrap_command_skips_duplicate_gopath_when_equal_to_cwd(tmp_path):
@@ -106,7 +137,7 @@ def test_mount_or_symlink_handles_usrmerge_links_and_real_dirs(tmp_path):
 
 
 def test_probe_bwrap_caches_success_failure_and_oserror(monkeypatch):
-    monkeypatch.setattr(sandbox.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _name, **_kw: None)
     assert sandbox.probe_bwrap() == (False, "'bwrap' binary is not installed")
 
     runs: list[list[str]] = []
@@ -149,25 +180,25 @@ def test_resolve_sandbox_execution_modes_and_validation(tmp_path, monkeypatch, c
 
     # Fail-closed 'bwrap' raises SandboxUnavailableError when bwrap is missing or denied
     monkeypatch.setenv("SANDBOX_BACKEND", "bwrap")
-    monkeypatch.setattr(sandbox.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _n, **_kw: None)
     with pytest.raises(SandboxUnavailableError, match="unavailable"):
         sandbox.resolve_sandbox_execution(["go", "version"], cwd=tmp_path)
 
     # 'bwrap' succeeds and wraps when probe succeeds
-    monkeypatch.setattr(sandbox.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/true")
     monkeypatch.setattr(
-        sandbox.subprocess, "run", lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "", "")
+        sandbox.shutil, "which", lambda name, **_kw: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/true"
     )
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "", ""))
     sandbox.clear_sandbox_probe_cache()
     wrapped, _ = sandbox.resolve_sandbox_execution(["go", "test", "./..."], cwd=tmp_path)
     assert wrapped[0] == "/usr/bin/bwrap"
     assert sandbox.unwrap_sandbox_command(wrapped) == ("go", "test", "./...")
 
-    # 'auto' logs once at WARNING on Linux when bwrap fails
+    # 'auto' logs once (at ERROR on Linux) when bwrap fails
     sandbox.clear_sandbox_probe_cache()
     monkeypatch.setenv("SANDBOX_BACKEND", "auto")
     monkeypatch.setattr(sandbox.sys, "platform", "linux")
-    monkeypatch.setattr(sandbox.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _n, **_kw: None)
     with caplog.at_level("WARNING", logger="pydantic_agents.core.sandbox"):
         out1, _ = sandbox.resolve_sandbox_execution(["go", "version"], cwd=tmp_path)
         out2, _ = sandbox.resolve_sandbox_execution(["go", "version"], cwd=tmp_path)
@@ -186,7 +217,7 @@ def test_unwrap_sandbox_command_passthrough_when_not_bwrap():
 @pytest.mark.asyncio
 async def test_all_execution_tools_report_sandbox_unavailable_without_crashing(tmp_path, monkeypatch):
     monkeypatch.setenv("SANDBOX_BACKEND", "bwrap")
-    monkeypatch.setattr(sandbox.shutil, "which", lambda _n: None)
+    monkeypatch.setattr(sandbox.shutil, "which", lambda _n, **_kw: None)
 
     # 1. execute_test_suite (Go & Vitest)
     go_res = await test_tools.execute_test_suite("svc_test.go", "package svc", "svc.go", "package svc")
@@ -215,10 +246,10 @@ async def test_all_execution_tools_report_sandbox_unavailable_without_crashing(t
 @pytest.mark.asyncio
 async def test_go_mod_tidy_gets_network_while_go_mod_init_and_tests_do_not(monkeypatch):
     monkeypatch.setenv("SANDBOX_BACKEND", "bwrap")
-    monkeypatch.setattr(sandbox.shutil, "which", lambda name: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/true")
     monkeypatch.setattr(
-        sandbox.subprocess, "run", lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "", "")
+        sandbox.shutil, "which", lambda name, **_kw: "/usr/bin/bwrap" if name == "bwrap" else "/usr/bin/true"
     )
+    monkeypatch.setattr(sandbox.subprocess, "run", lambda cmd, **_kw: subprocess.CompletedProcess(cmd, 0, "", ""))
 
     recorded_argvs: list[tuple[str, ...]] = []
 

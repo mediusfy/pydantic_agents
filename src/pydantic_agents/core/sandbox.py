@@ -23,6 +23,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -49,6 +50,15 @@ _NETWORK_RO_PATHS: tuple[str, ...] = (
     "/etc/nsswitch.conf",
 )
 
+# Private scratch space inside the sandbox. A fresh tmpfs is mounted at the host's temp-dir path (normally /tmp), so
+# nothing the host keeps there is visible to the child; the ephemeral workspace, created by tempfile under that same
+# path, is then bound back in on top of it. The directory is never shared with the host or other sandboxes.
+_SANDBOX_TMP = Path(tempfile.gettempdir())
+_SANDBOX_HOME = _SANDBOX_TMP / "home"
+_SANDBOX_GOCACHE = _SANDBOX_TMP / "go-cache"
+_SANDBOX_NPM_CACHE = _SANDBOX_TMP / "npm-cache"
+_DEFAULT_GOPATH = _SANDBOX_TMP / "go"
+
 _probe_cache: dict[str, tuple[bool, str]] = {}
 _warned_auto_fallback: bool = False
 
@@ -74,6 +84,32 @@ def _mount_or_symlink_args(paths: Sequence[str]) -> list[str]:
 def _system_mount_args(*, allow_network: bool) -> list[str]:
     paths = (*_SYSTEM_RO_PATHS, *_NETWORK_RO_PATHS) if allow_network else _SYSTEM_RO_PATHS
     return _mount_or_symlink_args(paths)
+
+
+def _is_within(path: Path, roots: Sequence[str]) -> bool:
+    return any(path == Path(root) or Path(root) in path.parents for root in roots)
+
+
+def _toolchain_mount_args(program: str, search_path: str | None) -> list[str]:
+    """Read-only binds for a toolchain installed outside the system paths (e.g. ``/opt/hostedtoolcache/go/...``).
+
+    The image keeps Go under ``/usr/local/go`` (already covered by ``/usr``), but CI runners and dev machines often
+    install toolchains under ``/opt`` or a home directory. Without this the sandboxed child fails with
+    ``execvp go: No such file or directory``. The bound directory is the toolchain prefix: the parent of the ``bin``
+    directory holding the executable, both as found on ``PATH`` and after resolving symlinks.
+    """
+    found = shutil.which(program, path=search_path)
+    if not found:
+        return []
+    args: list[str] = []
+    seen: set[Path] = set()
+    for exe in (Path(found).absolute(), Path(os.path.realpath(found))):
+        prefix = exe.parent.parent
+        if prefix in seen or len(prefix.parts) < 3 or _is_within(prefix, _SYSTEM_RO_PATHS):
+            continue
+        seen.add(prefix)
+        args.extend(["--ro-bind", str(prefix), str(prefix)])
+    return args
 
 
 def probe_bwrap(bwrap_bin: str | None = None) -> tuple[bool, str]:
@@ -131,7 +167,8 @@ def build_bwrap_command(
     """Build the ``bwrap`` argv and isolated environment for running ``cmd`` inside ``cwd``."""
     work_dir = str(Path(cwd).resolve())
     env = sanitized_subprocess_env()
-    gopath = str(Path(gopath_dir or env.get("GOPATH") or "/tmp/go").resolve())
+    gopath = str(Path(gopath_dir or env.get("GOPATH") or _DEFAULT_GOPATH).resolve())
+    scratch = str(_SANDBOX_TMP)
 
     argv: list[str] = [bwrap_bin, "--unshare-all"]
     if allow_network:
@@ -147,23 +184,27 @@ def build_bwrap_command(
             "--tmpfs",
             "/",
             *_system_mount_args(allow_network=allow_network),
+            *_toolchain_mount_args(cmd[0], env.get("PATH")),
             "--proc",
             "/proc",
             "--dev",
             "/dev",
             "--tmpfs",
-            "/tmp",
+            scratch,
             "--dir",
-            "/tmp/home",
+            str(_SANDBOX_HOME),
             "--dir",
-            "/tmp/go-cache",
+            str(_SANDBOX_GOCACHE),
             "--dir",
-            "/tmp/npm-cache",
+            str(_SANDBOX_NPM_CACHE),
         ]
     )
 
     if gopath != work_dir:
         if allow_network:
+            # Only `go mod tidy` asks for the network, and it runs before any generated code executes (no build, test
+            # or vet has run yet). Module downloads go through settings.untrusted_goproxy / untrusted_gosumdb, which
+            # sanitized_subprocess_env() pins with GOENV=off so the module cannot redirect them.
             os.makedirs(gopath, exist_ok=True)
             argv.extend(["--bind", gopath, gopath])
         elif os.path.isdir(gopath):
@@ -172,12 +213,12 @@ def build_bwrap_command(
     argv.extend(["--bind", work_dir, work_dir, "--chdir", work_dir, "--", *cmd])
     env.update(
         {
-            "HOME": "/tmp/home",
-            "TMPDIR": "/tmp",
-            "TEMP": "/tmp",
-            "TMP": "/tmp",
-            "GOCACHE": "/tmp/go-cache",
-            "NPM_CONFIG_CACHE": "/tmp/npm-cache",
+            "HOME": str(_SANDBOX_HOME),
+            "TMPDIR": scratch,
+            "TEMP": scratch,
+            "TMP": scratch,
+            "GOCACHE": str(_SANDBOX_GOCACHE),
+            "NPM_CONFIG_CACHE": str(_SANDBOX_NPM_CACHE),
             "GOPATH": gopath,
         }
     )
@@ -215,8 +256,14 @@ def resolve_sandbox_execution(
 
     if not _warned_auto_fallback:
         _warned_auto_fallback = True
-        log_fn = logger.warning if sys.platform == "linux" else logger.debug
-        log_fn("bwrap namespace sandbox unavailable (%s); falling back to sanitized-env subprocess isolation.", reason)
+        # On Linux (where production runs) losing the namespace sandbox re-exposes /proc/<ppid>/environ, so it is an
+        # error; pin SANDBOX_BACKEND=bwrap in production to fail closed instead. On macOS dev machines it is expected.
+        log_fn = logger.error if sys.platform == "linux" else logger.debug
+        log_fn(
+            "bwrap namespace sandbox unavailable (%s); falling back to sanitized-env subprocess isolation. "
+            "Set SANDBOX_BACKEND=bwrap in production to fail closed.",
+            reason,
+        )
     return list(cmd), sanitized_subprocess_env()
 
 

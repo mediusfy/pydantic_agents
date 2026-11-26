@@ -321,6 +321,14 @@ fresh **Unreleased** section above it.
   `/var/lib/pydantic-agents` (`0700`) with `ORCHESTRATION_CODEBASE_ROOT=/var/lib/pydantic-agents/workspace`.
   `validate_frontend_code` and `run_test_suite` now pass `npx --no-install`, run in `temp_dir` rather than `os.getcwd()`,
   and reap timed-out child process groups cleanly via `kill_and_reap`.
+  **Migration:** the image's working directory moves from `/opt/pydantic-agents` to `/var/lib/pydantic-agents`, so
+  `generated-app/`, `telemetry.jsonl`, `session_trace.jsonl` and checkpoints land there; a deployment that mounted a
+  volume at the old working directory, or relied on the old cwd as its codebase root, must move the mount or set
+  `ORCHESTRATION_CODEBASE_ROOT` explicitly.
+- Sandbox follow-ups: `bwrap` now binds toolchains installed outside the system paths read-only (e.g. Go under
+  `/opt/hostedtoolcache` on CI runners, which failed with `execvp go: No such file or directory`), the in-sandbox
+  scratch paths derive from `tempfile.gettempdir()` instead of hard-coded `/tmp` literals, and the `auto` fallback logs
+  at `ERROR` on Linux and names `SANDBOX_BACKEND=bwrap` as the production setting.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path
