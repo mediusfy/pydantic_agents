@@ -157,6 +157,14 @@ class Settings(BaseSettings):
     # Push activity logs into the local Claude Code / Antigravity memory directories after a pipeline run. Off by
     # default: in the pod there are no such directories, and on a workstation it writes into every agent's memory.
     memory_bridge_sync: bool = False
+    # Opt-in JSONL prompt/output session tracing (`session_trace.jsonl`). Off by default so raw prompts and generated
+    # source code are not persisted on pod ephemeral disks or developer workstations; redacted when enabled.
+    session_trace_enabled: bool = False
+    # Token-rate estimates (USD per 1M tokens) used by platform_metrics.estimate_cost_usd when recording agent runs.
+    cost_default_input_per_1m_usd: float = 0.27
+    cost_default_output_per_1m_usd: float = 1.10
+    cost_subagent_input_per_1m_usd: float = 0.14
+    cost_subagent_output_per_1m_usd: float = 0.28
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
     state_backend: Literal["disk", "turso"] = "disk"

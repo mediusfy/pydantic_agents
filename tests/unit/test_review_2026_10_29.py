@@ -265,12 +265,15 @@ def test_pydantic_ai_spans_exclude_content(older_logfire):
 
     fake = MagicMock()
     if older_logfire:
-        fake.instrument_pydantic_ai.side_effect = [TypeError("no include_content"), None]
+        fake.instrument_pydantic_ai.side_effect = [TypeError("no include_binary_content"), None]
     with patch.object(observability, "logfire", fake):
-        observability._instrument()
+        problems = observability._instrument()
+    assert problems == []
     first = fake.instrument_pydantic_ai.call_args_list[0]
-    assert first.kwargs == {"include_content": False}
+    assert first.kwargs == {"include_content": False, "include_binary_content": False}
     assert fake.instrument_pydantic_ai.call_count == (2 if older_logfire else 1)
+    if older_logfire:
+        assert fake.instrument_pydantic_ai.call_args_list[1].kwargs == {"include_content": False}
 
 
 # --- agy bridge: decorator hooks are live, server rejects non-object JSON ---------------------------------------
