@@ -272,7 +272,10 @@ class OrgitrationPipeline:
                 return self.state
 
             self._sync_usage_to_state()
-            self.artifact_writer.write_artifacts(self.state.artifacts)
+            # Final artifact flush: only approved runs write to output_dir so rejected code never overwrites clean
+            # output.
+            if self.state.approved:
+                self.artifact_writer.write_artifacts(self.state.artifacts)
 
             if stage == "all" and self.state.approved:
                 await self._merge_artifacts()

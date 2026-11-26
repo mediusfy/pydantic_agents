@@ -108,10 +108,12 @@ def _httpx_capture_kwargs(instrument_httpx: Any) -> dict[str, Any]:
 
 
 def _instrument() -> list[str]:
-    """Instrument pydantic, httpx (headers and bodies suppressed so generated code never leaves the host) and
-    pydantic-ai. Each step is independent: one that fails is reported in the returned list and does not stop the
-    others. (An httpx signature error used to abort the whole function, so pydantic-ai, the per-model-call spans
-    with token usage, was never instrumented.)"""
+    """Instrument httpx (headers and bodies suppressed so generated code and keys never leave the host) and
+    pydantic-ai (content and binary content suppressed, with no unredacted fallback).
+
+    ``logfire.instrument_pydantic()`` is deliberately NOT called: its default ``record='all'`` exported every
+    validated ``Artifact``, ``PipelineState``, and ``Finding`` over OTLP despite ``include_content=False``.
+    Each step is independent: one that fails is reported in the returned list and does not stop the others."""
     problems: list[str] = []
 
     def attempt(name: str, step: Any) -> None:
@@ -121,17 +123,17 @@ def _instrument() -> list[str]:
             logger.warning("Could not instrument %s: %s", name, e)
             problems.append(f"{name}: {e}")
 
-    attempt("pydantic", logfire.instrument_pydantic)
     attempt("httpx", lambda: logfire.instrument_httpx(**_httpx_capture_kwargs(logfire.instrument_httpx)))
 
-    # The instrumentation that matters most: per-model-call spans (with token usage), per-tool-call spans, and
-    # parent/child structure under the manually opened mcp.* / pipeline.* / agent.run spans.
+    # Per-model-call spans (with token usage and gen_ai.agent.name), per-tool-call spans, and parent/child structure
+    # under mcp.* / pipeline.* / agent.run. Never fall back to bare instrument_pydantic_ai() (which defaults to
+    # include_content=True, include_binary_content=True).
     def pydantic_ai() -> None:
         with contextlib.suppress(AttributeError, ModuleNotFoundError):  # older Logfire: no such helper
             try:
-                logfire.instrument_pydantic_ai(include_content=False)
+                logfire.instrument_pydantic_ai(include_content=False, include_binary_content=False)
             except TypeError:
-                logfire.instrument_pydantic_ai()
+                logfire.instrument_pydantic_ai(include_content=False)
 
     attempt("pydantic-ai", pydantic_ai)
     return problems
@@ -181,7 +183,7 @@ def configure_observability() -> None:
             logger.warning(LOGFIRE_CONFIGURE_ERROR)
         else:
             logger.info(
-                "Observability configured (logfire=%s, langfuse=%s) — pydantic-ai + pydantic + httpx instrumented",
+                "Observability configured (logfire=%s, langfuse=%s) — pydantic-ai + httpx instrumented",
                 LOGFIRE_ENABLED,
                 LANGFUSE_ENABLED,
             )

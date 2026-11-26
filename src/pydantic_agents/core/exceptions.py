@@ -58,6 +58,10 @@ class PathTraversalError(OrgitrationError):
     """Detected an attempt to write outside the allowed directory."""
 
 
+class SandboxUnavailableError(OrgitrationError):
+    """Required untrusted-code sandbox backend (e.g. bwrap) is missing or blocked by kernel policy."""
+
+
 class OrgitrationDependencyError(ImportError):
     """Raised when an optional dependency required by a runtime path is missing."""
 

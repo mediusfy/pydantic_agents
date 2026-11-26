@@ -15,10 +15,11 @@ class _Conn:
 
     async def execute(self, sql, *args):
         if "INSERT INTO platform_metrics" in sql:
-            row_id, agent, duration, success, input_tokens, output_tokens, cost_usd, verdict = args
+            row_id, agent, run_id, duration, success, input_tokens, output_tokens, cost_usd, verdict = args
             self.db[row_id] = {
                 "id": row_id,
                 "agent": agent,
+                "run_id": run_id,
                 "duration": duration,
                 "success": success,
                 "input_tokens": input_tokens,

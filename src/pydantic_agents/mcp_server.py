@@ -1,5 +1,8 @@
 import asyncio
+import contextlib
 import functools
+import hmac
+import json
 import logging
 import os
 import re
@@ -9,7 +12,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 import glob
 import uuid
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
 from typing import Any
 
@@ -40,15 +43,35 @@ def _split_csv(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
 
 
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
 _KNOWN_CONTEXT_DOMAINS: tuple[str, ...] = ("adrs", "architecture", "conventions", "project")
+
+
+def _dns_rebinding_protection_enabled() -> bool:
+    """Accept standard truthy strings ('1', 'true', 'yes', 'on') so MCP_DNS_REBINDING_PROTECTION=true stays enabled."""
+    return os.environ.get("MCP_DNS_REBINDING_PROTECTION", "1").strip().lower() in _TRUTHY
+
+
+def _build_transport_security() -> TransportSecuritySettings:
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=_dns_rebinding_protection_enabled(),
+        allowed_hosts=_split_csv(settings.mcp_allowed_hosts),
+        allowed_origins=_split_csv(settings.mcp_allowed_origins),
+    )
+
 
 mcp = FastMCP(
     "Orgitration",
-    transport_security=TransportSecuritySettings(
-        enable_dns_rebinding_protection=os.environ.get("MCP_DNS_REBINDING_PROTECTION", "1") == "1",
-        allowed_hosts=_split_csv(settings.mcp_allowed_hosts),
-        allowed_origins=_split_csv(settings.mcp_allowed_origins),
-    ),
+    streamable_http_path="/mcp",
+    transport_security=_build_transport_security(),
+)
+
+# Privileged human/admin MCP surface (/mcp/admin): holds approve_cto_gate, save_adr, and cancel_pipeline_run so
+# autonomous coding agents connected to the worker /mcp endpoint cannot self-approve gates or rewrite ADRs.
+mcp_admin = FastMCP(
+    "OrgitrationAdmin",
+    streamable_http_path="/mcp/admin",
+    transport_security=_build_transport_security(),
 )
 
 # ── Dynamic Agent MCP Tools ──────────────────────────────────────────
@@ -210,6 +233,17 @@ def _threaded_tool(fn):
     return fn
 
 
+def _admin_threaded_tool(fn):
+    """Register a blocking admin-only function on ``mcp_admin`` (/mcp/admin), keeping the plain function callable."""
+
+    @functools.wraps(fn)
+    async def runner(*args, **kwargs):
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+    mcp_admin.tool(name=fn.__name__)(runner)
+    return fn
+
+
 @_threaded_tool
 def search_adrs(query: str) -> str:
     """Search existing Architecture Decision Records (ADRs) to ensure new advice doesn't contradict past rulings."""
@@ -220,7 +254,7 @@ def search_adrs(query: str) -> str:
         return "Found past architectural context:\n" + "\n---\n".join(results)
 
 
-@_threaded_tool
+@_admin_threaded_tool
 def save_adr(decision_id: str, content: str) -> str:
     """Save a new Architecture Decision Record (ADR) to the knowledge base."""
     with logfire.span("mcp.save_adr", decision_id=decision_id, _level="info"):
@@ -369,17 +403,55 @@ async def resume_pipeline_run(run_id: str) -> str:
     return f"Run '{resumed}' resumed in the background. Poll with check_pipeline_status(run_id='{resumed}')."
 
 
-@mcp.tool()
-async def approve_cto_gate(project_name: str, approved: bool = True, adr_id: str = "", adr_content: str = "") -> str:
+_ACTIVE_APPROVABLE_STATUSES = frozenset({"waiting_cto_approval", "running", "pending"})
+
+
+async def _resolve_approvable_run(project_name: str, run_id: str) -> tuple[str, str | None]:
+    """Return ``(resolved_run_id, None)`` for an active run on ``project_name``, or ``("", error_message)``."""
+    from pydantic_agents.core.pipeline_jobs import PIPELINE_RUNS, STATUS_WAITING_CTO, get_run
+
+    cleaned = run_id.strip()
+    if cleaned:
+        run = PIPELINE_RUNS.get(cleaned) or await get_run(cleaned)
+        if not run:
+            return "", f"ERROR: Unknown run_id {cleaned!r}."
+        if run.get("project") != project_name:
+            return "", f"ERROR: Run '{cleaned}' belongs to project {run.get('project')!r}, not {project_name!r}."
+        status = run.get("status")
+        if status not in _ACTIVE_APPROVABLE_STATUSES:
+            return "", f"ERROR: Run '{cleaned}' is already {status} and is not waiting for CTO approval."
+        return cleaned, None
+
+    waiting = [
+        rid
+        for rid, rec in PIPELINE_RUNS.items()
+        if rec.get("project") == project_name and rec.get("status") == STATUS_WAITING_CTO
+    ]
+    candidates = waiting or [
+        rid
+        for rid, rec in PIPELINE_RUNS.items()
+        if rec.get("project") == project_name and rec.get("status") in _ACTIVE_APPROVABLE_STATUSES
+    ]
+    if len(candidates) > 1:
+        joined = ", ".join(sorted(candidates))
+        return "", f"ERROR: Multiple active runs for project '{project_name}' ({joined}); pass run_id explicitly."
+    if len(candidates) == 1:
+        return candidates[0], None
+    return "", f"ERROR: No active pipeline run for project '{project_name}' is waiting for CTO approval; pass run_id."
+
+
+@mcp_admin.tool()
+async def approve_cto_gate(
+    project_name: str,
+    approved: bool = True,
+    adr_id: str = "",
+    adr_content: str = "",
+    run_id: str = "",
+) -> str:
     """Approve (or reject) the CTO gate of a project's pipeline run that is waiting for approval.
 
-    The gate polls for a marker file inside the server; this writes it, so an MCP caller can approve a run
-    without shell access to the pod.
-
-    Approval requires ``adr_id`` (the same rule ``AgentAdvice.approved_to_proceed`` enforces in code for the
-    CrewAI architecture-review gate): there is no approved decision without a recorded one. When ``adr_content``
-    is also given, it is saved under ``adr_id`` via ``save_adr`` in the same call, so a human approving here does
-    not need a second tool call to persist the decision record.
+    Exposed exclusively on ``/mcp/admin`` (requires ``MCP_ADMIN_TOKEN``). Binds the marker atomically to the
+    target ``run_id`` so late approvals cannot wave through future runs and concurrent runs cannot steal markers.
     """
     from pydantic_agents.core.cto_gate import write_approval
 
@@ -389,18 +461,24 @@ async def approve_cto_gate(project_name: str, approved: bool = True, adr_id: str
         return "ERROR: approved=true requires adr_id (the decision record this approval is recorded under)."
     if adr_content.strip() and not adr_id.strip():
         return "ERROR: adr_content requires adr_id (nothing to save it under)."
+    target_run_id, run_err = await _resolve_approvable_run(project_name, run_id)
+    if run_err:
+        return run_err
     if adr_content.strip():
         try:
-            await asyncio.to_thread(save_adr, adr_id, adr_content)
+            await asyncio.to_thread(save_adr, adr_id.strip(), adr_content)
         except Exception as e:
             logger.exception("save_adr failed for %r during approve_cto_gate", adr_id)
             return f"ERROR: save_adr failed ({e}); the CTO gate was not approved so it can be retried."
-    path = write_approval(project_name, approved)
-    suffix = f", ADR {adr_id} saved" if adr_content.strip() else ""
-    return f"CTO gate for '{project_name}' set to {'approved' if approved else 'rejected'} ({path.name}){suffix}."
+    path = write_approval(project_name, approved, run_id=target_run_id, adr_id=adr_id.strip())
+    suffix = f", ADR {adr_id.strip()} saved" if adr_content.strip() else ""
+    return (
+        f"CTO gate for '{project_name}' (run '{target_run_id}') set to "
+        f"{'approved' if approved else 'rejected'} ({path.name}){suffix}."
+    )
 
 
-@mcp.tool()
+@mcp_admin.tool()
 async def cancel_pipeline_run(run_id: str) -> str:
     """Cancel a running background pipeline run by its run_id.
 
@@ -569,7 +647,14 @@ async def scaffold_and_build_service(service_name: str, bounded_context: str, re
             requirement=requirement,
         )
         pipeline = build_pipeline(config)
-        await pipeline.execute()
+        state = await pipeline.execute()
+        if not getattr(state, "approved", False):
+            failure = getattr(state, "failure_report", None)
+            reason = failure.trace if failure is not None else "pipeline finished without gate approval"
+            return (
+                f"Error: Service '{service_name}' scaffolding pipeline did not pass gates ({reason}). "
+                "Unapproved artifacts were not written."
+            )
         return f"Service '{service_name}' scaffolding pipeline completed. Artifacts in generated-app/{service_name}/."
 
 
@@ -873,6 +958,136 @@ async def agent_usage_summary(days: int = 7, agent: str = "") -> str:
     Only runs through the agent provider are recorded."""
     with logfire.span("mcp.agent_usage_summary", days=days, agent=agent, _level="info"):
         return await platform_metrics.usage_summary(days, agent)
+
+
+# ── HTTP / Streamable-HTTP + Admin ASGI Application ───────────────────────
+
+
+def _configured_tokens() -> tuple[str, str]:
+    worker = (os.environ.get("MCP_AUTH_TOKEN") or settings.mcp_auth_token or "").strip()
+    admin = (os.environ.get("MCP_ADMIN_TOKEN") or settings.mcp_admin_token or "").strip()
+    return worker, admin
+
+
+def _extract_bearer(headers: list[tuple[bytes, bytes]]) -> str | None:
+    for key, value in headers:
+        if key.lower() == b"authorization":
+            decoded = value.decode("latin-1", errors="ignore").strip()
+            scheme, _, token = decoded.partition(" ")
+            if scheme.lower() == "bearer" and token.strip():
+                return token.strip()
+            return None
+    return None
+
+
+async def _send_json_error(send: Any, status: int, message: str, *, www_authenticate: bool = False) -> None:
+    body = json.dumps({"error": message}).encode("utf-8")
+    headers: list[tuple[bytes, bytes]] = [
+        (b"content-type", b"application/json"),
+        (b"content-length", str(len(body)).encode("ascii")),
+    ]
+    if www_authenticate:
+        headers.append((b"www-authenticate", b"Bearer"))
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": body})
+
+
+_ADMIN_PATH_PREFIX = "/mcp/admin"
+_REPEATED_SLASHES = re.compile(r"/{2,}")
+
+
+def _is_admin_path(path: str) -> bool:
+    """True for ``/mcp/admin`` and anything beneath it, after collapsing repeated slashes and ignoring case.
+
+    Errs toward admin: a spelling such as ``//mcp/admin/`` or ``/MCP/Admin`` is held to the admin token even though
+    the router would not serve it, so no variant can reach the admin app with only the worker token.
+    """
+    normalized = _REPEATED_SLASHES.sub("/", path).lower()
+    return normalized == _ADMIN_PATH_PREFIX or normalized.startswith(_ADMIN_PATH_PREFIX + "/")
+
+
+def _authorize_request(path: str, bearer: str | None) -> tuple[int, str, bool] | None:
+    """Return ``None`` when permitted, or ``(http_status, message, include_www_authenticate)`` when denied."""
+    if path == "/healthz":
+        return None
+    worker_token, admin_token = _configured_tokens()
+    is_admin_route = _is_admin_path(path)
+    if is_admin_route:
+        if not admin_token:
+            return 503, "Admin MCP endpoint is disabled (set MCP_ADMIN_TOKEN).", False
+        if not bearer:
+            return 401, "Missing Bearer token for /mcp/admin.", True
+        if hmac.compare_digest(bearer, admin_token):
+            return None
+        if worker_token and hmac.compare_digest(bearer, worker_token):
+            return 403, "Forbidden: worker token is not permitted on /mcp/admin.", False
+        return 401, "Invalid Bearer token for /mcp/admin.", True
+
+    if not worker_token:
+        return None
+    if not bearer:
+        return 401, "Missing Bearer token.", True
+    if hmac.compare_digest(bearer, worker_token) or (admin_token and hmac.compare_digest(bearer, admin_token)):
+        return None
+    return 401, "Invalid Bearer token.", True
+
+
+class _MCPBearerAuthMiddleware:
+    """Pure-ASGI Bearer token guard separating worker routes (/mcp, /sse) from fail-closed /mcp/admin."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+        bearer = _extract_bearer(scope.get("headers") or [])
+        denial = _authorize_request(scope.get("path", ""), bearer)
+        if denial is not None:
+            status, msg, challenge = denial
+            await _send_json_error(send, status, msg, www_authenticate=challenge)
+            return
+        await self.app(scope, receive, send)
+
+
+def create_http_app() -> Any:
+    """Build the unified ASGI app: Streamable HTTP (/mcp), fail-closed admin (/mcp/admin), legacy /sse, and /healthz."""
+    from starlette.applications import Starlette
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    worker_token, _ = _configured_tokens()
+    if not worker_token:
+        logger.warning(
+            "MCP_AUTH_TOKEN is not set: /mcp and /sse accept unauthenticated requests. "
+            "Set it on any shared or cluster deployment; /mcp/admin stays fail-closed regardless."
+        )
+
+    worker_streamable = mcp.streamable_http_app()
+    admin_streamable = mcp_admin.streamable_http_app()
+    worker_sse = mcp.sse_app()
+
+    async def healthz(_request: Request) -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @contextlib.asynccontextmanager
+    async def lifespan(_app: Starlette) -> AsyncIterator[None]:
+        async with contextlib.AsyncExitStack() as stack:
+            await stack.enter_async_context(mcp.session_manager.run())
+            await stack.enter_async_context(mcp_admin.session_manager.run())
+            yield
+
+    routes = [
+        Route("/healthz", endpoint=healthz, methods=["GET"]),
+        *worker_streamable.routes,
+        *admin_streamable.routes,
+        # Legacy SSE transport, kept while the LiteLLM gateway still connects over /sse; drop once it uses /mcp.
+        *worker_sse.routes,
+    ]
+    starlette_app = Starlette(debug=mcp.settings.debug, routes=routes, lifespan=lifespan)
+    return _MCPBearerAuthMiddleware(starlette_app)
 
 
 if __name__ == "__main__":

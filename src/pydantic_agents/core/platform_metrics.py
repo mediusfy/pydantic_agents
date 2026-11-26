@@ -1,9 +1,9 @@
 """Per-call agent performance/quality signal, in the pgvector PostgreSQL database (table ``platform_metrics``).
 
 This is additive to ``core/telemetry.py``'s JSONL write, not a replacement: telemetry keeps writing locally for
-offline use, and the MCP call path also upserts here so the ``observer`` agent can query trends across runs.
-Persistence is best-effort, like the other database helpers: with no DATABASE_URL, or an unreachable database,
-every call logs and returns, and the caller behaves as if nothing happened.
+offline use, and the agent provider also inserts here so trends, spend (`cost_usd`), and per-run (`run_id`) costs can
+be queried across runs. Persistence is best-effort, like the other database helpers: with no DATABASE_URL, or an
+unreachable database, every call logs and returns, and the caller behaves as if nothing happened.
 """
 
 import logging
@@ -12,11 +12,16 @@ from datetime import datetime
 from typing import Any
 
 from pydantic_agents.core import vector_db
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.settings import settings
 
 logger = logging.getLogger(__name__)
 
 _table_ready = False
+# Heuristic: a configured model whose name contains one of these is billed at the cheaper sub-agent rate, anything
+# else at the default rate. Costs are estimates from list rates in settings, not invoiced spend.
+_SUBAGENT_MODEL_HINTS = ("subagent", "mini", "flash", "haiku")
+_warned_unknown_model: set[str] = set()
 
 
 def enabled() -> bool:
@@ -32,6 +37,7 @@ async def _ensure_table(conn: Any) -> None:
         CREATE TABLE IF NOT EXISTS platform_metrics (
             id              TEXT PRIMARY KEY,
             agent           TEXT NOT NULL,
+            run_id          TEXT,
             duration        DOUBLE PRECISION,
             success         BOOLEAN NOT NULL,
             input_tokens    INTEGER,
@@ -42,20 +48,25 @@ async def _ensure_table(conn: Any) -> None:
         )
         """
     )
+    await conn.execute("ALTER TABLE platform_metrics ADD COLUMN IF NOT EXISTS run_id TEXT")
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_platform_metrics_agent_created ON platform_metrics (agent, created_at DESC)"
     )
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_metrics_created ON platform_metrics (created_at DESC)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_platform_metrics_run_id ON platform_metrics (run_id)")
     _table_ready = True
 
 
 def verdict_of(result: Any) -> str | None:
-    """'passed'/'failed' from a QualityGateResult.passed or ReviewResult.approved output, else None."""
+    """'passed'/'failed' from structured gate/verdict outputs, else None."""
     output = getattr(result, "output", result)
-    for field in ("passed", "approved"):
+    for field in ("passed", "approved", "approved_to_proceed", "all_passed"):
         value = getattr(output, field, None)
         if isinstance(value, bool):
             return "passed" if value else "failed"
+    over_budget = getattr(output, "over_budget", None)
+    if isinstance(over_budget, bool):
+        return "failed" if over_budget else "passed"
     return None
 
 
@@ -69,9 +80,48 @@ def token_counts(result: Any) -> tuple[int | None, int | None]:
     return tuple(c if isinstance(c, int) else None for c in counts)  # type: ignore[return-value]
 
 
+def _agent_model_name(agent_name: str) -> str:
+    if agent_name == "test_eng":
+        return str(settings.test_model)
+    configured = getattr(settings, f"{agent_name}_model", None)
+    if configured:
+        return str(configured)
+    if agent_name not in _warned_unknown_model:
+        _warned_unknown_model.add(agent_name)
+        logger.warning(
+            "platform_metrics: no '%s_model' setting for agent %r; estimating cost_usd at the default rate",
+            agent_name,
+            agent_name,
+        )
+    return ""
+
+
+def estimate_cost_usd(
+    agent_name: str,
+    input_tokens: int | None,
+    output_tokens: int | None,
+    *,
+    model_name: str | None = None,
+) -> float | None:
+    """Estimated USD cost for a call's token counts, or None when neither input nor output tokens were reported."""
+    if input_tokens is None and output_tokens is None:
+        return None
+    resolved_model = (model_name if model_name is not None else _agent_model_name(agent_name)).lower()
+    if any(hint in resolved_model for hint in _SUBAGENT_MODEL_HINTS):
+        in_rate = settings.cost_subagent_input_per_1m_usd
+        out_rate = settings.cost_subagent_output_per_1m_usd
+    else:
+        in_rate = settings.cost_default_input_per_1m_usd
+        out_rate = settings.cost_default_output_per_1m_usd
+    in_cost = max(0, input_tokens or 0) * in_rate / 1_000_000.0
+    out_cost = max(0, output_tokens or 0) * out_rate / 1_000_000.0
+    return round(in_cost + out_cost, 8)
+
+
 async def record_call(
     agent: str,
     *,
+    run_id: str | None = None,
     duration: float | None = None,
     success: bool = True,
     input_tokens: int | None = None,
@@ -82,22 +132,27 @@ async def record_call(
     """Insert one row for an agent call. Never raises."""
     if not enabled():
         return
+    effective_run_id = run_id if run_id is not None else (run_id_var.get() or None)
+    effective_cost = (
+        cost_usd if cost_usd is not None else estimate_cost_usd(agent, input_tokens, output_tokens)
+    )
 
     async def _op(conn: Any) -> None:
         await _ensure_table(conn)
         await conn.execute(
             """
             INSERT INTO platform_metrics
-                (id, agent, duration, success, input_tokens, output_tokens, cost_usd, verdict)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                (id, agent, run_id, duration, success, input_tokens, output_tokens, cost_usd, verdict)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
             """,
             f"pm_{uuid.uuid4().hex[:12]}",
             agent,
+            effective_run_id,
             duration,
             success,
             input_tokens,
             output_tokens,
-            cost_usd,
+            effective_cost,
             verdict,
         )
 
@@ -149,6 +204,7 @@ _USAGE_SQL = """
            count(input_tokens)                                       AS runs_with_tokens,
            sum(input_tokens)                                         AS input_tokens,
            sum(output_tokens)                                        AS output_tokens,
+           sum(cost_usd)                                             AS cost_usd,
            count(*) FILTER (WHERE verdict = 'passed')                AS verdict_passed,
            count(*) FILTER (WHERE verdict = 'failed')                AS verdict_failed,
            max(created_at) FILTER (WHERE NOT success)                AS last_failure
@@ -211,9 +267,11 @@ def format_usage(rows: list[dict[str, Any]], days: int, agent: str = "") -> str:
             tokens = f"tokens in={int(r['input_tokens'] or 0)} out={int(r['output_tokens'] or 0)}"
             if with_tokens < runs:
                 tokens += f" (only {with_tokens} of {runs} runs reported tokens; the rest are NULL, not zero)"
+        cost_val = r.get("cost_usd")
+        cost_part = f", cost=${float(cost_val):.4f}" if cost_val is not None else ""
         lines.append(
             f"- {r['agent']}: runs={runs}, success={rate:.0f}%, "
-            f"duration p50={_fmt_seconds(r['p50_seconds'])} p95={_fmt_seconds(r['p95_seconds'])}, {tokens}, "
+            f"duration p50={_fmt_seconds(r['p50_seconds'])} p95={_fmt_seconds(r['p95_seconds'])}, {tokens}{cost_part}, "
             f"verdict passed={int(r['verdict_passed'])} failed={int(r['verdict_failed'])}, "
             f"last failure={_fmt_time(r['last_failure'])}"
         )

@@ -168,5 +168,6 @@ class _GraphPipelineWrapper:
         result.total_output_tokens = pipe_usage.output_tokens
         result.total_requests = pipe_usage.requests
         self._fill_blocked_failure(result, self._config.step)
-        ArtifactStorageAdapter(str(self._config.output_dir())).write_artifacts(result.artifacts)
+        if result.approved:
+            ArtifactStorageAdapter(str(self._config.output_dir())).write_artifacts(result.artifacts)
         return result

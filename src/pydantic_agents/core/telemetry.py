@@ -4,6 +4,7 @@ import logging
 import time
 from typing import Any
 
+from pydantic_agents.core.limits import run_id_var
 from pydantic_agents.core.utils import rotate_log
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,7 @@ class Telemetry:
     async def log_call(self, agent_name: str, duration: float, success: bool, metadata: dict[str, Any] | None = None):
         entry = {
             "timestamp": time.time(),
+            "run_id": run_id_var.get() or "",
             "agent": agent_name,
             "duration_sec": duration,
             "success": success,

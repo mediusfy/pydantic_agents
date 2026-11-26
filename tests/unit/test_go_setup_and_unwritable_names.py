@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pydantic_agents.core.sandbox import unwrap_sandbox_command
 from pydantic_agents.core.tools import frontend_tools, go_common, gobuild
 from pydantic_agents.core.tools.test_tools import execute_test_suite
 
@@ -18,7 +19,8 @@ class _Recorder:
         self.procs: list[MagicMock] = []
 
     async def __call__(self, *args, **_kwargs):
-        label = " ".join(args[:3])
+        inner = unwrap_sandbox_command(args)
+        label = " ".join(inner[:3])
         self.events.append(f"start {label}")
         recorder = self
 
@@ -114,5 +116,6 @@ async def test_validate_frontend_code_still_runs_the_linter_for_a_good_name():
         result = await frontend_tools.validate_frontend_code("components/Button.vue", "<template><b/></template>")
 
     assert result == "SUCCESS"
-    assert spawn.await_args.args[:2] == ("npx", "eslint")
-    assert spawn.await_args.args[2].endswith("components/Button.vue")
+    inner = unwrap_sandbox_command(spawn.await_args.args)
+    assert inner[:3] == ("npx", "--no-install", "eslint")
+    assert inner[3].endswith("components/Button.vue")

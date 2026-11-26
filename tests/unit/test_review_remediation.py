@@ -74,7 +74,7 @@ async def test_an_operator_approving_while_the_gate_polls_is_honoured_once(out_d
     async def approve_soon():
         await asyncio.sleep(0.05)
         (out_dir / "svc").mkdir(exist_ok=True)
-        (out_dir / "svc" / ".cto_approved").write_text("")  # `touch`: an empty marker counts as approval
+        (out_dir / "svc" / ".cto_approved").write_text("true\n")
 
     approver = asyncio.create_task(approve_soon())
     first = await cto_gate.apply(PipelineState(run_id="a", stage="advisory"), project="svc", timeout_seconds=2)
@@ -386,14 +386,25 @@ async def test_a_failed_agent_run_is_recorded_as_a_failure(monkeypatch):
 
 
 @pytest.mark.parametrize(
-    "tool", ["search_adrs", "save_adr", "query_context", "seed_project_context", "sync_memory", "memory_bridge_status"]
+    ("tool", "is_admin"),
+    [
+        ("search_adrs", False),
+        ("save_adr", True),
+        ("query_context", False),
+        ("seed_project_context", False),
+        ("sync_memory", False),
+        ("memory_bridge_status", False),
+    ],
 )
-async def test_blocking_mcp_tools_do_not_run_on_the_event_loop(tool):
+async def test_blocking_mcp_tools_do_not_run_on_the_event_loop(tool, is_admin):
     from pydantic_agents import mcp_server
 
-    registered = mcp_server.mcp._tool_manager.get_tool(tool)
+    server = mcp_server.mcp_admin if is_admin else mcp_server.mcp
+    other_server = mcp_server.mcp if is_admin else mcp_server.mcp_admin
+    registered = server._tool_manager.get_tool(tool)
 
     assert registered is not None
+    assert other_server._tool_manager.get_tool(tool) is None
     assert inspect.iscoroutinefunction(registered.fn)
     assert not inspect.iscoroutinefunction(getattr(mcp_server, tool))  # still a plain function for scripts and tests
 

@@ -1,7 +1,7 @@
 from enum import Enum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
 
 from pydantic_agents.core.pipeline.context import ContextFrame
 
@@ -162,14 +162,17 @@ class AgentAdvice(BaseModel):
     approved_to_proceed: bool = Field(
         default=False, description="Must be set explicitly; an omitted value blocks the pipeline"
     )
+    _approval_withdrawn_reason: str = PrivateAttr(default="")
 
     @model_validator(mode="after")
     def _block_on_critical_finding(self) -> "AgentAdvice":
         """Overrides the supplied approval: no approval while a CRITICAL finding is open, or without an adr_id."""
         if self.approved_to_proceed and any(f.severity in FINDING_BLOCKING_SEVERITIES for f in self.findings):
             self.approved_to_proceed = False
-        if self.approved_to_proceed and not self.adr_id.strip():
+            self._approval_withdrawn_reason = "critical_finding"
+        elif self.approved_to_proceed and not self.adr_id.strip():
             self.approved_to_proceed = False
+            self._approval_withdrawn_reason = "missing_adr_id"
         return self
 
 

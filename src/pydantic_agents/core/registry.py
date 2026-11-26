@@ -42,6 +42,8 @@ class AgentRegistry:
     ):
         if name in self._agents:
             raise ValueError(f"Agent '{name}' is already registered.")
+        if getattr(agent, "name", None) is None:
+            agent.name = name
         self._agents[name] = (agent, capabilities, deps_factory, post_process_hook)
         for cap in capabilities:
             owners = self._cap_index.setdefault(cap, [])

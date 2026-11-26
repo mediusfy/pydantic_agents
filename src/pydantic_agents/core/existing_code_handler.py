@@ -459,6 +459,19 @@ async def run_existing_code_pipeline(
             if await _run_attempt(result, recorder, attempt, options):
                 _write_result(result, project or "existing-code")
                 return result
+
+        _sync_memory_after_pipeline()
+
+        # All retries exhausted: nothing is written, so a failed run never overwrites clean output.
+        result.passed = False
+        result.retries_used = MAX_RETRIES
+        recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
+        logger.error(
+            "Pipeline failed after %d retries. Errors: %s",
+            MAX_RETRIES,
+            result.errors,
+        )
+        return result
     except UsageLimitExceeded as exc:
         logger.error("Existing-code pipeline halted by usage budget: %s", exc)
         result.errors.append(str(exc))
@@ -472,20 +485,6 @@ async def run_existing_code_pipeline(
         pipeline_usage_var.reset(usage_token)
         run_id_var.reset(run_token)
         sandbox_root_var.reset(root_token)
-
-    _sync_memory_after_pipeline()
-
-    # All retries exhausted
-    result.passed = False
-    result.retries_used = MAX_RETRIES
-    recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
-    logger.error(
-        "Pipeline failed after %d retries. Errors: %s",
-        MAX_RETRIES,
-        result.errors,
-    )
-    _write_result(result, project or "existing-code")
-    return result
 
 
 def _write_result(result: ExistingCodeResult, project: str) -> None:

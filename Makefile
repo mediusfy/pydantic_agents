@@ -42,7 +42,7 @@ smoke-deploy: ## After a deploy: call run_review, run_security and run_crypto_or
 	uv run python scripts/post_deploy_smoke.py
 
 serve: ## Run the MCP server locally on $(PORT)
-	uv run uvicorn pydantic_agents.mcp_server:mcp.sse_app --host 127.0.0.1 --port $(PORT)
+	uv run uvicorn pydantic_agents.mcp_server:create_http_app --factory --host 127.0.0.1 --port $(PORT)
 
 seed: ## Dry-run the vector knowledge-base refresh
 	uv run python scripts/seed_projects.py

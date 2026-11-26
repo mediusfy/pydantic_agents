@@ -18,6 +18,26 @@ fresh **Unreleased** section above it.
   `BP-C2`): `OrgitrationPipeline`, `_GraphPipelineWrapper`, and `run_existing_code_pipeline` now share a cumulative
   `RunUsage` across all stages and retries (persisted on `PipelineState` across checkpoints), clamping each call's
   `UsageLimits` to the remaining pipeline budget and halting cleanly on `UsageLimitExceeded`.
+- `core/sandbox.py` (`spawn_untrusted_subprocess`, `build_bwrap_command`, `probe_bwrap`, and `SANDBOX_BACKEND=auto|bwrap|none`
+  setting): isolates untrusted build, lint, and test subprocesses (`execute_test_suite`, `verifier.py`, `run_go_build`,
+  `run_go_vet`, and `validate_frontend_code`) inside a bubblewrap (`bwrap --unshare-all`) user, mount, PID, IPC, UTS,
+  and network namespace with an empty tmpfs root (`/`), fresh `/proc` (hiding the MCP server's `/proc/<ppid>/environ`),
+  read-only system/module-cache mounts, and network disabled during code compilation and test execution (`--share-net`
+  permitted only during `go mod tidy`). `SANDBOX_BACKEND=bwrap` fails closed when `bwrap` is unavailable; `auto` probes
+  once and falls back to sanitized-env + process-group isolation on hosts without unprivileged user namespaces.
+- `create_http_app()` ASGI factory in `mcp_server.py` (now used by `Dockerfile` and `make serve`) serving Streamable
+  HTTP at `/mcp`, a separated fail-closed admin FastMCP surface at `/mcp/admin` (`mcp_admin`, holding
+  `approve_cto_gate`, `save_adr`, and `cancel_pipeline_run`), `/healthz`, and the legacy `/sse` + `/messages/` routes
+  for zero-downtime LiteLLM cutover. `_MCPBearerAuthMiddleware` enforces constant-time Bearer authentication via
+  `MCP_AUTH_TOKEN` on worker routes and requires `MCP_ADMIN_TOKEN` on `/mcp/admin` (returning `503` when unset and
+  `403` if called with the worker token, so coding agents cannot self-approve CTO gates or overwrite ADRs).
+- `SESSION_TRACE_ENABLED` setting (default `false`), recursive `session_recorder.redact_secrets()`, and
+  `platform_metrics.estimate_cost_usd()` + `run_id` column (`BP-O1`–`BP-O5`, `BP-F11`): `AgentRegistry.register` now
+  populates `agent.name` so `pydantic_ai` OTel GenAI spans carry `gen_ai.agent.name`, `AgentRegistry.run` and
+  `telemetry.py` propagate `run_id` into `current_run_context` and `telemetry.jsonl`, `platform_metrics` records
+  `run_id`, estimated `cost_usd`, and verdicts for `AgentAdvice.approved_to_proceed`, `TestRunReport.all_passed`, and
+  `CostReport.over_budget`, and `tests/conftest.py` enforces `ALLOW_MODEL_REQUESTS = False` while isolating singleton
+  `telemetry.jsonl` / `session_trace.jsonl` paths under `tmp_path`.
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -320,6 +340,47 @@ fresh **Unreleased** section above it.
   of calling `Agent.run` directly; `delegate_to_agent` blocks A2A cycles (`visited_agents`) and bounds parallel child
   fan-out per parent; and the CrewAI, AutoGen, and `composite` pipeline engines (which bypassed `UsageLimits`, OTel
   GenAI spans, `@agent.instructions`, and checkpoints) are retired in favour of `OrgitrationPipeline` and `LangGraph`.
+- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
+  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
+  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
+- **Same-UID subprocess exposure, writable `/opt/pydantic-agents`, Go 1.24/1.26 drift, and live `npx` downloads (`BP-T3`,
+  `BP-S2`, `F-SEC-01`, `F-TOL-02`).** `Dockerfile` now installs `bubblewrap`, bumps the Go toolchain stage from
+  `golang:1.24-bookworm` to `golang:1.26-bookworm` (matching `settings.go_version`), pre-installs pinned
+  `eslint@9.39.5`, `typescript@5.9.3`, `vue-tsc@3.3.14`, and `vitest@4.1.12` (`--ignore-scripts`), locks
+  `/opt/pydantic-agents` read-only (`chmod -R a-w`, owned by `root:root`), and moves runtime `WORKDIR` to
+  `/var/lib/pydantic-agents` (`0700`) with `ORCHESTRATION_CODEBASE_ROOT=/var/lib/pydantic-agents/workspace`.
+  `validate_frontend_code` and `run_test_suite` now pass `npx --no-install`, run in `temp_dir` rather than `os.getcwd()`,
+  and reap timed-out child process groups cleanly via `kill_and_reap`.
+  **Migration:** the image's working directory moves from `/opt/pydantic-agents` to `/var/lib/pydantic-agents`, so
+  `generated-app/`, `telemetry.jsonl`, `session_trace.jsonl` and checkpoints land there; a deployment that mounted a
+  volume at the old working directory, or relied on the old cwd as its codebase root, must move the mount or set
+  `ORCHESTRATION_CODEBASE_ROOT` explicitly.
+- Sandbox follow-ups: `bwrap` now binds toolchains installed outside the system paths read-only (e.g. Go under
+  `/opt/hostedtoolcache` on CI runners, which failed with `execvp go: No such file or directory`), the in-sandbox
+  scratch paths derive from `tempfile.gettempdir()` instead of hard-coded `/tmp` literals, and the `auto` fallback logs
+  at `ERROR` on Linux and names `SANDBOX_BACKEND=bwrap` as the production setting. Shared roots (`~/.local`, `/opt`) and the home directory are never bound.
+- MCP auth review follow-ups: `/mcp/admin` detection now collapses repeated slashes and ignores case so no path
+  variant reaches the admin app with the worker token, `create_http_app` logs a warning when `MCP_AUTH_TOKEN` is unset,
+  and `read_marker` documents that run binding is best-effort for legacy markers.
+- **CTO gate marker races, stale approvals, and silent `AgentAdvice` rejection (`BP-F9`, `BP-F2`, `BP-P1`).**
+  `cto_gate.write_approval` now writes structured JSON (`{approved, run_id, adr_id}`) atomically via sibling tempfile +
+  `os.replace`, `read_marker` no longer treats truncated empty `""` files as `True` (`approved`), and
+  `approve_cto_gate` verifies an active/waiting run on `project_name` and scopes the marker to `.cto_approved.<run_id>`
+  so late approvals cannot wave through future runs and concurrent runs on one project cannot steal each other's
+  markers. `cto_prompt` now documents `adr_id` and `findings`, and `@cto_agent.output_validator` raises `ModelRetry`
+  when `approved_to_proceed=true` is returned without `adr_id` instead of silently flipping to `false` on first try.
+- **Unapproved artifacts flushed to `output_dir` and false scaffolding success (`BP-R3`).**
+  `OrgitrationPipeline.execute`, `_GraphPipelineWrapper.execute`, `CrewAIPipeline.execute`, and
+  `run_existing_code_pipeline` now skip writing artifacts when gate approval fails (`approved=False` / `passed=False`),
+  and `scaffold_and_build_service` surfaces gate rejection instead of reporting completion unconditionally.
+- **`MCP_DNS_REBINDING_PROTECTION=true` silently disabled host/origin checks (`BP-S2`).** `mcp_server.py` now parses
+  standard truthy values (`1`, `true`, `yes`, `on`) instead of comparing strictly against `"1"`.
+- **Unredacted source code, prompts, and secrets leaked via OTLP and `session_trace.jsonl` (`BP-O2`, `F-OBS-01`).**
+  Removed `logfire.instrument_pydantic()` (whose default `record='all'` exported full `Artifact` source code and
+  `PipelineState` over OTLP despite `include_content=False`), added `include_binary_content=False` to
+  `logfire.instrument_pydantic_ai(...)` without any unredacted fallback, removed raw `arg_pattern` and
+  `context_summary_preview` span attributes, and made the default `SessionRecorder` singleton opt-in
+  (`SESSION_TRACE_ENABLED=true`) with credential/token/DSN scrubbing before disk writes.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path

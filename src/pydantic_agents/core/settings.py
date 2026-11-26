@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     # Host and Origin header patterns accepted by the MCP server's DNS-rebinding middleware (comma-separated).
     mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
     mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
+    # Bearer tokens for the HTTP MCP endpoints. When mcp_auth_token is set, /mcp and legacy /sse+/messages/ require it
+    # (or mcp_admin_token). /mcp/admin (approve_cto_gate, save_adr, cancel_pipeline_run) is fail-closed: it returns 503
+    # until mcp_admin_token is configured, and rejects mcp_auth_token with 403 so worker clients cannot self-approve.
+    mcp_auth_token: str | None = None
+    mcp_admin_token: str | None = None
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     # QaCrew's bounded fix loop (KAN-487): go_test gets at most this many rounds to make a failing TestRunReport
     # pass before the review stage runs regardless; coverage below the floor fails the gate even if tests pass.
@@ -158,6 +163,14 @@ class Settings(BaseSettings):
     # Push activity logs into the local Claude Code / Antigravity memory directories after a pipeline run. Off by
     # default: in the pod there are no such directories, and on a workstation it writes into every agent's memory.
     memory_bridge_sync: bool = False
+    # Opt-in JSONL prompt/output session tracing (`session_trace.jsonl`). Off by default so raw prompts and generated
+    # source code are not persisted on pod ephemeral disks or developer workstations; redacted when enabled.
+    session_trace_enabled: bool = False
+    # Token-rate estimates (USD per 1M tokens) used by platform_metrics.estimate_cost_usd when recording agent runs.
+    cost_default_input_per_1m_usd: float = 0.27
+    cost_default_output_per_1m_usd: float = 1.10
+    cost_subagent_input_per_1m_usd: float = 0.14
+    cost_subagent_output_per_1m_usd: float = 0.28
     checkpoint_dir: Path = Path("./.claw-checkpoints")
     # Pipeline checkpoint backend: "disk" (JSON files) or "turso" (embedded Turso DB; needs the `turso` extra).
     state_backend: Literal["disk", "turso"] = "disk"
@@ -186,6 +199,12 @@ class Settings(BaseSettings):
     # An air-gapped deployment points it at its public-module mirror, never at a proxy that serves private modules.
     untrusted_goproxy: str = "https://proxy.golang.org"
     untrusted_gosumdb: str = "sum.golang.org"
+    # Process isolation backend for untrusted build/test subprocesses (core/sandbox.py):
+    # - "auto": use bubblewrap (bwrap) user/PID/mount/network namespaces when supported by the host kernel, else
+    #   fall back to process-group + sanitized-env isolation (e.g. macOS workstations or restricted seccomp profiles).
+    # - "bwrap": fail closed if bwrap is not installed or namespace creation is denied.
+    # - "none": disable bwrap wrapping while keeping sanitized_subprocess_env() and process-group reaping.
+    sandbox_backend: Literal["auto", "bwrap", "none"] = "auto"
 
     # Default deps for SDLC agents called without any (standalone MCP calls, delegation, evals). The CTO verifies
     # architecture against these, so they are an organisation policy: the defaults are placeholders, set them per

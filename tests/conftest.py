@@ -1,6 +1,7 @@
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
+import pydantic_ai.models
 import pytest
 
 from pydantic_agents.core.models.core import (
@@ -148,6 +149,17 @@ def temp_checkpoint_dir(tmp_path, monkeypatch) -> Path:
 def temp_telemetry_file(tmp_path) -> str:
     telemetry_file = tmp_path / "telemetry.jsonl"
     return str(telemetry_file)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_traces_and_block_live_models(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prevent accidental paid LLM calls in tests and redirect singleton JSONL logs away from the repo root."""
+    from pydantic_agents.core.session_recorder import recorder
+    from pydantic_agents.core.telemetry import telemetry
+
+    monkeypatch.setattr(pydantic_ai.models, "ALLOW_MODEL_REQUESTS", False)
+    monkeypatch.setattr(telemetry, "log_file", str(tmp_path / "telemetry.jsonl"))
+    monkeypatch.setattr(recorder, "filepath", str(tmp_path / "session_trace.jsonl"))
 
 
 @pytest.fixture(autouse=True)
