@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic_ai import Agent, RunContext
+from pydantic_ai import Agent, ModelRetry, RunContext
 
 from pydantic_agents.core.models.core import AgentAdvice
 from pydantic_agents.core.models.factory import create_model
@@ -56,10 +56,12 @@ When your architectural constraints affect specific agents, state them explicitl
 
 You must return an AgentAdvice with:
 - `approved_to_proceed`: true/false
+- `adr_id`: identifier of the governing Architecture Decision Record when approving (e.g. `"ADR-0001"` from `search_existing_adrs`, or `"ADR-NEW"` when establishing a new baseline architecture decision). Required whenever `approved_to_proceed` is `true`; leave empty when rejecting.
+- `findings`: typed architectural or risk findings (each with `id`, `source_agent="cto"`, `severity`, `description`, and `location`); any `CRITICAL` finding blocks approval.
 - `bottlenecks_identified`: concrete scale, latency, cost, or coupling concerns
 - `recommendations`: prioritized, actionable architectural guidance
 - `architectural_constraints`: constraints that bind specific downstream agents
-- If a requirement is fundamentally flawed or unscalable, flag it in the bottlenecks and set approved_to_proceed to False.
+- If a requirement is fundamentally flawed or unscalable, flag it in `bottlenecks_identified` / `findings` and set `approved_to_proceed` to `false`.
 """
 
 cto_agent = Agent(
@@ -70,6 +72,18 @@ cto_agent = Agent(
     defer_model_check=True,
     retries=settings.agent_retries,
 )
+
+
+@cto_agent.output_validator
+def _require_adr_id_on_approval(ctx: RunContext[OrgContext | None], advice: AgentAdvice) -> AgentAdvice:
+    """Prompt a retry when the model attempted to approve without supplying adr_id."""
+    if advice._approval_withdrawn_reason == "missing_adr_id":
+        raise ModelRetry(
+            "approved_to_proceed=true requires a non-empty adr_id citing the governing Architecture Decision Record "
+            "(e.g. 'ADR-0001' from search_existing_adrs, or 'ADR-NEW' for a new baseline decision). "
+            "Populate adr_id or set approved_to_proceed=false."
+        )
+    return advice
 
 
 @cto_agent.instructions

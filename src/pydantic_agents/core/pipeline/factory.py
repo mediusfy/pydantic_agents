@@ -195,5 +195,6 @@ class _GraphPipelineWrapper:
             final = await self._graph.ainvoke(initial, config={"configurable": {"thread_id": run_id}})
         result = PipelineState.model_validate(final) if isinstance(final, dict) else final
         self._fill_blocked_failure(result, self._config.step)
-        ArtifactStorageAdapter(str(self._config.output_dir())).write_artifacts(result.artifacts)
+        if result.approved:
+            ArtifactStorageAdapter(str(self._config.output_dir())).write_artifacts(result.artifacts)
         return result

@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     # Host and Origin header patterns accepted by the MCP server's DNS-rebinding middleware (comma-separated).
     mcp_allowed_hosts: str = "127.0.0.1:*,localhost:*,[::1]:*"
     mcp_allowed_origins: str = "http://127.0.0.1:*,http://localhost:*,http://[::1]:*"
+    # Bearer tokens for the HTTP MCP endpoints. When mcp_auth_token is set, /mcp and legacy /sse+/messages/ require it
+    # (or mcp_admin_token). /mcp/admin (approve_cto_gate, save_adr, cancel_pipeline_run) is fail-closed: it returns 503
+    # until mcp_admin_token is configured, and rejects mcp_auth_token with 403 so worker clients cannot self-approve.
+    mcp_auth_token: str | None = None
+    mcp_admin_token: str | None = None
     max_retries: int = 3  # Autonomous Remediation Loop: max retries before escalating to Lead Orchestrator
     # QaCrew's bounded fix loop (KAN-487): go_test gets at most this many rounds to make a failing TestRunReport
     # pass before the review stage runs regardless; coverage below the floor fails the gate even if tests pass.
