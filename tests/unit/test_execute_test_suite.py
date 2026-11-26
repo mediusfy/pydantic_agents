@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from pydantic_agents.core.sandbox import unwrap_sandbox_command
 from pydantic_agents.core.tools.test_tools import execute_test_suite
 
 
@@ -48,9 +49,9 @@ async def test_vitest_path_receives_the_written_test_file(returncode, expected_p
     with patch("asyncio.create_subprocess_exec", spawn):
         result = await execute_test_suite("a.spec.ts", "test('x')", "a.ts", "export const a = 1")
 
-    args = spawn.await_args.args
-    assert args[:3] == ("npx", "vitest", "run")
-    assert args[3].endswith("a.spec.ts")
+    inner = unwrap_sandbox_command(spawn.await_args.args)
+    assert inner[:4] == ("npx", "--no-install", "vitest", "run")
+    assert inner[4].endswith("a.spec.ts")
     assert result.startswith(expected_prefix)
 
 
@@ -59,7 +60,8 @@ async def test_go_tests_run_go_test_in_the_temp_module():
     with patch("asyncio.create_subprocess_exec", spawn):
         result = await execute_test_suite("svc_test.go", "package svc", "svc.go", "package svc")
 
-    assert spawn.await_args.args[:2] == ("go", "test")
+    inner = unwrap_sandbox_command(spawn.await_args.args)
+    assert inner[:2] == ("go", "test")
     assert result == "SUCCESS\nPASS"
 
 

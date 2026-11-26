@@ -4,11 +4,14 @@ import asyncio
 import tempfile
 from dataclasses import dataclass
 
+from pydantic_agents.core.exceptions import SandboxUnavailableError
+from pydantic_agents.core.sandbox import spawn_untrusted_subprocess
 from pydantic_agents.core.tools.go_common import init_and_tidy
 from pydantic_agents.core.tools.registry import register_tool
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_path_join, safe_write
 
 TEST_EXECUTION_TIMEOUT = 60.0
+_MAX_OUTPUT_CHARS = 32_000
 
 
 @dataclass(frozen=True)
@@ -30,10 +33,10 @@ class TestRunResult:
 
 
 async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> TestRunResult:
-    """Write the source files and the test files into one temporary module and run its tests.
+    """Write the source files and the test files into one temporary module and run its tests inside the sandbox.
 
     Go test files (``*_test.go``) run with ``go test ./...`` against every source file given, so a suite that
-    touches more than one file compiles; anything else runs with vitest.
+    touches more than one file compiles; anything else runs offline with ``npx --no-install vitest run``.
     """
     with tempfile.TemporaryDirectory() as temp_dir:
         try:
@@ -49,17 +52,18 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
                 return TestRunResult(False, "", err)
             cmd = ["go", "test", "-v", "-count=1", "./..."]
         else:
-            cmd = ["npx", "vitest", "run", *(str(safe_write(temp_dir, n, c)) for n, c in test_files.items())]
+            cmd = [
+                "npx",
+                "--no-install",
+                "vitest",
+                "run",
+                *(str(safe_path_join(temp_dir, n)) for n in test_files),
+            ]
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                cwd=temp_dir,
-                env=sanitized_subprocess_env(),
-                start_new_session=True,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
+            proc = await spawn_untrusted_subprocess(*cmd, cwd=temp_dir, allow_network=False)
+        except SandboxUnavailableError as e:
+            return TestRunResult(False, "", str(e))
         except FileNotFoundError as e:
             return TestRunResult(False, "", f"test runner not installed: {e}")
         try:
@@ -68,8 +72,8 @@ async def run_test_suite(files: dict[str, str], test_files: dict[str, str]) -> T
             await kill_and_reap(proc)
             return TestRunResult(False, "", "Timed out.")
 
-        output = f"{stdout.decode()}\n{stderr.decode()}".strip()
-        return TestRunResult(proc.returncode == 0, output)
+        output = f"{stdout.decode(errors='replace')}\n{stderr.decode(errors='replace')}".strip()
+        return TestRunResult(proc.returncode == 0, output[-_MAX_OUTPUT_CHARS:])
 
 
 async def execute_test_suite(

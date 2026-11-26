@@ -110,6 +110,6 @@ jobs:
           n = len(asyncio.run(mcp.list_tools()))
           assert n > 0, n
           print('torch', torch.__version__, '| tools', n)"
-          docker run --rm --entrypoint sh pydantic-agents:ci -c 'go version && node --version && rg --version | head -1'
-          # Runs unprivileged (numeric UID so Kubernetes can verify runAsNonRoot) and can write where agents write.
-          docker run --rm --entrypoint sh pydantic-agents:ci -c 'test "$(id -u)" = 10001 && touch generated-app.probe && rm generated-app.probe && git --version'
+          docker run --rm --entrypoint sh pydantic-agents:ci -c 'go version | grep -q go1.26 && bwrap --version && node --version && npx --no-install eslint --version && npx --no-install vue-tsc --version && npx --no-install vitest --version && rg --version | head -1'
+          # Runs unprivileged (UID 10001), can write in /var/lib/pydantic-agents, and CANNOT write to read-only /opt/pydantic-agents.
+          docker run --rm --entrypoint sh pydantic-agents:ci -c 'test "$(id -u)" = 10001 && touch generated-app.probe && rm generated-app.probe && ! touch /opt/pydantic-agents/ro.probe 2>/dev/null && git --version'

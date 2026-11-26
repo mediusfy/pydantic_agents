@@ -22,8 +22,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from pydantic_agents.core.exceptions import SandboxUnavailableError
+from pydantic_agents.core.sandbox import spawn_untrusted_subprocess
 from pydantic_agents.core.tools.go_common import init_and_tidy
-from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write, sanitized_subprocess_env
+from pydantic_agents.core.utils import WRITE_NAME_ERRORS, kill_and_reap, safe_write
 
 logger = logging.getLogger(__name__)
 
@@ -70,14 +72,9 @@ class VerificationReport:
 
 async def _run(name: str, args: list[str], cwd: str) -> CheckResult:
     try:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            cwd=cwd,
-            env=sanitized_subprocess_env(),
-            start_new_session=True,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
+        proc = await spawn_untrusted_subprocess(*args, cwd=cwd, allow_network=False)
+    except SandboxUnavailableError as e:
+        return CheckResult(name, False, str(e))
     except FileNotFoundError:
         return CheckResult(name, False, f"'{args[0]}' is not installed")
     try:

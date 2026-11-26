@@ -12,6 +12,13 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `core/sandbox.py` (`spawn_untrusted_subprocess`, `build_bwrap_command`, `probe_bwrap`, and `SANDBOX_BACKEND=auto|bwrap|none`
+  setting): isolates untrusted build, lint, and test subprocesses (`execute_test_suite`, `verifier.py`, `run_go_build`,
+  `run_go_vet`, and `validate_frontend_code`) inside a bubblewrap (`bwrap --unshare-all`) user, mount, PID, IPC, UTS,
+  and network namespace with an empty tmpfs root (`/`), fresh `/proc` (hiding the MCP server's `/proc/<ppid>/environ`),
+  read-only system/module-cache mounts, and network disabled during code compilation and test execution (`--share-net`
+  permitted only during `go mod tidy`). `SANDBOX_BACKEND=bwrap` fails closed when `bwrap` is unavailable; `auto` probes
+  once and falls back to sanitized-env + process-group isolation on hosts without unprivileged user namespaces.
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -306,6 +313,14 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **Same-UID subprocess exposure, writable `/opt/pydantic-agents`, Go 1.24/1.26 drift, and live `npx` downloads (`BP-T3`,
+  `BP-S2`, `F-SEC-01`, `F-TOL-02`).** `Dockerfile` now installs `bubblewrap`, bumps the Go toolchain stage from
+  `golang:1.24-bookworm` to `golang:1.26-bookworm` (matching `settings.go_version`), pre-installs pinned
+  `eslint@9.39.5`, `typescript@5.9.3`, `vue-tsc@3.3.14`, and `vitest@4.1.12` (`--ignore-scripts`), locks
+  `/opt/pydantic-agents` read-only (`chmod -R a-w`, owned by `root:root`), and moves runtime `WORKDIR` to
+  `/var/lib/pydantic-agents` (`0700`) with `ORCHESTRATION_CODEBASE_ROOT=/var/lib/pydantic-agents/workspace`.
+  `validate_frontend_code` and `run_test_suite` now pass `npx --no-install`, run in `temp_dir` rather than `os.getcwd()`,
+  and reap timed-out child process groups cleanly via `kill_and_reap`.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path
