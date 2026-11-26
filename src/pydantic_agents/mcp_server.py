@@ -312,9 +312,9 @@ async def run_orchestration_pipeline(
     as a background task and returns immediately with a run_id. Poll for
     completion using check_pipeline_status.
 
-    blueprint: one of the catalogue in core/pipeline/config.py (new_feature, quick_backend, langgraph_full,
-    crew_sdlc, crew_qa, crew_architecture_review, crew_audit, ...). framework: legacy, langgraph, crewai, autogen
-    or composite; empty uses the blueprint's own framework.
+    blueprint: one of the catalogue in core/pipeline/config.py (new_feature, quick_backend, docs_update,
+    security_review, langgraph_full, langgraph_quick). framework: legacy or langgraph; empty uses the blueprint's
+    own framework.
     """
     from pydantic_agents.core.pipeline.config import BLUEPRINTS
     from pydantic_agents.core.pipeline_jobs import submit_pipeline_run

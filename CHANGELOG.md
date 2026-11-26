@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- Pipeline-wide cumulative `RunUsage` ceilings (`PIPELINE_TOTAL_TOKENS_LIMIT`, default `8,000,000` tokens;
+  `PIPELINE_REQUEST_LIMIT`, default `250` requests), `AgentRegistry.run_subagent()`, A2A delegation cycle detection,
+  and per-parent child delegation concurrency (`MAX_CONCURRENT_CHILD_DELEGATIONS`, default `2`) (`BP-F10`, `BP-T4`,
+  `BP-C2`): `OrgitrationPipeline`, `_GraphPipelineWrapper`, and `run_existing_code_pipeline` now share a cumulative
+  `RunUsage` across all stages and retries (persisted on `PipelineState` across checkpoints), clamping each call's
+  `UsageLimits` to the remaining pipeline budget and halting cleanly on `UsageLimitExceeded`.
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -306,6 +312,14 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **Hidden `AsyncOpenAI(max_retries=2)` 3x retry amplification, unguarded private sub-agents, and retired CrewAI /
+  AutoGen / `composite` bridges (`BP-F4`, `BP-F10`, `BP-F12`, `F-FRM-01`, `F-FRM-02`).** `models/factory.py` now
+  passes an explicit `AsyncOpenAI(..., max_retries=0)` client to `OpenAIProvider` and `DeepSeekProvider` so timeouts
+  are never retried by the SDK; `_component_writer` (`frontend.py`), `_test_writer` / `_go_test_writer` (`test_eng.py`),
+  and `BridgeAgent.run` (`agy_bridge/bridge_agent.py`) now execute through `PydanticAIAgentProvider.run_agent` instead
+  of calling `Agent.run` directly; `delegate_to_agent` blocks A2A cycles (`visited_agents`) and bounds parallel child
+  fan-out per parent; and the CrewAI, AutoGen, and `composite` pipeline engines (which bypassed `UsageLimits`, OTel
+  GenAI spans, `@agent.instructions`, and checkpoints) are retired in favour of `OrgitrationPipeline` and `LangGraph`.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path

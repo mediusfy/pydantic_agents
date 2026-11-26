@@ -445,35 +445,47 @@ async def run_existing_code_pipeline(
     logger.info("=== Existing Code Pipeline (Autonomous Remediation Loop) ===")
     logger.info("Change: %s", change_description)
 
-    # The sandbox root is per task: a concurrent pipeline on another codebase keeps its own.
-    from pydantic_agents.core.limits import run_id_var
+    # The sandbox root and cumulative pipeline token budget are per task.
+    from pydantic_ai.exceptions import UsageLimitExceeded
+    from pydantic_ai.usage import RunUsage
+
+    from pydantic_agents.core.limits import pipeline_usage_var, run_id_var
 
     root_token = sandbox_root_var.set(Path(os.path.realpath(codebase_path)) if codebase_path else None)
     run_token = run_id_var.set(run_id_var.get() or f"modify_{result.run_id[:12]}")
+    usage_token = pipeline_usage_var.set(RunUsage())
     try:
         for attempt in range(MAX_RETRIES + 1):
             if await _run_attempt(result, recorder, attempt, options):
                 _write_result(result, project or "existing-code")
                 return result
-
-        _sync_memory_after_pipeline()
-
-        # All retries exhausted
+    except UsageLimitExceeded as exc:
+        logger.error("Existing-code pipeline halted by usage budget: %s", exc)
+        result.errors.append(str(exc))
         result.passed = False
         result.retries_used = MAX_RETRIES
-        recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
-        logger.error(
-            "Pipeline failed after %d retries. Errors: %s",
-            MAX_RETRIES,
-            result.errors,
-        )
-        _write_result(result, project or "existing-code")
+        recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, str(exc))
         return result
     finally:
         if hasattr(recorder, "close"):
             recorder.close()
+        pipeline_usage_var.reset(usage_token)
         run_id_var.reset(run_token)
         sandbox_root_var.reset(root_token)
+
+    _sync_memory_after_pipeline()
+
+    # All retries exhausted
+    result.passed = False
+    result.retries_used = MAX_RETRIES
+    recorder.record(result.run_id, "pipeline", MAX_RETRIES, "failed", 0, f"{len(result.errors)} errors")
+    logger.error(
+        "Pipeline failed after %d retries. Errors: %s",
+        MAX_RETRIES,
+        result.errors,
+    )
+    _write_result(result, project or "existing-code")
+    return result
 
 
 def _write_result(result: ExistingCodeResult, project: str) -> None:

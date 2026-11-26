@@ -11,7 +11,6 @@ from .checkpointer import DiskCheckpointSaver
 from .nodes import (
     advisory_node,
     ba_node,
-    crewai_implementation_node,
     implementation_node,
     merge_node,
     quality_gate_node,
@@ -48,12 +47,7 @@ def build_implementation_subgraph(
 ) -> Any:
     workflow = StateGraph(PipelineState)
 
-    impl_fn = (
-        _async_node(crewai_implementation_node, config)
-        if config.framework == "composite"
-        else _async_node(implementation_node, config, provider)
-    )
-    workflow.add_node("implementation", impl_fn)
+    workflow.add_node("implementation", _async_node(implementation_node, config, provider))
     workflow.add_node("quality_gate", _async_node(quality_gate_node, config, provider))
     workflow.add_node("retry_or_exit", _noop)
 

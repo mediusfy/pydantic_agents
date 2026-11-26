@@ -275,12 +275,13 @@ class TestBuildFullGraphNodes:
         assert nodes == expected_nodes
         assert ("__start__", expected_start) in edges
 
-    def test_build_full_graph_rejects_blueprint_without_stages(self, mock_provider):
-        from pydantic_agents.core.pipeline.langgraph.graphs import build_full_graph
+    def test_build_full_graph_rejects_blueprint_without_stages(self, monkeypatch, mock_provider):
+        from pydantic_agents.core.pipeline.langgraph import graphs
 
-        cfg = PipelineConfig(blueprint="crew_sdlc", framework="langgraph")
+        cfg = PipelineConfig(blueprint="langgraph_full", framework="langgraph")
+        monkeypatch.setattr(graphs, "BLUEPRINTS", {"langgraph_full": {"framework": "langgraph", "stages": []}})
         with pytest.raises(ValueError, match="has no stages to run"):
-            build_full_graph(cfg, mock_provider)
+            graphs.build_full_graph(cfg, mock_provider)
 
 
 class TestLangGraphExecutionAndResume:
@@ -331,63 +332,6 @@ class TestLangGraphExecutionAndResume:
         assert seen_stories[0].gherkin == "Add GET /healthz"
         assert result.approved is True
         assert result.stage == "merge"
-
-    @pytest.mark.asyncio
-    async def test_composite_pipeline_runs_crewai_implementation_step(self, tmp_path, monkeypatch):
-        from pydantic_agents.core.models.core import Artifact, UserStory
-        from pydantic_agents.core.pipeline.factory import build_pipeline
-        from pydantic_agents.core.settings import settings
-
-        monkeypatch.setattr(settings, "checkpoint_dir", tmp_path / "ckpts")
-        monkeypatch.chdir(tmp_path)
-
-        story = UserStory(id="US-1", title="Health", gherkin="Given /healthz")
-
-        async def fake_ba(_self, state, _cfg):
-            return state.model_copy(update={"user_stories": [story]})
-
-        async def fake_adv(_self, state, _cfg):
-            return state.model_copy(update={"cto_approved": True, "advisory_results": {"cto": "use net/http"}})
-
-        async def fake_qg(_self, state, _cfg):
-            return state.model_copy(update={"approved": True})
-
-        async def fake_merge(_self, state, _cfg):
-            return state.model_copy(update={"stage": "merge", "approved": True})
-
-        crew_spy = AsyncMock(
-            side_effect=lambda state, _cfg: state.model_copy(
-                update={"artifacts": [Artifact(agent_name="backend", files={"main.go": "package main"})]}
-            )
-        )
-        import sys
-        from types import SimpleNamespace
-
-        monkeypatch.setitem(
-            sys.modules,
-            "pydantic_agents.core.pipeline.crewai.bridge",
-            SimpleNamespace(run_crewai_pipeline=crew_spy),
-        )
-
-        with (
-            patch("pydantic_agents.core.stages.ba_stage.BAStage.run", fake_ba),
-            patch("pydantic_agents.core.stages.advisory_stage.AdvisoryStage.run", fake_adv),
-            patch("pydantic_agents.core.pipeline.factory._ensure_dependency", lambda _f: None),
-            patch("pydantic_agents.core.stages.quality_gate_stage.QualityGateStage.run", fake_qg),
-            patch("pydantic_agents.core.stages.merge_stage.MergeStage.run", fake_merge),
-        ):
-            cfg = PipelineConfig(
-                project="compproj",
-                blueprint="composite",
-                framework="composite",
-                requirement="Add GET /healthz",
-            )
-            result = await build_pipeline(cfg).execute()
-
-        assert result.approved is True
-        assert result.stage == "merge"
-        assert len(result.artifacts) == 1
-        assert crew_spy.await_count == 1
 
     @pytest.mark.asyncio
     async def test_persistent_checkpointer_resumes_across_instances_without_rerunning_ba(self, tmp_path, monkeypatch):

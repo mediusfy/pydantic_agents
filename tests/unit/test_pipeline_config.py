@@ -1,6 +1,6 @@
 import pytest
 
-from pydantic_agents.core.pipeline.config import BLUEPRINTS, PipelineConfig
+from pydantic_agents.core.pipeline.config import BLUEPRINTS, BlueprintSpec, PipelineConfig
 
 
 class TestPipelineConfig:
@@ -13,21 +13,32 @@ class TestPipelineConfig:
         for _name, bp in BLUEPRINTS.items():
             assert "description" in bp
             assert "framework" in bp
-            assert bp["framework"] in ("legacy", "langgraph", "crewai", "autogen", "composite")
+            assert bp["framework"] in ("legacy", "langgraph")
+            assert bp.get("stages")
 
     def test_langgraph_blueprint_selects_correct_framework(self):
-        cfg = PipelineConfig(blueprint="langgraph_full", framework="langgraph")
+        cfg = PipelineConfig(blueprint="langgraph_full")
         assert cfg.blueprint == "langgraph_full"
+        assert cfg.framework == "langgraph"
 
-    def test_crewai_blueprint_has_crew_class(self):
-        bp = BLUEPRINTS["crew_sdlc"]
-        assert "crew_class" in bp
-        assert bp["crew_class"] == "SdlcCrew"
+    def test_retired_frameworks_and_blueprints_fail_closed(self):
+        for retired_bp in (
+            "crew_sdlc",
+            "crew_qa",
+            "crew_architecture_review",
+            "crew_audit",
+            "autogen_sdlc",
+            "autogen_design_review",
+            "composite",
+        ):
+            with pytest.raises(ValueError, match="Unknown blueprint"):
+                PipelineConfig(blueprint=retired_bp)
 
-    def test_autogen_blueprint_has_group_class(self):
-        bp = BLUEPRINTS["autogen_sdlc"]
-        assert "group_class" in bp
-        assert bp["group_class"] == "SdlcGroupChat"
+        for retired_fw in ("crewai", "autogen", "composite"):
+            with pytest.raises(ValueError, match="Unsupported pipeline framework"):
+                PipelineConfig(blueprint="new_feature", framework=retired_fw)
+            with pytest.raises(ValueError, match="retired/unsupported framework"):
+                BlueprintSpec(name="bad", description="d", framework=retired_fw, stages=["ba"])
 
     def test_unknown_blueprint_raises(self):
         with pytest.raises(ValueError, match="Unknown blueprint"):
@@ -43,15 +54,12 @@ class TestPipelineConfig:
 
 
 class TestFrameworkValidation:
-    def test_mismatch_warns(self):
-        cfg = PipelineConfig(blueprint="langgraph_full", framework="crewai")
-        assert cfg.framework == "crewai"
+    def test_mismatch_warns(self, caplog):
+        with caplog.at_level("WARNING", logger="pydantic_agents.core.pipeline.config"):
+            cfg = PipelineConfig(blueprint="new_feature", framework="langgraph")
+        assert cfg.framework == "langgraph"
+        assert "expects framework 'legacy' but 'langgraph' was requested" in caplog.text
 
-    def test_all_blueprints_have_valid_stages_or_class(self):
-        for name, bp in BLUEPRINTS.items():
-            if bp["framework"] in ("legacy", "langgraph", "composite"):
-                assert "stages" in bp, f"{name} missing stages"
-            elif bp["framework"] == "crewai":
-                assert "crew_class" in bp, f"{name} missing crew_class"
-            elif bp["framework"] == "autogen":
-                assert "group_class" in bp, f"{name} missing group_class"
+    def test_blueprint_spec_requires_stages(self):
+        with pytest.raises(ValueError, match="requires 'stages'"):
+            BlueprintSpec(name="empty", description="d", framework="legacy", stages=[])

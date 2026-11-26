@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from pydantic_agents.core import cto_gate, limits, pipeline_jobs, platform_metrics, sre_remediation
+from pydantic_agents.core import cto_gate, pipeline_jobs, platform_metrics, sre_remediation
 from pydantic_agents.core.models.core import Artifact, PipelineState, UserStory
 from pydantic_agents.core.pipeline.config import STAGES, PipelineConfig
 from pydantic_agents.core.session_recorder import SessionRecorder
@@ -146,33 +146,6 @@ async def test_a_gate_only_blueprint_actually_runs_the_gate(monkeypatch):
     gate.assert_awaited_once()
 
 
-# --- crew and group chat status -------------------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("crew", "errors", "cto_approved", "failure", "approved"),
-    [
-        ("AuditCrew", [], False, False, True),
-        ("AuditCrew", ["findings rejected"], False, False, False),
-        ("ArchitectureReviewCrew", [], True, False, True),
-        ("ArchitectureReviewCrew", [], False, False, False),
-        ("AuditCrew", [], False, True, False),
-        ("SdlcCrew", [], True, False, False),  # decided by its review verdict, not here
-    ],
-)
-def test_crews_without_a_verdict_are_approved_when_they_finish_cleanly(crew, errors, cto_approved, failure, approved):
-    from pydantic_agents.core.models.core import FailureReport
-    from pydantic_agents.core.pipeline.crewai.approval import finalize_approval as _finalize_approval
-
-    state = PipelineState(run_id="r", stage="implementation", errors=errors, cto_approved=cto_approved)
-    if failure:
-        state.failure_report = FailureReport(source="crewai", error_type="runtime_error", trace="x")
-
-    _finalize_approval(state, crew)
-
-    assert bool(state.approved) is approved
-
-
 # --- session recorder ----------------------------------------------------------------------------------------------
 
 
@@ -218,37 +191,6 @@ async def test_a_clean_span_is_still_recorded_once_as_a_success(tmp_path):
 
     (record,) = _read(tmp_path / "t.jsonl")
     assert (record["success"], record["error"]) == (True, None)
-
-
-# --- worker threads keep their permit until they end ---------------------------------------------------------------
-
-
-async def test_a_timed_out_thread_keeps_its_llm_permit_until_it_finishes(monkeypatch):
-    monkeypatch.setattr(settings, "max_concurrent_llm_calls", 1)
-    limits._semaphores.clear()
-    import threading
-
-    release = threading.Event()
-
-    with pytest.raises(TimeoutError):
-        await limits.run_blocking_with_permit(lambda: release.wait(5), timeout_seconds=0.05)
-
-    assert limits.llm_semaphore().locked()  # the thread is still calling models: the permit is not free
-
-    release.set()
-    for _ in range(100):
-        if not limits.llm_semaphore().locked():
-            break
-        await asyncio.sleep(0.01)
-    assert not limits.llm_semaphore().locked()
-
-
-async def test_a_blocking_call_returns_its_value_and_frees_the_permit(monkeypatch):
-    monkeypatch.setattr(settings, "max_concurrent_llm_calls", 1)
-    limits._semaphores.clear()
-
-    assert await limits.run_blocking_with_permit(lambda: 42, timeout_seconds=1) == 42
-    assert not limits.llm_semaphore().locked()
 
 
 # --- autopilot ----------------------------------------------------------------------------------------------------
