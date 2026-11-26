@@ -63,7 +63,12 @@ _URL_CRED_RE = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)[^:/\s@]+:[^@\s]+@")
 
 
 def redact_secrets(value: Any) -> Any:
-    """Recursively scrub credentials, tokens, PEM blocks, and embedded DSN passwords from strings/dicts/lists."""
+    """Recursively scrub credentials, tokens, PEM blocks, and embedded DSN passwords from strings/dicts/lists.
+
+    Defense in depth only: the patterns cover well-known token formats and ``key=value`` assignments, not arbitrary
+    high-entropy strings, unknown provider formats, or a secret split across fields. A redacted trace is therefore
+    not guaranteed clean; keep ``SESSION_TRACE_ENABLED`` off where traces could leave the pod.
+    """
     if isinstance(value, str):
         scrubbed = _URL_CRED_RE.sub(r"\1[REDACTED]@", value)
         for regex in _SECRET_REGEXES:
@@ -152,6 +157,8 @@ class RecordingSpan:
         self.record.set_output(output, success)
 
     def record_tool_call(self, tool_name: str, tool_args: dict[str, Any], result: Any, duration_sec: float) -> None:
+        if not self._recorder.is_enabled():
+            return
         self._recorder._append_tool_call(self.record, tool_name, tool_args, result, duration_sec)
 
     def abort_run(self, error: str) -> None:
@@ -226,9 +233,13 @@ class SessionRecorder:
         result: Any,
         duration_sec: float,
     ) -> None:
-        """Record a tool call made during the innermost open span of this task; a no-op outside a span."""
+        """Record a tool call made during the innermost open span of this task.
+
+        A no-op outside a span and when tracing is disabled, so the hot tool path builds no records (and runs no
+        redaction) that would only be discarded.
+        """
         record = _current_record.get()
-        if record is None:
+        if record is None or not self.is_enabled():
             return
         self._append_tool_call(record, tool_name, tool_args, result, duration_sec)
 

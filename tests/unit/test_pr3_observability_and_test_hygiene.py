@@ -151,6 +151,32 @@ async def test_wrapped_tools_record_redacted_calls_inside_record_span(tmp_path):
     assert entry["output_json"] == {"token": "[REDACTED]"}
 
 
+@pytest.mark.asyncio
+async def test_record_tool_call_is_a_noop_when_tracing_disabled(tmp_path, monkeypatch):
+    rec = SessionRecorder(str(tmp_path / "off.jsonl"), enabled=False)
+    append = MagicMock()
+    monkeypatch.setattr(SessionRecorder, "_append_tool_call", append)
+    async with rec.record_span("run_off", "backend", "implementation", "p") as span:
+        rec.record_tool_call("tool_a", {"x": 1}, "result", 0.1)
+        span.record_tool_call("tool_b", {"y": 2}, "result", 0.1)
+        assert span.record.tool_calls == []
+    append.assert_not_called()
+    assert not (tmp_path / "off.jsonl").exists()
+
+
+def test_estimate_cost_for_unmapped_agent_uses_default_rate_and_warns_once(monkeypatch, caplog):
+    monkeypatch.setattr(platform_metrics, "_warned_unknown_model", set())
+    monkeypatch.setattr(settings, "cost_default_input_per_1m_usd", 2.0)
+    monkeypatch.setattr(settings, "cost_default_output_per_1m_usd", 4.0)
+    with caplog.at_level("WARNING", logger="pydantic_agents.core.platform_metrics"):
+        first = platform_metrics.estimate_cost_usd("no_such_agent", 1_000_000, 1_000_000)
+        second = platform_metrics.estimate_cost_usd("no_such_agent", 1_000_000, 0)
+    assert first == pytest.approx(6.0)
+    assert second == pytest.approx(2.0)
+    warnings = [r for r in caplog.records if "no_such_agent" in r.getMessage()]
+    assert len(warnings) == 1
+
+
 # ── 3. conftest.py Autouse Guardrails ────────────────────────────────────────
 
 

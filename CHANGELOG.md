@@ -32,6 +32,9 @@ fresh **Unreleased** section above it.
   three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at
   pgvector. Tickets AP-102 through AP-110. Of those, AP-110 is implemented in full by this change, and AP-102 and
   AP-105 in part — see the `### Fixed` entries below for exactly what remains open on each.
+- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
+  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
+  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
 - `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
   (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
   operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the

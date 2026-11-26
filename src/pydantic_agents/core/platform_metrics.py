@@ -18,7 +18,10 @@ from pydantic_agents.core.settings import settings
 logger = logging.getLogger(__name__)
 
 _table_ready = False
+# Heuristic: a configured model whose name contains one of these is billed at the cheaper sub-agent rate, anything
+# else at the default rate. Costs are estimates from list rates in settings, not invoiced spend.
 _SUBAGENT_MODEL_HINTS = ("subagent", "mini", "flash", "haiku")
+_warned_unknown_model: set[str] = set()
 
 
 def enabled() -> bool:
@@ -81,7 +84,16 @@ def _agent_model_name(agent_name: str) -> str:
     if agent_name == "test_eng":
         return str(settings.test_model)
     configured = getattr(settings, f"{agent_name}_model", None)
-    return str(configured) if configured else ""
+    if configured:
+        return str(configured)
+    if agent_name not in _warned_unknown_model:
+        _warned_unknown_model.add(agent_name)
+        logger.warning(
+            "platform_metrics: no '%s_model' setting for agent %r; estimating cost_usd at the default rate",
+            agent_name,
+            agent_name,
+        )
+    return ""
 
 
 def estimate_cost_usd(
