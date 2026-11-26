@@ -12,6 +12,12 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `create_http_app()` ASGI factory in `mcp_server.py` (now used by `Dockerfile` and `make serve`) serving Streamable
+  HTTP at `/mcp`, a separated fail-closed admin FastMCP surface at `/mcp/admin` (`mcp_admin`, holding
+  `approve_cto_gate`, `save_adr`, and `cancel_pipeline_run`), `/healthz`, and the legacy `/sse` + `/messages/` routes
+  for zero-downtime LiteLLM cutover. `_MCPBearerAuthMiddleware` enforces constant-time Bearer authentication via
+  `MCP_AUTH_TOKEN` on worker routes and requires `MCP_ADMIN_TOKEN` on `/mcp/admin` (returning `503` when unset and
+  `403` if called with the worker token, so coding agents cannot self-approve CTO gates or overwrite ADRs).
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -306,6 +312,19 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **CTO gate marker races, stale approvals, and silent `AgentAdvice` rejection (`BP-F9`, `BP-F2`, `BP-P1`).**
+  `cto_gate.write_approval` now writes structured JSON (`{approved, run_id, adr_id}`) atomically via sibling tempfile +
+  `os.replace`, `read_marker` no longer treats truncated empty `""` files as `True` (`approved`), and
+  `approve_cto_gate` verifies an active/waiting run on `project_name` and scopes the marker to `.cto_approved.<run_id>`
+  so late approvals cannot wave through future runs and concurrent runs on one project cannot steal each other's
+  markers. `cto_prompt` now documents `adr_id` and `findings`, and `@cto_agent.output_validator` raises `ModelRetry`
+  when `approved_to_proceed=true` is returned without `adr_id` instead of silently flipping to `false` on first try.
+- **Unapproved artifacts flushed to `output_dir` and false scaffolding success (`BP-R3`).**
+  `OrgitrationPipeline.execute`, `_GraphPipelineWrapper.execute`, `CrewAIPipeline.execute`, and
+  `run_existing_code_pipeline` now skip writing artifacts when gate approval fails (`approved=False` / `passed=False`),
+  and `scaffold_and_build_service` surfaces gate rejection instead of reporting completion unconditionally.
+- **`MCP_DNS_REBINDING_PROTECTION=true` silently disabled host/origin checks (`BP-S2`).** `mcp_server.py` now parses
+  standard truthy values (`1`, `true`, `yes`, `on`) instead of comparing strictly against `"1"`.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path

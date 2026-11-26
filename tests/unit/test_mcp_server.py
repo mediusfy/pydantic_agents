@@ -93,16 +93,30 @@ async def test_scaffold_and_build_service_validates_name_and_uses_build_pipeline
     bad = await scaffold_and_build_service("../escape", "billing")
     assert bad.startswith("Error: Invalid project_name")
 
-    fake_pipeline = MagicMock(execute=AsyncMock())
+    fake_pipeline = MagicMock(execute=AsyncMock(return_value=MagicMock(approved=True)))
     with patch("pydantic_agents.core.pipeline.factory.build_pipeline", return_value=fake_pipeline) as build:
         ok = await scaffold_and_build_service("billing-svc", "billing")
     build.assert_called_once()
     fake_pipeline.execute.assert_awaited_once()
     assert "billing-svc" in ok
+    assert not ok.startswith("Error:")
+
+
+@pytest.fixture
+def waiting_proj_run(monkeypatch):
+    from pydantic_agents.core import pipeline_jobs
+
+    run_id = "pipe_000000000001"
+    monkeypatch.setattr(
+        pipeline_jobs,
+        "PIPELINE_RUNS",
+        {run_id: {"project": "proj", "status": pipeline_jobs.STATUS_WAITING_CTO}},
+    )
+    return run_id
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_requires_adr_id_to_approve():
+async def test_approve_cto_gate_requires_adr_id_to_approve(waiting_proj_run):
     """Mirrors AgentAdvice.approved_to_proceed's code gate: no approval without a recorded decision."""
     with patch("pydantic_agents.core.cto_gate.write_approval") as mock_write:
         result = await approve_cto_gate("proj", approved=True)
@@ -113,44 +127,45 @@ async def test_approve_cto_gate_requires_adr_id_to_approve():
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_rejection_needs_no_adr_id():
+async def test_approve_cto_gate_rejection_needs_no_adr_id(waiting_proj_run):
     with patch("pydantic_agents.core.cto_gate.write_approval") as mock_write:
-        mock_write.return_value.name = ".cto_approved"
+        mock_write.return_value.name = f".cto_approved.{waiting_proj_run}"
         result = await approve_cto_gate("proj", approved=False)
 
     assert "rejected" in result
-    mock_write.assert_called_once_with("proj", False)
+    mock_write.assert_called_once_with("proj", False, run_id=waiting_proj_run, adr_id="")
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_saves_the_adr_when_content_is_given():
+async def test_approve_cto_gate_saves_the_adr_when_content_is_given(waiting_proj_run):
     with (
         patch("pydantic_agents.core.cto_gate.write_approval") as mock_write,
         patch("pydantic_agents.mcp_server.save_adr") as mock_save,
     ):
-        mock_write.return_value.name = ".cto_approved"
+        mock_write.return_value.name = f".cto_approved.{waiting_proj_run}"
         result = await approve_cto_gate("proj", approved=True, adr_id="0002", adr_content="# Decision")
 
     mock_save.assert_called_once_with("0002", "# Decision")
-    mock_write.assert_called_once_with("proj", True)
+    mock_write.assert_called_once_with("proj", True, run_id=waiting_proj_run, adr_id="0002")
     assert "approved" in result
     assert "ADR 0002 saved" in result
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_approves_without_saving_when_no_content_given():
+async def test_approve_cto_gate_approves_without_saving_when_no_content_given(waiting_proj_run):
     with (
         patch("pydantic_agents.core.cto_gate.write_approval") as mock_write,
         patch("pydantic_agents.mcp_server.save_adr") as mock_save,
     ):
-        mock_write.return_value.name = ".cto_approved"
+        mock_write.return_value.name = f".cto_approved.{waiting_proj_run}"
         await approve_cto_gate("proj", approved=True, adr_id="0002")
 
     mock_save.assert_not_called()
+    mock_write.assert_called_once_with("proj", True, run_id=waiting_proj_run, adr_id="0002")
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_rejects_content_without_an_adr_id():
+async def test_approve_cto_gate_rejects_content_without_an_adr_id(waiting_proj_run):
     """adr_content with approved=False (or any call with a blank adr_id) must not call save_adr("", ...)."""
     with (
         patch("pydantic_agents.core.cto_gate.write_approval") as mock_write,
@@ -165,7 +180,7 @@ async def test_approve_cto_gate_rejects_content_without_an_adr_id():
 
 
 @pytest.mark.asyncio
-async def test_approve_cto_gate_reports_a_save_adr_failure_without_approving():
+async def test_approve_cto_gate_reports_a_save_adr_failure_without_approving(waiting_proj_run):
     with (
         patch("pydantic_agents.core.cto_gate.write_approval") as mock_write,
         patch("pydantic_agents.mcp_server.save_adr", side_effect=RuntimeError("db down")) as mock_save,

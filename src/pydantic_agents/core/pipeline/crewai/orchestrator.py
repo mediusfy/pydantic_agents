@@ -27,6 +27,7 @@ class CrewAIPipeline:
         logger.info("Starting CrewAI Pipeline for blueprint: %s", self.config.blueprint)
         state = await run_crewai_pipeline(state, self.config)
 
-        self.artifact_writer.write_artifacts(state.artifacts)
+        if state.approved:
+            self.artifact_writer.write_artifacts(state.artifacts)
         logger.info("CrewAI Pipeline complete. Approved: %s", state.approved)
         return state
