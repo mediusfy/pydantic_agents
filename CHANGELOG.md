@@ -12,6 +12,13 @@ fresh **Unreleased** section above it.
 ## [Unreleased]
 
 ### Added
+- `SESSION_TRACE_ENABLED` setting (default `false`), recursive `session_recorder.redact_secrets()`, and
+  `platform_metrics.estimate_cost_usd()` + `run_id` column (`BP-O1`–`BP-O5`, `BP-F11`): `AgentRegistry.register` now
+  populates `agent.name` so `pydantic_ai` OTel GenAI spans carry `gen_ai.agent.name`, `AgentRegistry.run` and
+  `telemetry.py` propagate `run_id` into `current_run_context` and `telemetry.jsonl`, `platform_metrics` records
+  `run_id`, estimated `cost_usd`, and verdicts for `AgentAdvice.approved_to_proceed`, `TestRunReport.all_passed`, and
+  `CostReport.over_budget`, and `tests/conftest.py` enforces `ALLOW_MODEL_REQUESTS = False` while isolating singleton
+  `telemetry.jsonl` / `session_trace.jsonl` paths under `tmp_path`.
 - Token-budget guardrail on the prompt of every agent run (`agent_prompt_token_budget`, default 60k tokens, with
   `agent_prompt_chars_per_token` as the character conversion; set either to 0 to disable). Enforced by `cap_prompt`
   in `core/adapters/agents.py`, the single call site of `Agent.run`, so every path that assembles input — MCP
@@ -25,6 +32,9 @@ fresh **Unreleased** section above it.
   three different root causes, and that only the third is storage-shaped — so Turso must not be pointed at
   pgvector. Tickets AP-102 through AP-110. Of those, AP-110 is implemented in full by this change, and AP-102 and
   AP-105 in part — see the `### Fixed` entries below for exactly what remains open on each.
+- Session trace review follow-ups: `record_tool_call` is now a no-op when `SESSION_TRACE_ENABLED` is off (no record
+  building or redaction on the hot tool path), `estimate_cost_usd` logs once per agent with no `<agent>_model` setting
+  instead of silently billing it at the default rate, and `redact_secrets` documents that it is best-effort.
 - `agent_usage_summary(days=7, agent="")` MCP tool and `platform_metrics.usage_summary`: a read-only per-agent summary
   (runs, success rate, p50/p95 duration, input/output tokens, verdict passed/failed, last failure time) so an
   operator or agent can answer "how often do agents succeed, how long, at what cost" without psql. Decisions: the
@@ -306,6 +316,12 @@ fresh **Unreleased** section above it.
   session; CrewAI and AutoGen runs use the run's own id instead of a fresh `run-xxxx`.
 
 ### Fixed
+- **Unredacted source code, prompts, and secrets leaked via OTLP and `session_trace.jsonl` (`BP-O2`, `F-OBS-01`).**
+  Removed `logfire.instrument_pydantic()` (whose default `record='all'` exported full `Artifact` source code and
+  `PipelineState` over OTLP despite `include_content=False`), added `include_binary_content=False` to
+  `logfire.instrument_pydantic_ai(...)` without any unredacted fallback, removed raw `arg_pattern` and
+  `context_summary_preview` span attributes, and made the default `SessionRecorder` singleton opt-in
+  (`SESSION_TRACE_ENABLED=true`) with credential/token/DSN scrubbing before disk writes.
 - **`run_existing_code_pipeline` skipped the post-run memory sync when both LLM gates were disabled.** The
   gates-disabled success path in `core/existing_code_handler.py` set `result.passed = True` and returned without
   calling `_sync_memory_after_pipeline()`, while the all-gates-passed path and the retries-exhausted failure path
